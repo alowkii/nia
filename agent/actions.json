@@ -1,0 +1,27 @@
+{
+  "actions": ["music", "shutdown"],
+  "sub_actions": {
+    "music": [
+      "play_track",
+      "play_playlist",
+      "play_album",
+      "pause_track",
+      "resume_track",
+      "next_track",
+      "previous_track",
+      "set_volume",
+      "decrease_volume",
+      "increase_volume",
+      "shuffle",
+      "repeat",
+      "get_current_playback",
+      "get_current_track",
+      "get_devices",
+      "transfer_playback",
+      "add_to_queue"
+    ]
+  },
+  "platforms": {
+    "music": ["spotify"]
+  }
+}
