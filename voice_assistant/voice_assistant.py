@@ -23,6 +23,7 @@ load_dotenv()
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agent.chat import AssistantModel
+from agent.prompts.feedback import feedback_prompt
 
 # Set logging
 from utils.logger import logging
@@ -198,6 +199,10 @@ class WakeWordDetector:
             if text:  # Only if we got actual text
                 logger.info(f"Sending to assistant: {text}")
                 response = self.assistant.chat(text)
+                action_type = response["action_type"]
+                result_txt = response["text_reply"]
+                if action_type == "feedback":
+                    response = self.assistant.chat(feedback_prompt.format(response_text=result_txt))
                 logger.info(f"Assistant JSON response: {response}")
                 response = response.get("text_reply")
                 logger.info(f"Assistant response: {response}")
