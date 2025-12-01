@@ -24,15 +24,17 @@ class SpotifyController:
             
             if results['tracks']['items']:
                 track_uri = results['tracks']['items'][0]['uri']
+                track = results['tracks']['items'][0]
+                artists = ", ".join([artist['name'] for artist in track['artists']])
                 self.sp.start_playback(uris=[track_uri])
-                print(f"Playing: {results['tracks']['items'][0]['name']}")
-                return True
+                message = f"Successfully playing: {track['name']} by {artists}"
+                return message
             else:
-                print("Track not found")
-                return False
+                message = f"Track '{track_name}' not found"
+                return message
         except Exception as e:
-            print(f"Error playing track: {e}")
-            return False
+            message = f"Error playing track: {e}"
+            return message
     
     def play_playlist(self, playlist_name):
         """Search and play a playlist"""
@@ -41,15 +43,16 @@ class SpotifyController:
             
             if results['playlists']['items']:
                 playlist_uri = results['playlists']['items'][0]['uri']
+                playlist = results['playlists']['items'][0]
                 self.sp.start_playback(context_uri=playlist_uri)
-                print(f"Playing playlist: {results['playlists']['items'][0]['name']}")
-                return True
+                message = f"Successfully playing playlist: {playlist['name']}"
+                return message
             else:
-                print("Playlist not found")
-                return False
+                message = f"Playlist '{playlist_name}' not found"
+                return message
         except Exception as e:
-            print(f"Error playing playlist: {e}")
-            return False
+            message = f"Error playing playlist: {e}"
+            return message
     
     def play_album(self, album_name):
         """Search and play an album"""
@@ -58,70 +61,89 @@ class SpotifyController:
             
             if results['albums']['items']:
                 album_uri = results['albums']['items'][0]['uri']
+                album = results['albums']['items'][0]
+                artists = ", ".join([artist['name'] for artist in album['artists']])
                 self.sp.start_playback(context_uri=album_uri)
-                print(f"Playing album: {results['albums']['items'][0]['name']}")
-                return True
+                message = f"Successfully playing album: {album['name']} by {artists}"
+                return message
             else:
-                print("Album not found")
-                return False
+                message = f"Album '{album_name}' not found"
+                return message
         except Exception as e:
-            print(f"Error playing album: {e}")
-            return False
+            message = f"Error playing album: {e}"
+            return message
     
     def pause(self):
         """Pause playback"""
         try:
             self.sp.pause_playback()
-            print("Paused")
-            return True
+            message = "Playback paused successfully"
+            return message
         except Exception as e:
-            print(f"Error pausing: {e}")
-            return False
+            message = f"Error pausing playback: {e}"
+            return message
     
     def resume(self):
         """Resume playback"""
         try:
             self.sp.start_playback()
-            print("Resumed")
-            return True
+            message = "Playback resumed successfully"
+            return message
         except Exception as e:
-            print(f"Error resuming: {e}")
-            return False
+            message = f"Error resuming playback: {e}"
+            return message
     
     def next(self):
         """Skip to next track"""
         try:
             self.sp.next_track()
-            print("Skipped to next track")
-            return True
+            # Small delay to let Spotify update
+            import time
+            time.sleep(0.5)
+            current = self.get_current_track()
+            if current:
+                message = f"Skipped to next track: {current}"
+            else:
+                message = "Skipped to next track"
+            return message
         except Exception as e:
-            print(f"Error skipping track: {e}")
-            return False
+            message = f"Error skipping track: {e}"
+            return message
     
     def previous(self):
         """Go to previous track"""
         try:
             self.sp.previous_track()
-            print("Previous track")
-            return True
+            # Small delay to let Spotify update
+            import time
+            time.sleep(0.5)
+            current = self.get_current_track()
+            if current:
+                message = f"Went back to previous track: {current}"
+            else:
+                message = "Went back to previous track"
+            return message
         except Exception as e:
-            print(f"Error going to previous track: {e}")
-            return False
+            message = f"Error going to previous track: {e}"
+            return message
     
     def set_volume(self, volume_percent):
         """Set volume (0-100)"""
-        volume_percent = int(volume_percent)
         try:
+            volume_percent = int(volume_percent)
             if 0 <= volume_percent <= 100:
                 self.sp.volume(volume_percent)
-                print(f"Volume set to {volume_percent}%")
-                return True
+                message = f"Volume set to {volume_percent}%"
+                return message
             else:
-                print("Volume must be between 0 and 100")
-                return False
+                message = "Volume must be between 0 and 100"
+                return message
+        except ValueError:
+            message = f"Invalid volume value: {volume_percent}. Must be a number between 0-100"
+            return message
         except Exception as e:
-            print(f"Error setting volume: {e}")
-            return False
+            message = f"Error setting volume: {e}"
+            return message
     
     def increase_volume(self, step=10):
         """Increase volume by specified step (default 10%)"""
@@ -131,14 +153,14 @@ class SpotifyController:
                 current_volume = current['device']['volume_percent']
                 new_volume = min(current_volume + step, 100)
                 self.sp.volume(new_volume)
-                print(f"Volume increased to {new_volume}%")
-                return True
+                message = f"Volume increased from {current_volume}% to {new_volume}%"
+                return message
             else:
-                print("No active device found")
-                return False
+                message = "No active device found to increase volume"
+                return message
         except Exception as e:
-            print(f"Error increasing volume: {e}")
-            return False
+            message = f"Error increasing volume: {e}"
+            return message
     
     def decrease_volume(self, step=10):
         """Decrease volume by specified step (default 10%)"""
@@ -148,25 +170,25 @@ class SpotifyController:
                 current_volume = current['device']['volume_percent']
                 new_volume = max(current_volume - step, 0)
                 self.sp.volume(new_volume)
-                print(f"Volume decreased to {new_volume}%")
-                return True
+                message = f"Volume decreased from {current_volume}% to {new_volume}%"
+                return message
             else:
-                print("No active device found")
-                return False
+                message = "No active device found to decrease volume"
+                return message
         except Exception as e:
-            print(f"Error decreasing volume: {e}")
-            return False
+            message = f"Error decreasing volume: {e}"
+            return message
     
     def shuffle(self, state=True):
         """Toggle shuffle mode"""
         try:
             self.sp.shuffle(state)
             status = "enabled" if state else "disabled"
-            print(f"Shuffle {status}")
-            return True
+            message = f"Shuffle {status} successfully"
+            return message
         except Exception as e:
-            print(f"Error toggling shuffle: {e}")
-            return False
+            message = f"Error toggling shuffle: {e}"
+            return message
     
     def repeat(self, state='context'):
         """
@@ -179,61 +201,19 @@ class SpotifyController:
         try:
             if state in ['track', 'context', 'off']:
                 self.sp.repeat(state)
-                print(f"Repeat set to: {state}")
-                return True
+                if state == 'track':
+                    message = "Repeat mode set to: repeat current track"
+                elif state == 'context':
+                    message = "Repeat mode set to: repeat playlist/album"
+                else:
+                    message = "Repeat mode turned off"
+                return message
             else:
-                print("Invalid repeat state. Use 'track', 'context', or 'off'")
-                return False
+                message = "Invalid repeat state. Use 'track', 'context', or 'off'"
+                return message
         except Exception as e:
-            print(f"Error setting repeat: {e}")
-            return False
-    
-    def get_current_playback(self):
-        """Get current playback information"""
-        try:
-            return self.sp.current_playback()
-        except Exception as e:
-            print(f"Error getting playback info: {e}")
-            return None
-    
-    def get_current_track(self):
-        """Get currently playing track information"""
-        try:
-            current = self.sp.current_playback()
-            if current and current['item']:
-                track = current['item']
-                artists = ", ".join([artist['name'] for artist in track['artists']])
-                return {
-                    'name': track['name'],
-                    'artists': artists,
-                    'album': track['album']['name'],
-                    'is_playing': current['is_playing']
-                }
-            else:
-                print("No track currently playing")
-                return None
-        except Exception as e:
-            print(f"Error getting current track: {e}")
-            return None
-    
-    def get_devices(self):
-        """Get available devices"""
-        try:
-            devices = self.sp.devices()
-            return devices['devices']
-        except Exception as e:
-            print(f"Error getting devices: {e}")
-            return []
-    
-    def transfer_playback(self, device_id):
-        """Transfer playback to a different device"""
-        try:
-            self.sp.transfer_playback(device_id)
-            print(f"Transferred playback to device: {device_id}")
-            return True
-        except Exception as e:
-            print(f"Error transferring playback: {e}")
-            return False
+            message = f"Error setting repeat: {e}"
+            return message
     
     def add_to_queue(self, track_name):
         """Add a track to the queue"""
@@ -242,12 +222,14 @@ class SpotifyController:
             
             if results['tracks']['items']:
                 track_uri = results['tracks']['items'][0]['uri']
+                track = results['tracks']['items'][0]
+                artists = ", ".join([artist['name'] for artist in track['artists']])
                 self.sp.add_to_queue(track_uri)
-                print(f"Added to queue: {results['tracks']['items'][0]['name']}")
-                return True
+                message = f"Successfully added to queue: {track['name']} by {artists}"
+                return message
             else:
-                print("Track not found")
-                return False
+                message = f"Track '{track_name}' not found"
+                return message
         except Exception as e:
-            print(f"Error adding to queue: {e}")
-            return False
+            message = f"Error adding to queue: {e}"
+            return message
