@@ -1,5 +1,6 @@
 import torch
 from agent.chat import AssistantModel
+from agent.prompts.feedback import feedback_prompt
 
 if torch.cuda.is_available():
     torch.cuda.empty_cache()
@@ -15,8 +16,12 @@ while True:
     response = assistant.chat(text)
 
     print(response)
-    print(type(response))
     action_type = response["action_type"]
     result_txt = response["text_reply"]
+    if action_type == "feedback":
+        response = assistant.chat(feedback_prompt.format(response_text=result_txt))
+        print(response)
+        result_txt = response["text_reply"]
+        
     print("Assistant:",result_txt)
     text = input("Me:")
