@@ -137,16 +137,6 @@ class WakeWordDetector:
         else:
             threading.Thread(target=_speak, daemon=True).start()
 
-    def flush_audio_buffer(self):
-        """Flush audio buffer only if stream is active"""
-        if self.audio_stream and self.audio_stream.is_active():
-            for _ in range(5):
-                try:
-                    self.audio_stream.read(self.porcupine.frame_length, exception_on_overflow=False)
-                except OSError as e:
-                    logger.warning(f"Error flushing buffer: {e}")
-                    break
-
     # --------------------------
     # STATE: LISTENING
     # --------------------------
@@ -317,8 +307,14 @@ class WakeWordDetector:
     # UTILITIES
     # --------------------------
     def flush_audio_buffer(self):
-        for _ in range(5):
-            self.audio_stream.read(self.porcupine.frame_length, exception_on_overflow=False)
+        """Flush audio buffer only if stream is active"""
+        if self.audio_stream and self.audio_stream.is_active():
+            for _ in range(5):
+                try:
+                    self.audio_stream.read(self.porcupine.frame_length, exception_on_overflow=False)
+                except OSError as e:
+                    logger.warning(f"Error flushing buffer: {e}")
+                    break
 
     def cleanup(self):
         if self.audio_stream:
