@@ -51,7 +51,7 @@ class WakeWordDetector:
         # TTS model (VITS - fast inference)
         logger.info("Loading VITS TTS model...")
         self._use_gpu = torch.cuda.is_available()
-        self.tts = TTS("tts_models/en/ljspeech/tacotron2-DDC", gpu=self._use_gpu)
+        self.tts = TTS("tts_models/en/ljspeech/vits", gpu=self._use_gpu)
         self.tts_rate = self.tts.synthesizer.tts_config.audio["sample_rate"]
         logger.info(f"VITS TTS ready! (GPU: {self._use_gpu})")
 
@@ -112,9 +112,23 @@ class WakeWordDetector:
         def _speak():
             try:
                 logger.info(f"Speaking: {text}")
+                
+                # PAUSE audio recording while speaking
+                stream_was_active = False
+                if self.audio_stream and self.audio_stream.is_active():
+                    stream_was_active = True
+                    self.audio_stream.stop_stream()
+                
                 wav = np.array(self.tts.tts(text))
                 sd.play(wav, self.tts_rate)
                 sd.wait()
+                
+                # RESUME audio recording after speaking
+                if self.audio_stream and stream_was_active:
+                    self.audio_stream.start_stream()
+                    time.sleep(0.3)  # Small delay before flushing
+                    self.flush_audio_buffer()  # Clear any buffered audio
+                    
             except Exception as e:
                 logger.error(f"TTS error: {e}")
         
@@ -122,6 +136,16 @@ class WakeWordDetector:
             _speak()
         else:
             threading.Thread(target=_speak, daemon=True).start()
+
+    def flush_audio_buffer(self):
+        """Flush audio buffer only if stream is active"""
+        if self.audio_stream and self.audio_stream.is_active():
+            for _ in range(5):
+                try:
+                    self.audio_stream.read(self.porcupine.frame_length, exception_on_overflow=False)
+                except OSError as e:
+                    logger.warning(f"Error flushing buffer: {e}")
+                    break
 
     # --------------------------
     # STATE: LISTENING
@@ -172,10 +196,13 @@ class WakeWordDetector:
 
         # First interaction after wake word
         response = self.assistant.chat("Hey Nia!")
-        self.speak(response.get("text_reply"), blocking=False)
+        self.speak(response.get("text_reply"), blocking=True)
         
+        time.sleep(0.5)             # Small delay after speech completes
+        self.flush_audio_buffer()   # Clear buffer
+
         start_time = time.time()
-        while time.time() - start_time < 120:  # 2 minutes
+        while time.time() - start_time < 60:  # 1 minute
 
             logger.info("Listening for voice command...")
 
@@ -206,7 +233,7 @@ class WakeWordDetector:
                 logger.info(f"Assistant JSON response: {response}")
                 response = response.get("text_reply")
                 logger.info(f"Assistant response: {response}")
-                self.speak(response, blocking=False)
+                self.speak(response, blocking=True)
             
             # Reset the timeout after each interaction
             start_time = time.time()
