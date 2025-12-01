@@ -13,11 +13,9 @@
       "decrease_volume",
       "increase_volume",
       "shuffle",
-      "repeat",
-      "get_current_playback",
-      "get_current_track",
-      "get_devices",
-      "transfer_playback",
+      "repeat_track",
+      "repeat_context",
+      "repeat_off",
       "add_to_queue"
     ]
   },
