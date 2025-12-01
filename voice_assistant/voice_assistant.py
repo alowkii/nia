@@ -44,13 +44,13 @@ class WakeWordDetector:
             torch.cuda.synchronize()
 
         # Whisper model (local)
-        logger.info("Loading Whisper model locally (small)...")
-        self.whisper_model = whisper.load_model("small", device="cuda")
+        logger.info("Loading Whisper model locally (tiny)...")
+        self.whisper_model = whisper.load_model("tiny", device="cuda")
 
         # TTS model (VITS - fast inference)
         logger.info("Loading VITS TTS model...")
         self._use_gpu = torch.cuda.is_available()
-        self.tts = TTS("tts_models/en/ljspeech/vits", gpu=self._use_gpu)
+        self.tts = TTS("tts_models/en/ljspeech/tacotron2-DDC", gpu=self._use_gpu)
         self.tts_rate = self.tts.synthesizer.tts_config.audio["sample_rate"]
         logger.info(f"VITS TTS ready! (GPU: {self._use_gpu})")
 
@@ -145,31 +145,33 @@ class WakeWordDetector:
         logger.info("Entering command mode...")
         self.state = State.COMMAND_MODE
 
-    def valid_command_from_your_voice(self):
-        encoder = VoiceEncoder()
-        reference_embedding = np.load("voice_samples/my_voice_embedding.npy")
+    # TODO: This is creating too much latency
+    # def valid_command_from_your_voice(self):
+    #     encoder = VoiceEncoder()
+    #     reference_embedding = np.load("voice_samples/my_voice_embedding.npy")
 
-        wav_new = preprocess_wav("temp/command.wav")
-        embedding_new = encoder.embed_utterance(wav_new)
+    #     wav_new = preprocess_wav("temp/command.wav")
+    #     embedding_new = encoder.embed_utterance(wav_new)
 
-        similarity = 1 - cosine(reference_embedding, embedding_new)
-        if similarity > 0.75:
-            return True
-        else:
-            return False
+    #     similarity = 1 - cosine(reference_embedding, embedding_new)
+    #     if similarity > 0.75:
+    #         return True
+    #     else:
+    #         return False
 
     # --------------------------
     # STATE: COMMAND MODE
     # --------------------------
     def handle_command_mode_state(self):
-        if not self.valid_command_from_your_voice():
-            # Terminate if the voice is not recognized.
-            logger.info("Person Invalid! Returning to wake-word listening mode.")
-            self.state = State.LISTENING
+        # TODO: Creating too much latency
+        # if not self.valid_command_from_your_voice():
+        #     # Terminate if the voice is not recognized.
+        #     logger.info("Person Invalid! Returning to wake-word listening mode.")
+        #     self.state = State.LISTENING
 
         # First interaction after wake word
         response = self.assistant.chat("Hey Nia!")
-        self.speak(response, blocking=False)
+        self.speak(response.get("text_reply"), blocking=False)
         
         start_time = time.time()
         while time.time() - start_time < 120:  # 2 minutes
@@ -183,7 +185,12 @@ class WakeWordDetector:
 
             # Transcribe using Whisper
             logger.info("Transcribing with Whisper...")
-            result = self.whisper_model.transcribe("temp/command.wav")
+            result = self.whisper_model.transcribe("temp/command.wav",
+                                                    fp16=True,  # Use half precision
+                                                    language="en",  # Skip language detection
+                                                    beam_size=1,  # Faster but slightly less accurate
+                                                    best_of=1
+                                                )
 
             text = result["text"].strip()
             logger.info(f"Recognized command: {text}")
@@ -191,6 +198,8 @@ class WakeWordDetector:
             if text:  # Only if we got actual text
                 logger.info(f"Sending to assistant: {text}")
                 response = self.assistant.chat(text)
+                logger.info(f"Assistant JSON response: {response}")
+                response = response.get("text_reply")
                 logger.info(f"Assistant response: {response}")
                 self.speak(response, blocking=False)
             
@@ -225,7 +234,7 @@ class WakeWordDetector:
 
         with sd.InputStream(samplerate=sample_rate, channels=1) as stream:
             start_time = time.time()
-            while time.time() - start_time < 0.3:
+            while time.time() - start_time < 0.1:
                 frame, _ = stream.read(CHUNK)
                 frame = frame.flatten()
                 noise_samples.append(frame)
