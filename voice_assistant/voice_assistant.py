@@ -10,11 +10,7 @@ import sounddevice as sd
 import scipy.io.wavfile as wavfile
 from dotenv import load_dotenv
 import whisper
-from resemblyzer import VoiceEncoder, preprocess_wav
-from scipy.spatial.distance import cosine
 from TTS.api import TTS
-import numpy as np
-import sounddevice as sd
 import torch
 import threading
 
@@ -44,13 +40,14 @@ class WakeWordDetector:
             torch.cuda.empty_cache()
             torch.cuda.synchronize()
 
+        self._use_gpu = torch.cuda.is_available()
+
         # Whisper model (local)
         logger.info("Loading Whisper model locally (tiny)...")
-        self.whisper_model = whisper.load_model("tiny", device="cuda")
+        self.whisper_model = whisper.load_model("tiny", device="cuda" if self._use_gpu else "cpu")
 
         # TTS model (VITS - fast inference)
         logger.info("Loading VITS TTS model...")
-        self._use_gpu = torch.cuda.is_available()
         self.tts = TTS("tts_models/en/ljspeech/vits", gpu=self._use_gpu)
         self.tts_rate = self.tts.synthesizer.tts_config.audio["sample_rate"]
         logger.info(f"VITS TTS ready! (GPU: {self._use_gpu})")
@@ -71,6 +68,9 @@ class WakeWordDetector:
             keyword_paths=["wake_word/Hey-Nia_en_windows_v3_0_0.ppn"],
             sensitivities=[0.5]
         )
+
+        # Scratch dir for recorded commands (absent on a fresh clone)
+        os.makedirs("temp", exist_ok=True)
 
         # Audio init
         self.pa = pyaudio.PyAudio()
@@ -104,8 +104,6 @@ class WakeWordDetector:
             logger.error("\nStopping...")
         finally:
             self.cleanup()
-
-    import threading
 
     def speak(self, text, blocking=True):
         """Convert text to speech and play it."""
@@ -216,17 +214,18 @@ class WakeWordDetector:
             if text:  # Only if we got actual text
                 logger.info(f"Sending to assistant: {text}")
                 response = self.assistant.chat(text)
-                action_type = response["action_type"]
-                result_txt = response["text_reply"]
-                if action_type == "feedback":
-                    response = self.assistant.chat(feedback_prompt.format(response_text=result_txt))
+                if response.get("action_type") == "feedback":
+                    response = self.assistant.chat(
+                        feedback_prompt.format(response_text=response.get("text_reply", ""))
+                    )
                 logger.info(f"Assistant JSON response: {response}")
-                response = response.get("text_reply")
-                logger.info(f"Assistant response: {response}")
-                self.speak(response, blocking=True)
-            
-            # Reset the timeout after each interaction
-            start_time = time.time()
+                reply = response.get("text_reply")
+                logger.info(f"Assistant response: {reply}")
+                if reply:
+                    self.speak(reply, blocking=True)
+
+                # Only a real exchange keeps the session open - silence must time out
+                start_time = time.time()
 
         # After command, return to listening
         logger.info("Returning to wake-word listening mode.")
@@ -250,7 +249,8 @@ class WakeWordDetector:
         MIN_SPEECH_DURATION = 0.3
         SILENCE_DURATION = 1.0
 
-        # TEMP: measure ambient noise for first 0.3 seconds
+        # Measure ambient noise before recording, so the threshold tracks the room
+        # ponytail: fixed 2.5x RMS multiplier, tune if it clips quiet speech
         logger.info("Calibrating noise floor...")
         noise_samples = []
 
