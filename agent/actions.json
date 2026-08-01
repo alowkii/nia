@@ -1,7 +1,8 @@
 {
-  "actions": ["music", "shutdown"],
+  "actions": ["music"],
   "sub_actions": {
     "music": [
+      "get_current_track",
       "play_track",
       "play_playlist",
       "play_album",

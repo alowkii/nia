@@ -16,12 +16,12 @@ while True:
     response = assistant.chat(text)
 
     print(response)
-    action_type = response["action_type"]
-    result_txt = response["text_reply"]
-    if action_type == "feedback":
+    result_txt = response.get("text_reply", "")
+    if response.get("action_type") == "feedback":
         response = assistant.chat(feedback_prompt.format(response_text=result_txt))
         print(response)
-        result_txt = response["text_reply"]
-        
+        result_txt = response.get("text_reply", "")
+
+
     print("Assistant:",result_txt)
     text = input("Me:")
