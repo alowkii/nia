@@ -1,0 +1,35 @@
+# Python 3.11 required - Coqui TTS 0.22 does not support 3.12+
+#
+# torch is pinned to a CUDA 12.1 build. For that exact wheel, install with:
+#   pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu121
+# For CPU-only, drop the "+cu121" suffix below; the assistant falls back to CPU
+# automatically when torch.cuda.is_available() is False.
+torch==2.5.1+cu121
+
+# Wake word
+pvporcupine==3.0.5
+PyAudio==0.2.14
+
+# Audio capture and file IO
+sounddevice==0.5.3
+scipy==1.16.3
+numpy==1.26.4
+
+# Speech to text
+openai-whisper==20250625
+
+# Text to speech
+TTS==0.22.0
+
+# LLM
+ollama==0.6.1
+
+# Spotify control
+spotipy==2.25.2
+
+# Config
+python-dotenv==1.2.1
+
+# Speaker verification - only used by preprocess_voice.py; the runtime check is
+# currently disabled in voice_assistant.py for latency reasons
+Resemblyzer==0.1.4
