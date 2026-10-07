@@ -1,11 +1,7 @@
 # Tested on Python 3.11. Speech runs on the CPU, so no CUDA wheels are needed here;
 # the LLM runs on the GPU in a separate llama-server process (see run_bonsai.bat).
 
-# Wake word
-pvporcupine==3.0.5
-PyAudio==0.2.14
-
-# Speech to text (Moonshine, with its own mic capture and VAD) and
+# Wake phrase + speech to text (Moonshine, with its own mic capture and VAD) and
 # text to speech (Kokoro / Piper voices). Models download on first run.
 moonshine-voice==0.1.5
 

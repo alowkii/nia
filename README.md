@@ -1,32 +1,37 @@
 # NIA — Next-gen Intelligence Agent
 
-A Jarvis-style voice assistant that runs entirely on your own machine. Wake word,
+A Jarvis-style voice assistant that runs entirely on your own machine. Wake phrase,
 speech recognition, reasoning, and speech synthesis are all local — nothing is sent
-to a cloud API. The only network calls are to Spotify, and only when you ask for music.
+to a cloud API, and no accounts or keys are needed. The only network calls are to
+Spotify, and only when you ask for music.
 
-Say **"Hey Nia"**, then talk.
+Say **"Hey Nia"**, then talk — or say it all at once: "Hey Nia, play some lofi".
 
 ## How it works
 
 ```
-  mic ──▶ Porcupine ──▶ Moonshine ──────────▶ LangGraph agent ◀──▶ spotipy
-        (wake word)     (streaming STT + VAD,  (Bonsai 2 27B on
-                         CPU)                   llama-server, GPU)
-        speaker ◀── Kokoro TTS (CPU) ◀────────────────┘
+  mic ──▶ Moonshine ──────────────────▶ LangGraph agent ◀──▶ spotipy
+          (wake phrase + streaming       (Bonsai 2 27B on
+           STT + VAD, CPU)                llama-server, GPU)
+  speaker ◀── Kokoro TTS (CPU) ◀────────────────┘
 ```
 
 Everything but the LLM runs on the CPU, so the GPU is left to Bonsai alone.
 
-A two-state machine drives it ([voice_assistant/voice_assistant.py](voice_assistant/voice_assistant.py)):
+One Moonshine listener runs all the time. Its voice-activity detection only runs the
+model while someone is speaking, so idle cost is under 1% CPU. Each finished utterance
+drives a two-state machine ([voice_assistant/voice_assistant.py](voice_assistant/voice_assistant.py)):
 
 | State | What happens |
 |---|---|
-| `LISTENING` | Porcupine scans mic frames for the wake word. Cheap; this is the idle state. |
-| `COMMAND_MODE` | Says "Yes, sir?", then loops: transcribe → reason → act → speak. Returns to `LISTENING` after 60s with no exchange. |
+| `LISTENING` | Utterances are checked for the wake phrase and otherwise ignored (not logged). Anything said after the phrase in the same breath is run as a command. |
+| `COMMAND_MODE` | Says "Yes, sir?" (unless you already gave a command), then each utterance goes to the agent: reason → act → speak. Returns to `LISTENING` after 60s with no exchange. |
 
-Moonshine transcribes while you talk and its voice-activity detection decides when
-you've finished, so there's no fixed recording window. The mic is muted while NIA
-thinks and speaks, so she doesn't transcribe herself.
+The wake phrase is matched fuzzily against the start of each utterance, because the
+recogniser hears "Hey Nia" as "Hey, Nia." or with a stray word in front. The match
+threshold (default 0.8, in the control panel) is the knob: lower wakes more easily but
+false-triggers more — "Hey Mia" already scores 0.83. The mic is muted while NIA thinks
+and speaks, so she doesn't transcribe herself.
 
 The agent is a small LangGraph loop in [agent/chat.py](agent/chat.py): the model
 either answers, or calls Spotify tools; tool results (and errors) go back to the model,
@@ -41,14 +46,10 @@ rather than a raw API response. History keeps the last 20 messages, cut on whole
 - **[PrismML's llama.cpp fork](https://github.com/PrismML-Eng/llama.cpp/releases)**, since
   stock llama.cpp and Ollama can't load Bonsai's ternary format, plus
   [`Ternary-Bonsai-2-27B-PTQ1_0.gguf`](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf).
-  [run_bonsai.bat](run_bonsai.bat) expects both under `D:\bonsai` — edit `BONSAI=` there
+  Both are expected under `D:\bonsai` (the fork in `llama-prism\`) — change "Bonsai folder"
+  in the control panel if yours live elsewhere
 - A working microphone and speaker
-- A [Picovoice](https://picovoice.ai) access key (free tier is fine)
 - A [Spotify Developer](https://developer.spotify.com/dashboard) app, for music control
-
-Note: the bundled wake-word model is `wake_word/Hey-Nia_en_windows_v3_0_0.ppn`, which
-is **Windows-only**. Porcupine models are platform-specific — on Linux or macOS,
-generate a matching `.ppn` from the Picovoice console.
 
 ## Setup
 
@@ -68,7 +69,6 @@ The Moonshine speech model and the Kokoro voice download on first run.
 Create a `.env` in the project root:
 
 ```ini
-PICOVOICE_ACCESS_KEY=your_picovoice_key
 SPOTIFY_ID=your_spotify_client_id
 SPOTIFY_SECRET=your_spotify_client_secret
 AUTHOR=your_name
@@ -89,7 +89,7 @@ python ui.py
 ```
 
 It edits every setting (model, context, thinking, sampling, voice, speech model, wake
-sensitivity, greeting, timeout) and starts or stops the LLM server, the assistant, and the
+phrase and match threshold, greeting, timeout) and starts or stops the LLM server, the assistant, and the
 text chat, each in its own console window. Settings are saved to `settings.json`; the
 defaults live in [settings.py](settings.py). Server settings apply when the server
 restarts, assistant settings when the assistant restarts.
@@ -100,8 +100,8 @@ Or run the assistant directly:
 python main.py
 ```
 
-If the LLM server isn't running, this starts [run_bonsai.bat](run_bonsai.bat) in its own
-window and waits for it (~20 s). Wait for `Listening for wake words...`, then say "Hey Nia".
+If the LLM server isn't running, this starts it in its own window and waits for it
+(~20 s). Wait for `Listening for 'hey nia'...`, then say "Hey Nia".
 
 For a keyboard-driven session with no audio stack at all — useful for iterating on
 prompts — use [test.py](test.py):
@@ -143,7 +143,11 @@ docstring are what the model sees, so the docstring is the prompt.
 
 ```bash
 python test_agent.py
+python test_wake.py
 ```
+
+[test_wake.py](test_wake.py) checks the fuzzy wake-phrase matcher against real Moonshine
+transcripts — what should wake her, what shouldn't, and where the threshold cuts.
 
 [test_agent.py](test_agent.py) runs the real agent graph offline with a scripted
 model and a fake Spotify client, so it needs no network, no mic, and no LLM server. It
@@ -161,9 +165,8 @@ run_bonsai.bat                      starts the LLM server (llama-server + Bonsai
 agent/chat.py                       LangGraph agent and Spotify tools
 agent/action_controller.py          Spotify operations
 agent/prompts/                      system prompt
-wake_word/                          Porcupine .ppn model
 preprocess_voice.py                 builds a speaker embedding from a voice sample
-test_agent.py                       offline tests
+test_agent.py, test_wake.py         offline tests
 test.py                             text-only REPL
 ```
 

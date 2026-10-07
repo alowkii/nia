@@ -18,8 +18,11 @@ DEFAULTS = {
     # Assistant (CPU) - restart the assistant to apply
     # ponytail: Kokoro takes ~1 s to start speaking on CPU; "piper_en_US-lessac-medium" ~0.2 s but more robotic
     "voice": "kokoro_af_heart",
-    "stt_model": "medium",  # Moonshine streaming: tiny / small / medium
-    "wake_sensitivity": 0.5,  # Porcupine, 0-1: higher wakes more easily but false-triggers more
+    "stt_model": "medium",  # Moonshine streaming: tiny / small / medium (tiny rarely hears "Nia")
+    "wake_phrase": "hey nia",
+    # How closely the start of what you say must match the wake phrase, 0-1. Lower wakes more easily:
+    # 0.8 takes "Hey Nia" and rejects "Hey, nice..." (0.77), but "Hey Mia" (0.83) still wakes her
+    "wake_threshold": 0.8,
     "greeting": "Yes, sir?",
     "session_timeout": 60,  # seconds of no exchange before going back to wake-word listening
 }

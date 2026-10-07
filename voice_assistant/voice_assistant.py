@@ -1,11 +1,10 @@
 import os
+import re
 import sys
 import time
 import enum
 import queue
-import pvporcupine
-import pyaudio
-import struct
+from difflib import SequenceMatcher
 from dotenv import load_dotenv
 from moonshine_voice import MicTranscriber, ModelArch, TextToSpeech
 
@@ -23,6 +22,28 @@ logger = logging.getLogger(__name__)
 STT_MODELS = {"tiny": ModelArch.TINY_STREAMING, "small": ModelArch.SMALL_STREAMING, "medium": ModelArch.MEDIUM_STREAMING}
 
 
+def wake_command(text, phrase, threshold):
+    """If text starts with the wake phrase, return whatever follows it ('' for just the phrase), else None.
+
+    Fuzzy, because the recogniser hears "Hey Nia" as "Hey, Nia." or "Hey Nia" or prefixes a stray
+    "Yeah." - so the phrase is compared, spaces and punctuation dropped, to short word windows
+    near the start of the line.
+    """
+    words = list(re.finditer(r"[a-z']+", text.lower()))
+    target = "".join(phrase.lower().split())
+    size = len(phrase.split())
+    best, end = 0.0, 0
+    for start in range(min(3, len(words))):  # skip up to two stray leading words
+        for n in range(1, size + 2):  # the phrase may come out as fewer or more words
+            window = "".join(w.group() for w in words[start:start + n])
+            score = SequenceMatcher(None, window, target).ratio()
+            if score > best:
+                best, end = score, min(start + n, len(words))
+    if best < threshold:
+        return None
+    return text[words[end - 1].end():].lstrip(" ,.!?;:-")
+
+
 class State(enum.Enum):
     LISTENING = 1
     COMMAND_MODE = 2
@@ -32,13 +53,15 @@ class WakeWordDetector:
     def __init__(self):
         self.state = State.LISTENING
         self.settings = s = settings.load()
+        self.deadline = 0.0  # when COMMAND_MODE times out
 
-        # Speech to text (Moonshine streaming, CPU). Its own mic stream and VAD
-        # end each utterance; completed lines land in this queue.
+        # Speech to text (Moonshine streaming, CPU), always on: it hears both the wake phrase
+        # and the commands. Its VAD ends each utterance; completed lines land in this queue.
         logger.info(f"Loading Moonshine speech-to-text ({s['stt_model']})...")
         self.lines = queue.Queue()
         self.mic = (MicTranscriber().model_arch(STT_MODELS[s["stt_model"]])
                     .on_line(self.lines.put).load())
+        self.mic.set_keyterms([s["wake_phrase"].split()[-1].title()])  # bias towards the name, e.g. "Nia"
 
         # Text to speech (CPU)
         logger.info(f"Loading text-to-speech ({s['voice']})...")
@@ -50,47 +73,60 @@ class WakeWordDetector:
         self.assistant = AssistantModel()
         logger.info("Assistant ready!")
 
-        # Porcupine access key
-        self.access_key = os.getenv('PICOVOICE_ACCESS_KEY')
-        if not self.access_key:
-            raise ValueError("PICOVOICE_ACCESS_KEY not found in environment variables")
-
-        # Porcupine init
-        self.porcupine = pvporcupine.create(
-            access_key=self.access_key,
-            keyword_paths=["wake_word/Hey-Nia_en_windows_v3_0_0.ppn"],
-            sensitivities=[s["wake_sensitivity"]]
-        )
-
-        # Audio init
-        self.pa = pyaudio.PyAudio()
-        self.audio_stream = self.pa.open(
-            rate=self.porcupine.sample_rate,
-            channels=1,
-            format=pyaudio.paInt16,
-            input=True,
-            frames_per_buffer=self.porcupine.frame_length
-        )
-
-        logger.info(f"Porcupine version: {self.porcupine.version}")
-        logger.info(f"Frame length: {self.porcupine.frame_length}")
-        logger.info(f"Sample rate: {self.porcupine.sample_rate}Hz")
-
     def run(self):
-        logger.info("State Machine started. Listening for wake words...")
+        s = self.settings
+        self.mic.start()
+        logger.info(f"Listening for {s['wake_phrase']!r}...")
 
         try:
             while True:
-                if self.state == State.LISTENING:
-                    self.handle_listening_state()
+                awake = self.state == State.COMMAND_MODE
+                try:
+                    line = self.lines.get(timeout=max(0, self.deadline - time.time()) if awake else None)
+                except queue.Empty:
+                    logger.info(f"No command for {s['session_timeout']}s - listening for {s['wake_phrase']!r} again.")
+                    self.state = State.LISTENING
+                    continue
 
-                elif self.state == State.COMMAND_MODE:
-                    self.handle_command_mode_state()
+                text = line.text.strip()
+                if not text:
+                    continue
+
+                # The phrase also counts mid-session, where people repeat it out of habit
+                command = wake_command(text, s["wake_phrase"], s["wake_threshold"])
+                if command is None and not awake:
+                    continue  # not for NIA - and not logged, it's just the room
+                if command is not None:
+                    if not awake:
+                        logger.info(f"Wake phrase heard: {text!r}")
+                        self.state = State.COMMAND_MODE
+                    if not command:
+                        self.speak(s["greeting"])
+                        self.deadline = time.time() + s["session_timeout"]
+                        continue
+                    text = command  # "Hey Nia, play lofi" in one breath
+
+                self.handle_command(text, line)
+                # Only a real exchange keeps the session open - silence must time out
+                self.deadline = time.time() + s["session_timeout"]
 
         except KeyboardInterrupt:
             logger.info("Stopping (Ctrl+C)")
         finally:
             self.cleanup()
+
+    def handle_command(self, text, line):
+        logger.info(f"Heard: {text!r} (transcribed {line.duration:.1f}s of speech, "
+                    f"{line.last_transcription_latency_ms} ms after you stopped)")
+        self.mic.mute(True)  # ignore the room while thinking
+        started = time.perf_counter()
+        reply = self.assistant.respond(text)
+        logger.info(f"Reply: {reply!r} (LLM {time.perf_counter() - started:.1f}s)")
+        if reply:
+            started = time.perf_counter()
+            self.speak(reply)
+            logger.info(f"Spoke in {time.perf_counter() - started:.1f}s")
+        self.mic.mute(False)
 
     def speak(self, text):
         """Speak text, with the mic muted so NIA doesn't transcribe herself."""
@@ -103,19 +139,6 @@ class WakeWordDetector:
             logger.error(f"TTS error: {e}")
         finally:
             self.mic.mute(False)
-
-    # --------------------------
-    # STATE: LISTENING
-    # --------------------------
-    def handle_listening_state(self):
-        pcm = self.audio_stream.read(self.porcupine.frame_length, exception_on_overflow=False)
-        pcm = struct.unpack_from("h" * self.porcupine.frame_length, pcm)
-
-        keyword_index = self.porcupine.process(pcm)
-
-        if keyword_index >= 0:
-            logger.info("Wake word detected!")
-            self.state = State.COMMAND_MODE
 
     # TODO: This is creating too much latency
     # def valid_command_from_your_voice(self):
@@ -131,59 +154,6 @@ class WakeWordDetector:
     #     else:
     #         return False
 
-    # --------------------------
-    # STATE: COMMAND MODE
-    # --------------------------
-    def handle_command_mode_state(self):
-        # Porcupine pauses while Moonshine owns the conversation, so its buffer
-        # doesn't fill with stale audio (or NIA's own voice)
-        self.audio_stream.stop_stream()
-
-        timeout = self.settings["session_timeout"]
-        self.speak(self.settings["greeting"])
-        self.mic.start()
-        logger.info("Listening for voice command...")
-
-        deadline = time.time() + timeout
-        while (remaining := deadline - time.time()) > 0:
-            try:
-                line = self.lines.get(timeout=remaining)
-            except queue.Empty:
-                break
-            text = line.text.strip()
-            if not text:
-                continue
-
-            logger.info(f"Heard: {text!r} (transcribed {line.duration:.1f}s of speech, "
-                        f"{line.last_transcription_latency_ms} ms after you stopped)")
-            self.mic.mute(True)  # ignore the room while thinking
-            started = time.perf_counter()
-            reply = self.assistant.respond(text)
-            thought = time.perf_counter() - started
-            logger.info(f"Reply: {reply!r} (LLM {thought:.1f}s)")
-            if reply:
-                started = time.perf_counter()
-                self.speak(reply)
-                logger.info(f"Spoke in {time.perf_counter() - started:.1f}s")
-            self.mic.mute(False)
-
-            # Only a real exchange keeps the session open - silence must time out
-            deadline = time.time() + timeout
-
-        self.mic.stop()
-        while not self.lines.empty():  # drop anything said as the session closed
-            self.lines.get_nowait()
-
-        logger.info(f"No command for {timeout}s - returning to wake-word listening mode.")
-        self.audio_stream.start_stream()
-        self.state = State.LISTENING
-
     def cleanup(self):
         self.mic.close()
         self.tts.close()
-        if self.audio_stream:
-            self.audio_stream.close()
-        if self.pa:
-            self.pa.terminate()
-        if self.porcupine:
-            self.porcupine.delete()
