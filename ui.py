@@ -34,6 +34,7 @@ FIELDS = [
     ("wake_phrase", "Wake phrase", "entry"),
     ("wake_threshold", "Wake match threshold (0-1, lower wakes easier)", "entry"),
     ("greeting", "Greeting", "entry"),
+    ("duck_level", "Other apps' volume while NIA speaks (0-1, 1 = off)", "entry"),
     ("session_timeout", "Session timeout (s)", "entry"),
 ]
 
@@ -104,9 +105,10 @@ class ControlPanel(tk.Tk):
             except ValueError:
                 messagebox.showerror("Invalid setting", f"{key} must be a {'whole ' if kind is int else ''}number, got {var.get()!r}")
                 return None
-        if not 0 <= values["wake_threshold"] <= 1:
-            messagebox.showerror("Invalid setting", "Wake match threshold must be between 0 and 1")
-            return None
+        for key, label in (("wake_threshold", "Wake match threshold"), ("duck_level", "Other apps' volume")):
+            if not 0 <= values[key] <= 1:
+                messagebox.showerror("Invalid setting", f"{label} must be between 0 and 1")
+                return None
         if not values["wake_phrase"].strip():
             messagebox.showerror("Invalid setting", "Wake phrase can't be empty")
             return None

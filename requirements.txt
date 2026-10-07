@@ -5,6 +5,9 @@
 # text to speech (Kokoro / Piper voices). Models download on first run.
 moonshine-voice==0.1.5
 
+# Turns other apps down while NIA speaks (Windows volume mixer)
+pycaw==20260927
+
 # LLM agent - talks to llama-server's OpenAI-compatible API
 langgraph==1.2.12
 langchain-openai==1.6.7

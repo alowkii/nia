@@ -7,6 +7,7 @@ import queue
 from difflib import SequenceMatcher
 from dotenv import load_dotenv
 from moonshine_voice import MicTranscriber, ModelArch, TextToSpeech
+from pycaw.pycaw import AudioUtilities
 
 # Load environment variables
 load_dotenv()
@@ -42,6 +43,30 @@ def wake_command(text, phrase, threshold):
     if best < threshold:
         return None
     return text[words[end - 1].end():].lstrip(" ,.!?;:-")
+
+
+# ponytail: original volumes live only in memory - force-stopping NIA mid-sentence leaves other apps ducked
+# in the Windows mixer; persist them to a file and restore at startup if that bites
+def duck(level):
+    """Turn every other app's volume down to level x its own (Windows mixer); returns a function that restores them"""
+    saved = []
+    for session in AudioUtilities.GetAllSessions():
+        if session.ProcessId in (0, os.getpid()):  # system sounds, and NIA's own voice
+            continue
+        try:
+            volume = session.SimpleAudioVolume
+            saved.append((volume, volume.GetMasterVolume()))
+            volume.SetMasterVolume(saved[-1][1] * level, None)
+        except Exception:  # the app closed between listing and ducking
+            pass
+
+    def restore():
+        for volume, original in saved:
+            try:
+                volume.SetMasterVolume(original, None)
+            except Exception:
+                pass
+    return restore
 
 
 class State(enum.Enum):
@@ -129,15 +154,19 @@ class WakeWordDetector:
         self.mic.mute(False)
 
     def speak(self, text):
-        """Speak text, with the mic muted so NIA doesn't transcribe herself."""
+        """Speak text over ducked app audio, with the mic muted so NIA doesn't transcribe herself."""
         logger.info(f"Speaking: {text}")
         self.mic.mute(True)
+        restore = lambda: None
         try:
+            if self.settings["duck_level"] < 1:
+                restore = duck(self.settings["duck_level"])
             self.tts.say(text)
             self.tts.wait()
         except Exception as e:
             logger.error(f"TTS error: {e}")
         finally:
+            restore()  # even after an error, so other apps aren't left quiet
             self.mic.mute(False)
 
     # TODO: This is creating too much latency

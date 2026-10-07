@@ -31,7 +31,9 @@ The wake phrase is matched fuzzily against the start of each utterance, because 
 recogniser hears "Hey Nia" as "Hey, Nia." or with a stray word in front. The match
 threshold (default 0.8, in the control panel) is the knob: lower wakes more easily but
 false-triggers more — "Hey Mia" already scores 0.83. The mic is muted while NIA thinks
-and speaks, so she doesn't transcribe herself.
+and speaks, so she doesn't transcribe herself. While she speaks, every other app (Spotify,
+browser, games) is turned down to 30% of its volume in the Windows mixer and restored
+afterwards — "Other apps' volume while NIA speaks" in the control panel; 1 turns it off.
 
 The agent is a small LangGraph loop in [agent/chat.py](agent/chat.py): the model
 either answers, or calls Spotify tools; tool results (and errors) go back to the model,

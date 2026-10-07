@@ -24,6 +24,7 @@ DEFAULTS = {
     # 0.8 takes "Hey Nia" and rejects "Hey, nice..." (0.77), but "Hey Mia" (0.83) still wakes her
     "wake_threshold": 0.8,
     "greeting": "Yes, sir?",
+    "duck_level": 0.3,  # other apps' volume while NIA speaks, as a fraction of their own; 1 = no ducking
     "session_timeout": 60,  # seconds of no exchange before going back to wake-word listening
 }
 
