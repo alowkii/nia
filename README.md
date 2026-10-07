@@ -145,10 +145,10 @@ docstring are what the model sees, so the docstring is the prompt.
 
 ```bash
 python test_agent.py
-python test_wake.py
+python test_voice.py
 ```
 
-[test_wake.py](test_wake.py) checks the fuzzy wake-phrase matcher against real Moonshine
+[test_voice.py](test_voice.py) checks the fuzzy wake-phrase matcher against real Moonshine
 transcripts — what should wake her, what shouldn't, and where the threshold cuts.
 
 [test_agent.py](test_agent.py) runs the real agent graph offline with a scripted
@@ -168,7 +168,7 @@ agent/chat.py                       LangGraph agent and Spotify tools
 agent/action_controller.py          Spotify operations
 agent/prompts/                      system prompt
 preprocess_voice.py                 builds a speaker embedding from a voice sample
-test_agent.py, test_wake.py         offline tests
+test_agent.py, test_voice.py         offline tests
 test.py                             text-only REPL
 ```
 

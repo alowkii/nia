@@ -4,6 +4,7 @@ import sys
 import time
 import enum
 import queue
+import unicodedata
 from difflib import SequenceMatcher
 from dotenv import load_dotenv
 from moonshine_voice import MicTranscriber, ModelArch, TextToSpeech
@@ -43,6 +44,23 @@ def wake_command(text, phrase, threshold):
     if best < threshold:
         return None
     return text[words[end - 1].end():].lstrip(" ,.!?;:-")
+
+
+# Symbols the voice gets wrong, mapped to what should be said
+SPOKEN = {"—": ", ", "–": ", ", "…": "...", "‘": "'", "’": "'", "“": '"', "”": '"',
+          "%": " percent", "&": " and ", "/": " "}
+
+
+def speakable(text):
+    """Text as it should be heard. The TTS reads any non-ASCII character as the letter "L"
+    (dashes, emoji, curly quotes) and skips % and &, so those become words or pauses,
+    accents are dropped (Beyoncé -> Beyonce) and anything left that isn't ASCII goes."""
+    for symbol, spoken in SPOKEN.items():
+        text = text.replace(symbol, spoken)
+    text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
+    text = re.sub(r"\s+", " ", text)
+    text = re.sub(r"\s+([,.!?;:])", r"\1", text)  # "sir , the" -> "sir, the"
+    return re.sub(r"([,.!?;:])(?:\s*,)+", r"\1", text).strip()  # "sir,, the" -> "sir, the"
 
 
 # ponytail: original volumes live only in memory - force-stopping NIA mid-sentence leaves other apps ducked
@@ -161,7 +179,7 @@ class WakeWordDetector:
         try:
             if self.settings["duck_level"] < 1:
                 restore = duck(self.settings["duck_level"])
-            self.tts.say(text)
+            self.tts.say(speakable(text))
             self.tts.wait()
         except Exception as e:
             logger.error(f"TTS error: {e}")
