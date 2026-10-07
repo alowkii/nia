@@ -40,6 +40,13 @@ assert speakable("Some R&B, then AC/DC → enjoy!") == "Some R and B, then AC DC
 assert speakable("Plain text stays as it is.") == "Plain text stays as it is."
 assert speakable("Wait—what?") == "Wait, what?"
 assert all(ord(c) < 128 for c in speakable("Café ☕ — naïve “quotes” ‘and’ © 2026 ✓"))
+# URLs: only the site's name is said, never the address
+assert speakable("I'll run the command: start https://www.youtube.com. Should I go ahead?") == \
+    "I'll run the command: start the youtube link. Should I go ahead?"
+assert speakable('start "https://www.youtube.com/results?search_query=shadman"') == 'start "the youtube link"'
+assert speakable("See www.google.co.in/maps or https://en.wikipedia.org/wiki/Nia") == \
+    "See the google link or the wikipedia link"
+assert speakable("Open github.com") == "Open github.com"  # a bare name with no www or https stays
 
 # Voice volume: applied to the TTS, clamped to 0.1-1 (more clips), saved for the next start
 class StubTTS:

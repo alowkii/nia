@@ -6,6 +6,7 @@ import enum
 import queue
 import unicodedata
 from difflib import SequenceMatcher
+from urllib.parse import urlsplit
 from dotenv import load_dotenv
 from langchain_core.tools import tool
 from moonshine_voice import MicTranscriber, ModelArch, TextToSpeech
@@ -58,10 +59,23 @@ SPOKEN = {"—": ", ", "–": ", ", "…": "...", "‘": "'", "’": "'", "“":
           "%": " percent", "&": " and ", "/": " "}
 
 
+def site_name(match):
+    """'https://www.youtube.com/results?q=x' -> 'the youtube link'. Reading out a whole URL takes
+    seconds, and the TTS garbles even "youtube.com", so only the site's name is said"""
+    url = match.group(0)
+    host = urlsplit(url if "://" in url else f"http://{url}").hostname or ""
+    labels = host.removeprefix("www.").split(".")
+    # google.co.in -> google: skip a second-level suffix like co / com / org
+    name = labels[-3] if len(labels) > 2 and labels[-2] in ("co", "com", "org", "net", "gov", "ac") else labels[-2 if len(labels) > 1 else 0]
+    return f"the {name} link"
+
+
 def speakable(text):
-    """Text as it should be heard. The TTS reads any non-ASCII character as the letter "L"
-    (dashes, emoji, curly quotes) and skips % and &, so those become words or pauses,
-    accents are dropped (Beyoncé -> Beyonce) and anything left that isn't ASCII goes."""
+    """Text as it should be heard. URLs become "the youtube link". The TTS reads any non-ASCII
+    character as the letter "L" (dashes, emoji, curly quotes) and skips % and &, so those become
+    words or pauses, accents are dropped (Beyoncé -> Beyonce) and anything left that isn't ASCII goes."""
+    # A URL never ends in punctuation - "...youtube.com." keeps its full stop for the sentence
+    text = re.sub(r"\b(?:https?://|www\.)[^\s\"'<>]*[^\s\"'<>.,!?;:)]", site_name, text)
     for symbol, spoken in SPOKEN.items():
         text = text.replace(symbol, spoken)
     text = unicodedata.normalize("NFKD", text).encode("ascii", "ignore").decode()
