@@ -203,7 +203,11 @@ class WakeWordDetector:
                     f"{line.last_transcription_latency_ms} ms after you stopped)")
         self.mic.mute(True)  # ignore the room while thinking
         started = time.perf_counter()
-        reply = self.assistant.respond(text)
+        try:
+            reply = self.assistant.respond(text)
+        except Exception:  # one bad turn mustn't kill the assistant
+            logger.exception("Agent error")
+            reply = "Sorry sir, something went wrong on my end. The details are in the log."
         logger.info(f"Reply: {reply!r} (LLM {time.perf_counter() - started:.1f}s)")
         if reply:
             started = time.perf_counter()

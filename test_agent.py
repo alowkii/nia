@@ -135,6 +135,33 @@ def test_extra_tools_reach_the_agent():
     assert heard == [60]
 
 
+def test_long_tool_results_are_cut_to_fit():
+    from langchain_core.tools import tool
+
+    @tool
+    def read_big_file() -> str:
+        """Returns a huge file"""
+        return "x" * 20000
+
+    a = assistant(call("read_big_file"), AIMessage("It's mostly x, sir."), extra_tools=[read_big_file])
+    a.respond("what's in the big file?")
+    result = next(m for m in a.messages if isinstance(m, ToolMessage))
+    assert len(result.content) < chat.MAX_TOOL_CHARS + 300 and "cut to fit" in result.content
+
+
+def test_context_overflow_starts_a_fresh_conversation():
+    from langchain_core.exceptions import ContextOverflowError
+
+    class Overflowing(ScriptedLLM):
+        def _generate(self, *args, **kwargs):
+            raise ContextOverflowError("too much")
+
+    a = AssistantModel(llm=Overflowing(messages=iter([])), backend=StateBackend())
+    old_thread = a.config["configurable"]["thread_id"]
+    assert "cleared our conversation" in a.respond("read every file I own")
+    assert a.config["configurable"]["thread_id"] != old_thread
+
+
 def test_playback_wakes_an_idle_device():
     class StubAPI:
         def __init__(self, devices):
@@ -166,5 +193,7 @@ if __name__ == "__main__":
     test_conversation_carries_over_turns()
     test_pc_changes_need_a_spoken_yes()
     test_extra_tools_reach_the_agent()
+    test_long_tool_results_are_cut_to_fit()
+    test_context_overflow_starts_a_fresh_conversation()
     test_playback_wakes_an_idle_device()
     print("ok")

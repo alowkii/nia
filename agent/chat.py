@@ -10,6 +10,7 @@ from typing import Literal
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
 from langchain.agents.middleware import wrap_tool_call
+from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
@@ -80,17 +81,27 @@ def pc_backend():
     return CompositeBackend(default=shell, routes=drives)
 
 
+# Longest tool result the model sees. Deep Agents only offloads results over 20K tokens - more than
+# Bonsai's whole context - so a few files read at once overflowed it
+MAX_TOOL_CHARS = 3000  # ~750 tokens
+
+
 @wrap_tool_call
-def errors_to_model(request, handler):
-    """A failing tool (e.g. Spotify's "No active device") becomes a message the model can
-    explain, instead of crashing the turn"""
+def tool_guard(request, handler):
+    """Keeps tools from breaking the turn: a failing tool (e.g. Spotify's "No active device") becomes
+    a message the model can explain, and a long result is cut to fit the context"""
+    call = request.tool_call
     try:
-        return handler(request)
+        result = handler(request)
     except GraphBubbleUp:  # interrupts and other LangGraph control flow must pass through
         raise
     except Exception as e:
-        call = request.tool_call
         return ToolMessage(f"Error: {e!r}", tool_call_id=call["id"], name=call["name"], status="error")
+    if isinstance(result, ToolMessage) and isinstance(result.content, str) and len(result.content) > MAX_TOOL_CHARS:
+        cut = len(result.content) - MAX_TOOL_CHARS
+        result.content = (result.content[:MAX_TOOL_CHARS] + f"\n[... {cut} more characters cut to fit your memory. "
+                          "Read less at once: a smaller line range, one file at a time, or a narrower search]")
+    return result
 
 
 def describe(action):
@@ -123,7 +134,7 @@ class AssistantModel:
             system_prompt=initial_prompt + pc_prompt,
             backend=backend or pc_backend(),
             interrupt_on={name: True for name in NEEDS_APPROVAL},
-            middleware=[errors_to_model],
+            middleware=[tool_guard],
             checkpointer=InMemorySaver(),  # the conversation, kept between turns
         )
 
@@ -140,6 +151,16 @@ class AssistantModel:
     def respond(self, user_msg):
         """Run one turn, including any tool calls, and return what NIA should say.
         If a PC change needs approval, that's the question; the next call is taken as the answer."""
+        try:
+            return self._respond(user_msg)
+        except ContextOverflowError:
+            # Even summarizing couldn't fit it; every later turn would fail the same way, so start over
+            logger.exception("Context overflow - starting a fresh conversation")
+            self.config = {"configurable": {"thread_id": f"nia-{time.time():.0f}"}}
+            self.pending = None
+            return "That was more than I can hold at once, sir, so I've cleared our conversation. Try asking about less at a time."
+
+    def _respond(self, user_msg):
         before = len(self.messages)
         if self.pending and time.time() - self.pending[1] >= APPROVAL_EXPIRES:
             # Nobody answered in time: refuse quietly, then treat this as a new request, not as the answer
