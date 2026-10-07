@@ -1,9 +1,12 @@
 import os
+import random
 import time
 from pathlib import Path
 from dotenv import load_dotenv
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
+
+import settings
 
 load_dotenv()
 
@@ -30,12 +33,30 @@ class SpotifyController:
             open_browser=True
         ))
 
-    def _start(self, **kwargs):
-        """start_playback, waking an idle device when none is active - an open Spotify app
-        that hasn't played recently is listed but idle, and Spotify won't pick it on its own.
-        Then checks something really started: Spotify accepts commands even when its app is
-        stuck and loads nothing, and "Successfully playing" would be a lie."""
+    def open_app(self, timeout=20):
+        """Launch Spotify on this PC unless it's already a device, and wait until it shows up as one.
+        Uses Windows' spotify: link, so there's no shell command and nothing to approve."""
         devices = self.sp.devices()["devices"]
+        if any(d["type"] == "Computer" for d in devices):
+            return devices
+        os.startfile("spotify:")
+        for _ in range(timeout):
+            time.sleep(1)
+            devices = self.sp.devices()["devices"]
+            if any(d["type"] == "Computer" for d in devices):
+                time.sleep(2)  # just registered: give the app a moment before it's sent a command
+                return devices
+        raise RuntimeError(f"Opened the Spotify app, but it didn't come online within {timeout} seconds")
+
+    def _start(self, **kwargs):
+        """start_playback, opening the Spotify app first if no device is available, and waking an
+        idle device when none is active - an open Spotify app that hasn't played recently is listed
+        but idle, and Spotify won't pick it on its own. Then checks something really started:
+        Spotify accepts commands even when its app is stuck and loads nothing, and "Successfully
+        playing" would be a lie."""
+        devices = self.sp.devices()["devices"]
+        if not any(d["is_active"] for d in devices) and not any(d["type"] == "Computer" for d in devices):
+            devices = self.open_app()  # nothing playing anywhere and no app on this PC: open it here
         if devices and not any(d["is_active"] for d in devices):
             # Prefer a computer - NIA runs on one - over a phone that happens to be listed first
             device = min(devices, key=lambda d: d["type"] != "Computer")
@@ -82,6 +103,19 @@ class SpotifyController:
             return f"Track '{track_name}' not found"
         self._start(uris=[track['uri']])
         return f"Successfully playing: {_describe(track)}"
+
+    def play_something(self, mood=""):
+        """Play something when no song was named: a playlist for mood, or for a random pick from the
+        music_moods setting, started at a random track with shuffle on"""
+        # ponytail: picks from a fixed list in settings; replace with learned preferences later
+        pick = mood or random.choice([m.strip() for m in settings.load()["music_moods"].split(",") if m.strip()])
+        playlist = self._search(pick, "playlist")
+        if not playlist:
+            return f"Found no playlist for '{pick}'"
+        total = (playlist.get("tracks") or {}).get("total") or 1
+        self._start(context_uri=playlist["uri"], offset={"position": random.randrange(min(total, 100))})
+        self.sp.shuffle(True)
+        return f"Playing the playlist {playlist['name']} (picked for '{pick}'), shuffled"
 
     def play_playlist(self, playlist_name):
         """Search and play a playlist"""

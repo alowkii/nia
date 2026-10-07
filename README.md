@@ -143,9 +143,16 @@ Ask in plain language; the model maps it to a tool.
 | **Volume** | set to a percentage; step up; step down |
 | **Modes** | shuffle; repeat track; repeat playlist; repeat off |
 | **Query** | what's playing right now |
+| **Anything** | "open Spotify", "play some music", "surprise me" — a random pick, shuffled |
 
-If the Spotify app is open but idle, playback starts on it anyway. When the login
-expires ("Refresh token expired"), use **Spotify login** in the control panel.
+If the Spotify app isn't running, NIA opens it (through Windows' `spotify:` link — no
+shell, nothing to approve) and waits for it to come online; if it's open but idle,
+playback starts on it anyway, preferring this PC over a phone. When no song is named, she
+picks at random from **Random music picks** in the control panel (`music_moods`, a
+comma-separated list of playlist searches) and starts at a random track with shuffle on.
+After every play she checks the music really started: a stuck Spotify app accepts
+commands but loads nothing, and she'll say so rather than claim it's playing. When the
+login expires ("Refresh token expired"), use **Spotify login** in the control panel.
 
 ### YouTube
 

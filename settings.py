@@ -26,7 +26,9 @@ DEFAULTS = {
     "wake_threshold": 0.8,
     "greeting": "Yes, sir?",
     "duck_level": 0.3,  # other apps' volume while NIA speaks, as a fraction of their own; 1 = no ducking
-    "session_timeout": 60,  # seconds of no exchange before going back to wake-word listening
+    "session_timeout": 60,
+    # What "play some music" picks from, at random, when no song is named (comma-separated playlist searches)
+    "music_moods": "lofi beats, chill hits, feel good pop, indie favourites, throwback hits",  # seconds of no exchange before going back to wake-word listening
 }
 
 

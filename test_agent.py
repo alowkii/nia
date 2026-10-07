@@ -49,6 +49,8 @@ def test_tools_reach_spotify():
         (call("skip", direction="previous"), ("previous", ())),
         (call("repeat", mode="off"), ("repeat", ("off",))),
         (call("change_volume", step=-10), ("change_volume", (-10,))),
+        (call("play_something"), ("play_something", ("",))),
+        (call("play_something", mood="chill"), ("play_something", ("chill",))),
     ]
     for tool_call, expected in cases:
         a = assistant(tool_call, AIMessage("Done, sir."), spotify=FakeSpotify())
@@ -186,9 +188,50 @@ def test_youtube_plays_the_top_result_and_reads_its_transcript():
     assert fetched[-1] == "dQw4w9WgXcQ"
 
 
+def test_play_something_opens_spotify_and_picks_from_preferences():
+    import tempfile
+    from pathlib import Path
+    import settings
+    from agent import action_controller
+    action_controller.time.sleep = lambda s: None
+    launched = []
+    action_controller.os.startfile = launched.append
+
+    class StubAPI:
+        """Spotify with no app running until it's launched; then the laptop shows up and plays"""
+        def __init__(self):
+            self.searched, self.started, self.shuffled = None, None, None
+        def devices(self):
+            return {"devices": [{"id": "laptop", "type": "Computer", "is_active": False}] if launched else []}
+        def search(self, q, limit, type):
+            self.searched = q
+            return {"playlists": {"items": [None, {"name": f"{q} mix", "uri": "spotify:playlist:p",
+                                                   "tracks": {"total": 40}}]}}
+        def start_playback(self, **kwargs):
+            self.started = kwargs
+        def current_playback(self):
+            return {"item": {"name": "x"}, "is_playing": bool(self.started), "device": {"name": "ALOKLT"}}
+        def shuffle(self, state):
+            self.shuffled = state
+
+    with tempfile.TemporaryDirectory() as tmp:
+        settings.PATH = Path(tmp) / "settings.json"  # never touch the real settings.json
+        settings.save({**settings.DEFAULTS, "music_moods": "rainy day jazz, gym bangers"})
+        c = object.__new__(SpotifyController)  # skip OAuth
+        c.sp = StubAPI()
+        reply = c.play_something()
+        assert launched == ["spotify:"], "should open the Spotify app when it isn't running"
+        assert c.sp.searched in ("rainy day jazz", "gym bangers"), "the random pick must come from the setting"
+        assert c.sp.started["device_id"] == "laptop" and 0 <= c.sp.started["offset"]["position"] < 40
+        assert c.sp.shuffled is True and "shuffled" in reply
+        assert c.play_something("chill") and c.sp.searched == "chill"  # a named mood wins
+        assert launched == ["spotify:"], "an app that's already open isn't launched again"
+
+
 def test_playback_wakes_an_idle_device_and_checks_it_started():
     from agent import action_controller
     action_controller.time.sleep = lambda s: None  # no real waiting for the start check
+    action_controller.os.startfile = lambda uri: None  # never launch the real app
 
     class StubAPI:
         def __init__(self, devices, plays=True):
@@ -215,8 +258,12 @@ def test_playback_wakes_an_idle_device_and_checks_it_started():
     assert start([phone, laptop]) == {"context_uri": "spotify:playlist:x", "device_id": "laptop"}
     # Something already active: leave the choice to Spotify
     assert start([laptop, dict(phone, is_active=True)]) == {"context_uri": "spotify:playlist:x"}
-    # No devices at all: Spotify's own error goes back to the model
-    assert start([]) == {"context_uri": "spotify:playlist:x"}
+    # No devices at all: the app is opened; if it never comes online, that error goes back to the model
+    try:
+        start([])
+        raise AssertionError("played with no device at all")
+    except RuntimeError as e:
+        assert "didn't come online" in str(e)
     # Accepted but nothing started (stuck app): an error, never "Successfully playing"
     try:
         start([laptop], plays=False)
@@ -235,5 +282,6 @@ if __name__ == "__main__":
     test_long_tool_results_are_cut_to_fit()
     test_context_overflow_starts_a_fresh_conversation()
     test_youtube_plays_the_top_result_and_reads_its_transcript()
+    test_play_something_opens_spotify_and_picks_from_preferences()
     test_playback_wakes_an_idle_device_and_checks_it_started()
     print("ok")

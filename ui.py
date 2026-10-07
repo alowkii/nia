@@ -37,6 +37,7 @@ FIELDS = [
     ("greeting", "Greeting", "entry"),
     ("duck_level", "Other apps' volume while NIA speaks (0-1, 1 = off)", "entry"),
     ("session_timeout", "Session timeout (s)", "entry"),
+    ("music_moods", "Random music picks (comma-separated)", "entry"),
 ]
 
 
@@ -114,6 +115,9 @@ class ControlPanel(tk.Tk):
                 return None
         if not values["wake_phrase"].strip():
             messagebox.showerror("Invalid setting", "Wake phrase can't be empty")
+            return None
+        if not any(m.strip() for m in values["music_moods"].split(",")):
+            messagebox.showerror("Invalid setting", "Give at least one random music pick, e.g. lofi beats")
             return None
         return values
 

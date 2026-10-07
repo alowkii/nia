@@ -211,6 +211,13 @@ class AssistantModel:
             return {"track": sp().play_track, "playlist": sp().play_playlist, "album": sp().play_album}[kind](query)
 
         @tool
+        def play_something(mood: str = "") -> str:
+            """Play music when no song, artist or playlist was named: "open Spotify", "play some music",
+            "surprise me", "play something chill". mood is optional, e.g. "chill" or "workout".
+            Opens the Spotify app first if it isn't running"""
+            return sp().play_something(mood)
+
+        @tool
         def add_to_queue(query: str) -> str:
             """Queue a track to play next. query is the track name, plus the artist if known"""
             return sp().add_to_queue(query)
@@ -250,4 +257,5 @@ class AssistantModel:
             """Repeat the current track, repeat the current playlist or album ('context'), or turn repeat off"""
             return sp().repeat(mode)
 
-        return [now_playing, play, add_to_queue, pause, resume, skip, set_volume, change_volume, shuffle, repeat]
+        return [now_playing, play, play_something, add_to_queue, pause, resume, skip, set_volume, change_volume,
+                shuffle, repeat]
