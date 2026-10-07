@@ -11,7 +11,7 @@ from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
 from langchain.agents.middleware import wrap_tool_call
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
@@ -90,18 +90,22 @@ MAX_TOOL_CHARS = 3000  # ~750 tokens
 @wrap_tool_call
 def tool_guard(request, handler):
     """Keeps tools from breaking the turn: a failing tool (e.g. Spotify's "No active device") becomes
-    a message the model can explain, and a long result is cut to fit the context"""
+    a message the model can explain, and a long result is cut to fit the context. Every call is
+    logged as it runs, so a turn that loops (or gets stopped) still shows what it did."""
     call = request.tool_call
+    logger.info(f"Tool call: {call['name']}({call['args']})")
     try:
         result = handler(request)
     except GraphBubbleUp:  # interrupts and other LangGraph control flow must pass through
         raise
     except Exception as e:
+        logger.info(f"Tool error ({call['name']}): {e!r}")
         return ToolMessage(f"Error: {e!r}", tool_call_id=call["id"], name=call["name"], status="error")
     if isinstance(result, ToolMessage) and isinstance(result.content, str) and len(result.content) > MAX_TOOL_CHARS:
         cut = len(result.content) - MAX_TOOL_CHARS
         result.content = (result.content[:MAX_TOOL_CHARS] + f"\n[... {cut} more characters cut to fit your memory. "
                           "Read less at once: a smaller line range, one file at a time, or a narrower search]")
+    logger.info(f"Tool result ({call['name']}): {str(getattr(result, 'content', result))[:500]}")
     return result
 
 
@@ -162,13 +166,11 @@ class AssistantModel:
             return "That was more than I can hold at once, sir, so I've cleared our conversation. Try asking about less at a time."
 
     def _respond(self, user_msg):
-        before = len(self.messages)
         if self.pending and time.time() - self.pending[1] >= APPROVAL_EXPIRES:
             # Nobody answered in time: refuse quietly, then treat this as a new request, not as the answer
             logger.info("Approval expired - refused")
             self.agent.invoke(Command(resume={"decisions": [{"type": "reject"}] * self.pending[0]}), self.config)
             self.pending = None
-            before = len(self.messages)
         if self.pending:
             answer = user_msg.lower()
             approved = bool(YES.search(answer)) and not NO.search(answer)
@@ -180,13 +182,6 @@ class AssistantModel:
             # identical and llama-server can reuse its cache
             message = HumanMessage(f"{user_msg}\n\n[{datetime.now():%A %d %B %Y, %H:%M}]")
             result = self.agent.invoke({"messages": [message]}, self.config)
-
-        for m in result["messages"][before:]:  # this turn's tool calls and their results
-            if isinstance(m, AIMessage):
-                for call in m.tool_calls:
-                    logger.info(f"Tool call: {call['name']}({call['args']})")
-            elif isinstance(m, ToolMessage):
-                logger.info(f"Tool result ({m.name}): {str(m.content)[:500]}")
 
         if result.get("__interrupt__"):
             actions = result["__interrupt__"][0].value["action_requests"]

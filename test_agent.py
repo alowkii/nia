@@ -164,11 +164,12 @@ def test_context_overflow_starts_a_fresh_conversation():
     assert a.config["configurable"]["thread_id"] != old_thread
 
 
-def test_youtube_plays_the_top_result_and_reads_its_transcript():
+def test_youtube_plays_one_video_and_reads_its_transcript():
     from agent import youtube
     opened, fetched = [], []
-    youtube.first_video = lambda q: ("abcdefghijk", f"Top video for {q}", "Some Channel")
+    youtube.search = lambda q, count=1: [(f"vid{i:08d}", f"Video {i} for {q}", "Some Channel") for i in range(count)]
     youtube.webbrowser.open = opened.append
+    youtube.last_opened = 0.0
 
     class FakeTranscripts:
         def fetch(self, video_id, languages):
@@ -179,13 +180,22 @@ def test_youtube_plays_the_top_result_and_reads_its_transcript():
     a = assistant(call("play_youtube", query="lofi"), AIMessage("Playing it, sir."),
                   call("youtube_transcript"), AIMessage("They say hello world, sir."))
     assert a.respond("play lofi on youtube") == "Playing it, sir."
-    assert opened == ["https://www.youtube.com/watch?v=abcdefghijk"], "opened something other than a watch link"
+    assert opened == ["https://www.youtube.com/watch?v=vid00000000"], "opened something other than a watch link"
     assert a.pending is None, "YouTube must not need approval"
     assert a.respond("summarize this video") == "They say hello world, sir."
-    assert fetched == ["abcdefghijk"], "the transcript should default to the video just played"
-    # Links and IDs are read directly, without searching
-    assert youtube.youtube_transcript.invoke({"video": "https://youtu.be/dQw4w9WgXcQ?t=5"}).count("hello world") == 1
-    assert fetched[-1] == "dQw4w9WgXcQ"
+    assert fetched == ["vid00000000"], "the transcript should default to the video just played"
+
+    # A model that keeps "trying" gets one tab, not a screenful
+    refused = youtube.play_youtube.invoke({"query": "lofi again"})
+    assert "Not opened" in refused and len(opened) == 1
+    # Searching lists results and opens nothing
+    listed = youtube.search_youtube.invoke({"query": "stradman"})
+    assert len(listed.splitlines()) == 5 and "vid00000004" in listed and len(opened) == 1
+    # After the cooldown, a chosen id or link opens exactly that video
+    youtube.last_opened -= youtube.OPEN_COOLDOWN
+    youtube.play_youtube.invoke({"query": "https://youtu.be/dQw4w9WgXcQ?t=5"})
+    assert opened[-1] == "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    assert "hello world" in youtube.youtube_transcript.invoke({"video": "dQw4w9WgXcQ"})
 
 
 def test_play_something_opens_spotify_and_picks_from_preferences():
@@ -281,7 +291,7 @@ if __name__ == "__main__":
     test_extra_tools_reach_the_agent()
     test_long_tool_results_are_cut_to_fit()
     test_context_overflow_starts_a_fresh_conversation()
-    test_youtube_plays_the_top_result_and_reads_its_transcript()
+    test_youtube_plays_one_video_and_reads_its_transcript()
     test_play_something_opens_spotify_and_picks_from_preferences()
     test_playback_wakes_an_idle_device_and_checks_it_started()
     print("ok")
