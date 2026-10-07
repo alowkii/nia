@@ -30,6 +30,15 @@ class SpotifyController:
             open_browser=True
         ))
 
+    def _start(self, **kwargs):
+        """start_playback, waking an idle device when none is active - an open Spotify app
+        that hasn't played recently is listed but idle, and Spotify won't pick it on its own"""
+        devices = self.sp.devices()["devices"]
+        if devices and not any(d["is_active"] for d in devices):
+            # ponytail: takes the first listed device; choose by name if you run several
+            kwargs["device_id"] = devices[0]["id"]
+        self.sp.start_playback(**kwargs)
+
     def _search(self, query, kind):
         """Top hit for kind 'track', 'playlist' or 'album', or None"""
         items = self.sp.search(q=query, limit=1, type=kind)[kind + "s"]["items"]
@@ -59,7 +68,7 @@ class SpotifyController:
         track = self._search(track_name, "track")
         if not track:
             return f"Track '{track_name}' not found"
-        self.sp.start_playback(uris=[track['uri']])
+        self._start(uris=[track['uri']])
         return f"Successfully playing: {_describe(track)}"
 
     def play_playlist(self, playlist_name):
@@ -67,7 +76,7 @@ class SpotifyController:
         playlist = self._search(playlist_name, "playlist")
         if not playlist:
             return f"Playlist '{playlist_name}' not found"
-        self.sp.start_playback(context_uri=playlist['uri'])
+        self._start(context_uri=playlist['uri'])
         return f"Successfully playing playlist: {playlist['name']}"
 
     def play_album(self, album_name):
@@ -75,7 +84,7 @@ class SpotifyController:
         album = self._search(album_name, "album")
         if not album:
             return f"Album '{album_name}' not found"
-        self.sp.start_playback(context_uri=album['uri'])
+        self._start(context_uri=album['uri'])
         return f"Successfully playing album: {_describe(album)}"
 
     def pause(self):
@@ -85,7 +94,7 @@ class SpotifyController:
 
     def resume(self):
         """Resume playback"""
-        self.sp.start_playback()
+        self._start()
         return "Playback resumed successfully"
 
     def _after_skip(self, message):

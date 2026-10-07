@@ -79,9 +79,34 @@ def test_history_is_trimmed_to_whole_turns():
     assert isinstance(a.messages[0], HumanMessage), "history must start on a user turn"
 
 
+def test_playback_wakes_an_idle_device():
+    class StubAPI:
+        def __init__(self, devices):
+            self.devices_list, self.started = devices, None
+        def devices(self):
+            return {"devices": self.devices_list}
+        def start_playback(self, **kwargs):
+            self.started = kwargs
+
+    def start(devices):
+        c = object.__new__(SpotifyController)  # skip OAuth
+        c.sp = StubAPI(devices)
+        c._start(context_uri="spotify:playlist:x")
+        return c.sp.started
+
+    idle = {"id": "laptop", "is_active": False}
+    # Only an idle device: target it, or Spotify answers "No active device found"
+    assert start([idle]) == {"context_uri": "spotify:playlist:x", "device_id": "laptop"}
+    # Something already active: leave the choice to Spotify
+    assert start([idle, {"id": "phone", "is_active": True}]) == {"context_uri": "spotify:playlist:x"}
+    # No devices at all: Spotify's own error goes back to the model
+    assert start([]) == {"context_uri": "spotify:playlist:x"}
+
+
 if __name__ == "__main__":
     test_tools_reach_spotify()
     test_spotify_errors_go_back_to_the_model()
     test_chat_does_not_build_spotify()
     test_history_is_trimmed_to_whole_turns()
+    test_playback_wakes_an_idle_device()
     print("ok")
