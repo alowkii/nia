@@ -32,12 +32,23 @@ class SpotifyController:
 
     def _start(self, **kwargs):
         """start_playback, waking an idle device when none is active - an open Spotify app
-        that hasn't played recently is listed but idle, and Spotify won't pick it on its own"""
+        that hasn't played recently is listed but idle, and Spotify won't pick it on its own.
+        Then checks something really started: Spotify accepts commands even when its app is
+        stuck and loads nothing, and "Successfully playing" would be a lie."""
         devices = self.sp.devices()["devices"]
         if devices and not any(d["is_active"] for d in devices):
-            # ponytail: takes the first listed device; choose by name if you run several
-            kwargs["device_id"] = devices[0]["id"]
+            # Prefer a computer - NIA runs on one - over a phone that happens to be listed first
+            device = min(devices, key=lambda d: d["type"] != "Computer")
+            kwargs["device_id"] = device["id"]
         self.sp.start_playback(**kwargs)
+        for _ in range(6):  # ~3 s for the app to load the track
+            time.sleep(0.5)
+            playback = self.get_current_playback()
+            if playback and playback.get("item") and playback.get("is_playing"):
+                return
+        where = playback["device"]["name"] if playback and playback.get("device") else "the device"
+        raise RuntimeError(f"Spotify accepted the command but nothing started playing on {where}. The Spotify app "
+                           "there is probably stuck: tell the user to quit it from the system tray and open it again")
 
     def _search(self, query, kind):
         """Top hit for kind 'track', 'playlist' or 'album', or None"""

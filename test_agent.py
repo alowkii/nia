@@ -186,28 +186,43 @@ def test_youtube_plays_the_top_result_and_reads_its_transcript():
     assert fetched[-1] == "dQw4w9WgXcQ"
 
 
-def test_playback_wakes_an_idle_device():
+def test_playback_wakes_an_idle_device_and_checks_it_started():
+    from agent import action_controller
+    action_controller.time.sleep = lambda s: None  # no real waiting for the start check
+
     class StubAPI:
-        def __init__(self, devices):
-            self.devices_list, self.started = devices, None
+        def __init__(self, devices, plays=True):
+            self.devices_list, self.started, self.plays = devices, None, plays
         def devices(self):
             return {"devices": self.devices_list}
         def start_playback(self, **kwargs):
             self.started = kwargs
+        def current_playback(self):  # a stuck app accepts the command but loads nothing
+            item = {"name": "x"} if self.plays else None
+            return {"item": item, "is_playing": self.plays, "device": {"name": "ALOKLT"}}
 
-    def start(devices):
+    def start(devices, plays=True):
         c = object.__new__(SpotifyController)  # skip OAuth
-        c.sp = StubAPI(devices)
+        c.sp = StubAPI(devices, plays)
         c._start(context_uri="spotify:playlist:x")
         return c.sp.started
 
-    idle = {"id": "laptop", "is_active": False}
-    # Only an idle device: target it, or Spotify answers "No active device found"
-    assert start([idle]) == {"context_uri": "spotify:playlist:x", "device_id": "laptop"}
+    laptop = {"id": "laptop", "type": "Computer", "is_active": False}
+    phone = {"id": "phone", "type": "Smartphone", "is_active": False}
+    # Only idle devices: target one, or Spotify answers "No active device found" - the computer
+    # NIA runs on, even when a phone is listed first
+    assert start([laptop]) == {"context_uri": "spotify:playlist:x", "device_id": "laptop"}
+    assert start([phone, laptop]) == {"context_uri": "spotify:playlist:x", "device_id": "laptop"}
     # Something already active: leave the choice to Spotify
-    assert start([idle, {"id": "phone", "is_active": True}]) == {"context_uri": "spotify:playlist:x"}
+    assert start([laptop, dict(phone, is_active=True)]) == {"context_uri": "spotify:playlist:x"}
     # No devices at all: Spotify's own error goes back to the model
     assert start([]) == {"context_uri": "spotify:playlist:x"}
+    # Accepted but nothing started (stuck app): an error, never "Successfully playing"
+    try:
+        start([laptop], plays=False)
+        raise AssertionError("a stuck Spotify app was reported as playing")
+    except RuntimeError as e:
+        assert "nothing started playing on ALOKLT" in str(e)
 
 
 if __name__ == "__main__":
@@ -220,5 +235,5 @@ if __name__ == "__main__":
     test_long_tool_results_are_cut_to_fit()
     test_context_overflow_starts_a_fresh_conversation()
     test_youtube_plays_the_top_result_and_reads_its_transcript()
-    test_playback_wakes_an_idle_device()
+    test_playback_wakes_an_idle_device_and_checks_it_started()
     print("ok")
