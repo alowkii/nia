@@ -4,6 +4,10 @@
 # Wake phrase + speech to text (Moonshine, with its own mic capture and VAD) and
 # text to speech (Kokoro / Piper voices). Models download on first run.
 moonshine-voice==0.1.5
+# Playing NIA's voice ourselves, so "stop" can cut it off safely (Moonshine's own stop()
+# crashed when it landed mid-synthesis)
+sounddevice==0.5.3
+numpy==2.4.6
 
 # Turns other apps down while NIA speaks (Windows volume mixer)
 pycaw==20260927

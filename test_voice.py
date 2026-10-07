@@ -77,12 +77,15 @@ def heard(nia, text, duration=1.0):
 nia = WakeWordDetector.__new__(WakeWordDetector)  # skip mic, models and LLM
 nia.settings = {**settings.DEFAULTS}
 nia.lines, nia.tts = __import__("queue").Queue(), StubVoice()
+nia.interrupted = __import__("threading").Event()
 
 with nia.working():
     heard(nia, "Sure, playing some lofi beats now")  # her own voice: ignored, nothing stopped
-    assert nia.lines.empty() and not CANCEL.is_set() and not nia.tts.stopped
+    assert nia.lines.empty() and not CANCEL.is_set() and not nia.interrupted.is_set()
     heard(nia, "Hey Nia, pause the music")  # stops her, and the command comes next
-    assert CANCEL.is_set() and nia.tts.stopped
+    assert CANCEL.is_set() and nia.interrupted.is_set()
+    # ...but only by flagging it: stopping the speaker on the mic's thread crashed the process
+    assert not nia.tts.stopped
     assert nia.lines.get_nowait().text == "pause the music"
 assert not nia.busy
 

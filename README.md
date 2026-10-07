@@ -35,7 +35,9 @@ and speaks, so she doesn't transcribe herself. While she speaks, every other app
 browser, games) is turned down to 30% of its volume in the Windows mixer and restored
 afterwards — "Other apps' volume while NIA speaks" in the control panel; 1 turns it off.
 **Interrupting:** while she's thinking or talking, say **"Stop"**, **"Nia, stop"** or
-**"Hey Nia"**. Her voice cuts off within a fraction of a second, and an unfinished turn
+**"Hey Nia"**. Her voice cuts off within a fraction of a second (up to ~1 s if she was
+still preparing the first sentence — that synthesis is never aborted, since aborting it
+crashed the process), and an unfinished turn
 ends before its next step (steps already taken stay taken — an opened tab stays open).
 "Hey Nia, pause the music" both stops her and does it. The mic stays live while she
 works, but only a stop phrase at the start of a line counts, so her own voice can't

@@ -4,11 +4,14 @@ import sys
 import time
 import enum
 import queue
+import threading
 import unicodedata
 from contextlib import contextmanager
 from difflib import SequenceMatcher
 from types import SimpleNamespace
 from urllib.parse import urlsplit
+import numpy as np
+import sounddevice as sd
 from dotenv import load_dotenv
 from langchain_core.tools import tool
 from moonshine_voice import MicTranscriber, ModelArch, TextToSpeech
@@ -136,6 +139,7 @@ class WakeWordDetector:
         self.deadline = 0.0  # when COMMAND_MODE times out
         self.busy = False  # thinking or talking: only a stop phrase gets through
         self.busy_ended = 0.0
+        self.interrupted = threading.Event()  # "stop" heard: speak() cuts the voice off
 
         # Speech to text (Moonshine streaming, CPU), always on: it hears the wake phrase, the
         # commands, and "stop" while she's busy. Its VAD ends each utterance; see on_line.
@@ -194,8 +198,10 @@ class WakeWordDetector:
             stop, command = stop_request(line.text, s["wake_phrase"], s["wake_threshold"])
             if stop:
                 logger.info(f"Interrupted by: {line.text!r}")
+                # Only flags here: this is Moonshine's mic thread, and stopping the speaker from it
+                # corrupted the heap and killed the process. speak() stops it on the main thread.
                 CANCEL.set()
-                self.tts.stop()
+                self.interrupted.set()
                 if command:  # "Hey Nia, pause the music" - do that next
                     self.lines.put(SimpleNamespace(text=command, duration=line.duration,
                                                    last_transcription_latency_ms=line.last_transcription_latency_ms))
@@ -209,6 +215,7 @@ class WakeWordDetector:
     def working(self):
         """NIA is thinking or talking: the mic stays live, but on_line only listens for "stop"."""
         CANCEL.clear()
+        self.interrupted.clear()
         self.busy = True
         try:
             yield
@@ -275,6 +282,7 @@ class WakeWordDetector:
             if CANCEL.is_set():  # "stop" while she was thinking: drop whatever she was going to say
                 logger.info(f"Stopped by the user after {time.perf_counter() - started:.1f}s")
                 reply = "Okay."
+                self.interrupted.clear()  # the stop is handled - don't cut off the "Okay." too
             logger.info(f"Reply: {reply!r} (LLM {time.perf_counter() - started:.1f}s)")
             if reply:
                 started = time.perf_counter()
@@ -282,18 +290,47 @@ class WakeWordDetector:
                 logger.info(f"Spoke in {time.perf_counter() - started:.1f}s")
 
     def speak(self, text):
-        """Speak text over ducked app audio. Call inside working(), so "stop" can cut it off."""
+        """Speak text over ducked app audio. Call inside working(), so "stop" can cut it off.
+
+        Not tts.say()/stop(): stopping while Moonshine is mid-synthesis crashed the process
+        (heap corruption, segfault). Instead one helper thread synthesizes a sentence at a time -
+        never interrupted, never two native calls at once - while this thread plays them with
+        sounddevice and, on "stop", just stops playback. The helper finishes its current sentence
+        and quits, so a stop in the first second waits for that sentence (under ~1 s)."""
         logger.info(f"Speaking: {text}")
-        restore = lambda: None
+        sentences = [s for s in re.split(r"(?<=[.!?])\s+", speakable(text)) if s.strip()]
+        ready = queue.Queue()
+
+        def synthesize():  # the next sentence is made while the current one plays
+            try:
+                for sentence in sentences:
+                    if self.interrupted.is_set():
+                        break
+                    ready.put(self.tts.synthesize(sentence, volume=self.settings["voice_volume"]))
+            except Exception as e:
+                logger.error(f"TTS error: {e}")
+            finally:
+                ready.put(None)
+
+        restore = duck(self.settings["duck_level"]) if self.settings["duck_level"] < 1 else (lambda: None)
+        maker = threading.Thread(target=synthesize, daemon=True)
+        maker.start()
         try:
-            if self.settings["duck_level"] < 1:
-                restore = duck(self.settings["duck_level"])
-            self.tts.say(speakable(text))
-            self.tts.wait()
+            while (speech := ready.get()) is not None:
+                pcm, rate = speech
+                sd.play(np.asarray(pcm, dtype=np.float32), rate)
+                ends = time.time() + len(pcm) / rate
+                while time.time() < ends and not self.interrupted.is_set():
+                    time.sleep(0.03)
+                if self.interrupted.is_set():
+                    sd.stop()
+                    break
+                sd.wait()  # the last few milliseconds still in the buffer, so endings aren't clipped
         except Exception as e:
             logger.error(f"TTS error: {e}")
         finally:
             restore()  # even after an error or a "stop", so other apps aren't left quiet
+            maker.join(timeout=5)  # never leave a synthesis running into the next one
 
     # TODO: This is creating too much latency
     # def valid_command_from_your_voice(self):
