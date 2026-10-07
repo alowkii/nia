@@ -5,7 +5,9 @@ import time
 import enum
 import queue
 import unicodedata
+from contextlib import contextmanager
 from difflib import SequenceMatcher
+from types import SimpleNamespace
 from urllib.parse import urlsplit
 from dotenv import load_dotenv
 from langchain_core.tools import tool
@@ -17,7 +19,7 @@ load_dotenv()
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import settings
-from agent.chat import AssistantModel, ensure_llm_server
+from agent.chat import CANCEL, AssistantModel, ensure_llm_server
 
 # Set logging
 from utils.logger import logging
@@ -46,6 +48,20 @@ def wake_match(text, phrase):
     if not words:
         return 0.0, ""
     return best, text[words[end - 1].end():].lstrip(" ,.!?;:-")
+
+
+def stop_request(text, phrase, threshold):
+    """For an utterance heard while NIA is busy: (should she stop, the command that came with it).
+    "Stop" / "Nia, stop" stop her; "Hey Nia" stops her too, and "Hey Nia, pause the music" also
+    hands back "pause the music". Only near the start of the line, so her own voice leaking into
+    the mic mid-sentence doesn't count."""
+    words = re.findall(r"[a-z']+", text.lower())
+    if "stop" in words[:2]:  # "Stop", "Nia, stop", "Okay, stop" - but not her own "I can stop the music"
+        return True, ""
+    if wake_match(" ".join(words[:4]), phrase)[0] >= threshold:
+        rest = wake_match(text, phrase)[1]
+        return True, "" if re.fullmatch(r"\W*stop\W*", rest.lower()) else rest
+    return False, ""
 
 
 def wake_command(text, phrase, threshold):
@@ -118,13 +134,15 @@ class WakeWordDetector:
         self.state = State.LISTENING
         self.settings = s = settings.load()
         self.deadline = 0.0  # when COMMAND_MODE times out
+        self.busy = False  # thinking or talking: only a stop phrase gets through
+        self.busy_ended = 0.0
 
-        # Speech to text (Moonshine streaming, CPU), always on: it hears both the wake phrase
-        # and the commands. Its VAD ends each utterance; completed lines land in this queue.
+        # Speech to text (Moonshine streaming, CPU), always on: it hears the wake phrase, the
+        # commands, and "stop" while she's busy. Its VAD ends each utterance; see on_line.
         logger.info(f"Loading Moonshine speech-to-text ({s['stt_model']})...")
         self.lines = queue.Queue()
         self.mic = (MicTranscriber().model_arch(STT_MODELS[s["stt_model"]])
-                    .on_line(self.lines.put).load())
+                    .on_line(self.on_line).load())
         self.mic.set_keyterms([s["wake_phrase"].split()[-1].title()])  # bias towards the name, e.g. "Nia"
 
         # Text to speech (CPU)
@@ -167,6 +185,37 @@ class WakeWordDetector:
 
         return [set_voice_volume, change_voice_volume]
 
+    def on_line(self, line):
+        """Each finished utterance, on Moonshine's thread. While NIA is busy, only a stop phrase gets
+        through - it cuts her off and cancels the turn - so she never answers her own voice. A line
+        that began while she was busy is dropped too, even if it ends after: that's her voice's tail."""
+        s = self.settings
+        if self.busy:
+            stop, command = stop_request(line.text, s["wake_phrase"], s["wake_threshold"])
+            if stop:
+                logger.info(f"Interrupted by: {line.text!r}")
+                CANCEL.set()
+                self.tts.stop()
+                if command:  # "Hey Nia, pause the music" - do that next
+                    self.lines.put(SimpleNamespace(text=command, duration=line.duration,
+                                                   last_transcription_latency_ms=line.last_transcription_latency_ms))
+            return
+        # ponytail: estimates when the line began from its length plus ~0.5 s of end-of-speech silence
+        if time.time() - line.duration - 0.5 < self.busy_ended - 0.3:
+            return
+        self.lines.put(line)
+
+    @contextmanager
+    def working(self):
+        """NIA is thinking or talking: the mic stays live, but on_line only listens for "stop"."""
+        CANCEL.clear()
+        self.busy = True
+        try:
+            yield
+        finally:
+            self.busy = False
+            self.busy_ended = time.time()
+
     def run(self):
         s = self.settings
         self.mic.start()
@@ -198,7 +247,8 @@ class WakeWordDetector:
                         logger.info(f"Wake phrase heard: {text!r}")
                         self.state = State.COMMAND_MODE
                     if not command:
-                        self.speak(s["greeting"])
+                        with self.working():
+                            self.speak(s["greeting"])
                         self.deadline = time.time() + s["session_timeout"]
                         continue
                     text = command  # "Hey Nia, play lofi" in one breath
@@ -215,24 +265,25 @@ class WakeWordDetector:
     def handle_command(self, text, line):
         logger.info(f"Heard: {text!r} (transcribed {line.duration:.1f}s of speech, "
                     f"{line.last_transcription_latency_ms} ms after you stopped)")
-        self.mic.mute(True)  # ignore the room while thinking
-        started = time.perf_counter()
-        try:
-            reply = self.assistant.respond(text)
-        except Exception:  # one bad turn mustn't kill the assistant
-            logger.exception("Agent error")
-            reply = "Sorry sir, something went wrong on my end. The details are in the log."
-        logger.info(f"Reply: {reply!r} (LLM {time.perf_counter() - started:.1f}s)")
-        if reply:
+        with self.working():
             started = time.perf_counter()
-            self.speak(reply)
-            logger.info(f"Spoke in {time.perf_counter() - started:.1f}s")
-        self.mic.mute(False)
+            try:
+                reply = self.assistant.respond(text)
+            except Exception:  # one bad turn mustn't kill the assistant
+                logger.exception("Agent error")
+                reply = "Sorry sir, something went wrong on my end. The details are in the log."
+            if CANCEL.is_set():  # "stop" while she was thinking: drop whatever she was going to say
+                logger.info(f"Stopped by the user after {time.perf_counter() - started:.1f}s")
+                reply = "Okay."
+            logger.info(f"Reply: {reply!r} (LLM {time.perf_counter() - started:.1f}s)")
+            if reply:
+                started = time.perf_counter()
+                self.speak(reply)
+                logger.info(f"Spoke in {time.perf_counter() - started:.1f}s")
 
     def speak(self, text):
-        """Speak text over ducked app audio, with the mic muted so NIA doesn't transcribe herself."""
+        """Speak text over ducked app audio. Call inside working(), so "stop" can cut it off."""
         logger.info(f"Speaking: {text}")
-        self.mic.mute(True)
         restore = lambda: None
         try:
             if self.settings["duck_level"] < 1:
@@ -242,8 +293,7 @@ class WakeWordDetector:
         except Exception as e:
             logger.error(f"TTS error: {e}")
         finally:
-            restore()  # even after an error, so other apps aren't left quiet
-            self.mic.mute(False)
+            restore()  # even after an error or a "stop", so other apps aren't left quiet
 
     # TODO: This is creating too much latency
     # def valid_command_from_your_voice(self):

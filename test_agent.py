@@ -137,6 +137,32 @@ def test_extra_tools_reach_the_agent():
     assert heard == [60]
 
 
+def test_stop_ends_the_turn_before_the_next_tool():
+    from langchain_core.tools import tool
+    ran = []
+
+    @tool
+    def first_step() -> str:
+        """Step one"""
+        ran.append("first")
+        chat.CANCEL.set()  # the user says "stop" while this step runs
+        return "done"
+
+    @tool
+    def second_step() -> str:
+        """Step two"""
+        ran.append("second")
+        return "done"
+
+    a = assistant(call("first_step"), call("second_step"), AIMessage("All done, sir."),
+                  AIMessage("Evening, sir."), extra_tools=[first_step, second_step])
+    chat.CANCEL.clear()
+    assert a.respond("do both steps") == "", "a stopped turn has nothing to say"
+    assert ran == ["first"], "a step ran after the user said stop"
+    chat.CANCEL.clear()  # the voice layer clears it when the next turn starts
+    assert a.respond("hello") in ("All done, sir.", "Evening, sir."), "the conversation must go on after a stop"
+
+
 def test_long_tool_results_are_cut_to_fit():
     from langchain_core.tools import tool
 
@@ -289,6 +315,7 @@ if __name__ == "__main__":
     test_conversation_carries_over_turns()
     test_pc_changes_need_a_spoken_yes()
     test_extra_tools_reach_the_agent()
+    test_stop_ends_the_turn_before_the_next_tool()
     test_long_tool_results_are_cut_to_fit()
     test_context_overflow_starts_a_fresh_conversation()
     test_youtube_plays_one_video_and_reads_its_transcript()

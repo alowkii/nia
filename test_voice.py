@@ -3,8 +3,12 @@ the cleanup of replies before they're spoken, and NIA's own voice volume. Run: p
 import tempfile
 from pathlib import Path
 
+import time
+from types import SimpleNamespace
+
 import settings
-from voice_assistant.voice_assistant import WakeWordDetector, speakable, wake_command
+from agent.chat import CANCEL
+from voice_assistant.voice_assistant import WakeWordDetector, speakable, stop_request, wake_command
 
 
 def wake(text, threshold=0.8):
@@ -47,6 +51,48 @@ assert speakable('start "https://www.youtube.com/results?search_query=shadman"')
 assert speakable("See www.google.co.in/maps or https://en.wikipedia.org/wiki/Nia") == \
     "See the google link or the wikipedia link"
 assert speakable("Open github.com") == "Open github.com"  # a bare name with no www or https stays
+
+# Interrupting: what counts as "stop" while NIA is busy
+def stop(text):
+    return stop_request(text, "hey nia", 0.8)
+
+assert stop("Stop.") == (True, "")
+assert stop("Nia, stop!") == (True, "")
+assert stop("Hey Nia.") == (True, "")
+assert stop("Hey Nia, stop") == (True, "")
+assert stop("Hey Nia, pause the music.") == (True, "pause the music.")
+assert stop("Playing lofi beats for you, sir.") == (False, "")  # her own voice leaking in
+assert stop("I can stop the music or switch it") == (False, "")  # "stop" too far in to be an order
+
+
+class StubVoice:
+    def __init__(self):
+        self.stopped = False
+    def stop(self):
+        self.stopped = True
+
+def heard(nia, text, duration=1.0):
+    nia.on_line(SimpleNamespace(text=text, duration=duration, last_transcription_latency_ms=100))
+
+nia = WakeWordDetector.__new__(WakeWordDetector)  # skip mic, models and LLM
+nia.settings = {**settings.DEFAULTS}
+nia.lines, nia.tts = __import__("queue").Queue(), StubVoice()
+
+with nia.working():
+    heard(nia, "Sure, playing some lofi beats now")  # her own voice: ignored, nothing stopped
+    assert nia.lines.empty() and not CANCEL.is_set() and not nia.tts.stopped
+    heard(nia, "Hey Nia, pause the music")  # stops her, and the command comes next
+    assert CANCEL.is_set() and nia.tts.stopped
+    assert nia.lines.get_nowait().text == "pause the music"
+assert not nia.busy
+
+heard(nia, "the tail of her last sentence", duration=2.0)  # began while she was talking
+assert nia.lines.empty()
+nia.busy_ended = time.time() - 5
+heard(nia, "what time is it")  # well after she finished: a normal command
+assert nia.lines.get_nowait().text == "what time is it"
+with nia.working():
+    assert not CANCEL.is_set(), "each turn starts uncancelled"
 
 # Voice volume: applied to the TTS, clamped to 0.1-1 (more clips), saved for the next start
 class StubTTS:

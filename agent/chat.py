@@ -1,6 +1,7 @@
 import logging
 import re
 import subprocess
+import threading
 import time
 import urllib.request
 from datetime import datetime
@@ -86,6 +87,13 @@ def pc_backend():
 # Bonsai's whole context - so a few files read at once overflowed it
 MAX_TOOL_CHARS = 3000  # ~750 tokens
 
+# Set by the voice layer when the user says "stop" mid-turn: the next tool call ends the turn
+CANCEL = threading.Event()
+
+
+class Cancelled(Exception):
+    """The user said stop while NIA was working"""
+
 
 @wrap_tool_call
 def tool_guard(request, handler):
@@ -93,6 +101,9 @@ def tool_guard(request, handler):
     a message the model can explain, and a long result is cut to fit the context. Every call is
     logged as it runs, so a turn that loops (or gets stopped) still shows what it did."""
     call = request.tool_call
+    if CANCEL.is_set():  # the one checkpoint every tool passes through - nothing more runs after "stop"
+        logger.info(f"Cancelled before {call['name']}({call['args']}) - the user said stop")
+        raise Cancelled
     logger.info(f"Tool call: {call['name']}({call['args']})")
     try:
         result = handler(request)
@@ -158,6 +169,10 @@ class AssistantModel:
         If a PC change needs approval, that's the question; the next call is taken as the answer."""
         try:
             return self._respond(user_msg)
+        except Cancelled:
+            # Steps already taken stay taken; the dangling call is patched up by Deep Agents next turn
+            self.pending = None
+            return ""
         except ContextOverflowError:
             # Even summarizing couldn't fit it; every later turn would fail the same way, so start over
             logger.exception("Context overflow - starting a fresh conversation")
