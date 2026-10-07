@@ -41,8 +41,9 @@ class SpotifyController:
 
     def _search(self, query, kind):
         """Top hit for kind 'track', 'playlist' or 'album', or None"""
-        items = self.sp.search(q=query, limit=1, type=kind)[kind + "s"]["items"]
-        return items[0] if items else None
+        # Spotify returns null entries for playlists it won't expose to apps, so the top one may be blank
+        items = self.sp.search(q=query, limit=5, type=kind)[kind + "s"]["items"]
+        return next((item for item in items if item), None)
 
     def get_current_playback(self):
         """Full playback state, or None if no active device"""
