@@ -82,6 +82,20 @@ The first music command opens a browser once for OAuth and caches the token in
 
 ## Running
 
+The easiest way is the control panel:
+
+```bash
+python ui.py
+```
+
+It edits every setting (model, context, thinking, sampling, voice, speech model, wake
+sensitivity, greeting, timeout) and starts or stops the LLM server, the assistant, and the
+text chat, each in its own console window. Settings are saved to `settings.json`; the
+defaults live in [settings.py](settings.py). Server settings apply when the server
+restarts, assistant settings when the assistant restarts.
+
+Or run the assistant directly:
+
 ```bash
 python main.py
 ```
@@ -128,6 +142,8 @@ to the model instead of crashing, and that history is trimmed on whole turns.
 
 ```
 main.py                             entry point
+ui.py                               control panel: settings, start/stop everything
+settings.py                         setting defaults (overrides in settings.json)
 voice_assistant/voice_assistant.py  state machine, STT, TTS
 run_bonsai.bat                      starts the LLM server (llama-server + Bonsai)
 agent/chat.py                       LangGraph agent and Spotify tools

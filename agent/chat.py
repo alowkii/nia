@@ -11,32 +11,43 @@ from langchain_openai import ChatOpenAI
 from langgraph.graph import START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
+import settings
 from .prompts.initial import initial_prompt
 from .action_controller import SpotifyController
 
 # ponytail: counts messages, not tokens; use a token counter if replies get long
 MAX_HISTORY = 20
 
-# llama-server running Bonsai 2 27B, started by run_bonsai.bat
-LLM_URL = "http://127.0.0.1:8081"
+
+def llm_server_command(s=None):
+    """llama-server (PrismML's fork) running Bonsai 2 27B fully on the GPU, from settings"""
+    s = s or settings.load()
+    bonsai = Path(s["bonsai_dir"])
+    return [str(bonsai / "llama-prism" / "llama-server.exe"), "-m", str(bonsai / s["model_file"]),
+            "-ngl", "99", "-fa", "on", "-c", str(s["context"]), "-np", "1",
+            "--reasoning", "on" if s["thinking"] else "off",
+            "--temp", str(s["temperature"]), "--top-p", str(s["top_p"]), "--top-k", str(s["top_k"]),
+            "--presence-penalty", str(s["presence_penalty"]),
+            "--host", "127.0.0.1", "--port", str(s["port"])]
+
+
+def llm_up(port):
+    try:
+        return urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2).status == 200
+    except OSError:  # refused while starting, 503 while the model loads
+        return False
 
 
 def ensure_llm_server(timeout=180):
-    """Start run_bonsai.bat in its own window unless llama-server is already up, then wait for it"""
-    def up():
-        try:
-            return urllib.request.urlopen(f"{LLM_URL}/health", timeout=2).status == 200
-        except OSError:  # refused while starting, 503 while the model loads
-            return False
-
-    if up():
+    """Start llama-server in its own window unless it is already up, then wait for it"""
+    s = settings.load()
+    if llm_up(s["port"]):
         return
-    script = Path(__file__).resolve().parent.parent / "run_bonsai.bat"
-    subprocess.Popen(["cmd", "/c", str(script)], creationflags=subprocess.CREATE_NEW_CONSOLE)
+    subprocess.Popen(llm_server_command(s), creationflags=subprocess.CREATE_NEW_CONSOLE)
     deadline = time.time() + timeout
-    while not up():
+    while not llm_up(s["port"]):
         if time.time() > deadline:
-            raise RuntimeError(f"llama-server did not come up on {LLM_URL} - check the Bonsai window")
+            raise RuntimeError(f"llama-server did not come up on port {s['port']} - check the Bonsai window")
         time.sleep(1)
 
 
@@ -46,7 +57,8 @@ class AssistantModel:
         self.messages = []
         tools = self._spotify_tools()
         # llama-server ignores the model name and key, but the client requires both
-        llm = (llm or ChatOpenAI(model=model, base_url=f"{LLM_URL}/v1", api_key="none")).bind_tools(tools)
+        base_url = f"http://127.0.0.1:{settings.load()['port']}/v1"
+        llm = (llm or ChatOpenAI(model=model, base_url=base_url, api_key="none")).bind_tools(tools)
 
         def call_model(state: MessagesState):
             # Refresh the clock every turn - this process stays up for days

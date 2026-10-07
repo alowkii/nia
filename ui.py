@@ -1,0 +1,153 @@
+"""NIA control panel: edit settings, start/stop the LLM server and the assistant. Run: python ui.py"""
+import subprocess
+import sys
+import tkinter as tk
+from pathlib import Path
+from tkinter import messagebox, ttk
+
+import settings
+from agent.chat import llm_server_command, llm_up
+
+ROOT = Path(__file__).resolve().parent
+NEW_WINDOW = subprocess.CREATE_NEW_CONSOLE  # each process gets its own console, so its logs stay visible
+
+# (key, label, widget) - a None key starts a new section
+FIELDS = [
+    (None, "LLM server  (GPU - restart the server to apply)", None),
+    ("bonsai_dir", "Bonsai folder", "entry"),
+    ("model_file", "Model file", "entry"),
+    ("port", "Port", "entry"),
+    ("context", "Context (tokens)", "entry"),
+    ("thinking", "Thinking", "check"),
+    ("temperature", "Temperature", "entry"),
+    ("top_p", "Top-p", "entry"),
+    ("top_k", "Top-k", "entry"),
+    ("presence_penalty", "Presence penalty", "entry"),
+    (None, "Assistant  (CPU - restart the assistant to apply)", None),
+    ("voice", "Voice", "voice"),
+    ("stt_model", "Speech-to-text model", "stt"),
+    ("wake_sensitivity", "Wake word sensitivity (0-1)", "entry"),
+    ("greeting", "Greeting", "entry"),
+    ("session_timeout", "Session timeout (s)", "entry"),
+]
+
+
+def voices():
+    """Every English voice Moonshine offers, downloaded ones first"""
+    try:
+        from moonshine_voice import list_tts_voices
+        v = list_tts_voices("en_us")
+        return v["present"] + v["downloadable"]
+    except Exception:  # catalog unavailable - the field still takes any voice id
+        return [settings.DEFAULTS["voice"]]
+
+
+class ControlPanel(tk.Tk):
+    def __init__(self):
+        super().__init__()
+        self.title("NIA control panel")
+        self.resizable(False, False)
+        self.assistant = None  # the main.py process, if started from here
+        self.vars = {}
+
+        form = ttk.Frame(self, padding=12)
+        form.grid(sticky="nsew")
+        current = settings.load()
+        for row, (key, label, widget) in enumerate(FIELDS):
+            if key is None:
+                ttk.Label(form, text=label, font=("Segoe UI", 10, "bold")).grid(
+                    row=row, column=0, columnspan=2, sticky="w", pady=(10, 4))
+                continue
+            ttk.Label(form, text=label).grid(row=row, column=0, sticky="w", padx=(0, 12), pady=2)
+            if widget == "check":
+                var = tk.BooleanVar(value=current[key])
+                ttk.Checkbutton(form, variable=var).grid(row=row, column=1, sticky="w")
+            else:
+                var = tk.StringVar(value=str(current[key]))
+                if widget == "voice":
+                    ttk.Combobox(form, textvariable=var, values=voices(), width=38).grid(row=row, column=1, sticky="w")
+                elif widget == "stt":
+                    ttk.Combobox(form, textvariable=var, values=["tiny", "small", "medium"],
+                                 state="readonly", width=38).grid(row=row, column=1, sticky="w")
+                else:
+                    ttk.Entry(form, textvariable=var, width=41).grid(row=row, column=1, sticky="w")
+            self.vars[key] = var
+
+        buttons = ttk.Frame(self, padding=(12, 0, 12, 12))
+        buttons.grid(sticky="ew")
+        for col, (text, command) in enumerate([
+            ("Save", self.save), ("Reset to defaults", self.reset),
+            ("Start server", self.start_server), ("Stop server", self.stop_server),
+            ("Start assistant", self.start_assistant), ("Stop assistant", self.stop_assistant),
+            ("Text chat", self.text_chat),
+        ]):
+            ttk.Button(buttons, text=text, command=command).grid(row=col // 2, column=col % 2, sticky="ew", padx=2, pady=2)
+        buttons.columnconfigure((0, 1), weight=1)
+
+        self.status = ttk.Label(self, padding=(12, 0, 12, 12))
+        self.status.grid(sticky="w")
+        self.refresh_status()
+
+    def collect(self):
+        """Form values converted to each default's type; None (after an error box) if one doesn't parse"""
+        values = {}
+        for key, var in self.vars.items():
+            kind = type(settings.DEFAULTS[key])
+            try:
+                values[key] = var.get() if kind is bool else kind(var.get().strip())
+            except ValueError:
+                messagebox.showerror("Invalid setting", f"{key} must be a {'whole ' if kind is int else ''}number, got {var.get()!r}")
+                return None
+        if not 0 <= values["wake_sensitivity"] <= 1:
+            messagebox.showerror("Invalid setting", "Wake word sensitivity must be between 0 and 1")
+            return None
+        return values
+
+    def save(self):
+        values = self.collect()
+        if values is not None:
+            settings.save(values)
+        return values
+
+    def reset(self):
+        for key, var in self.vars.items():
+            var.set(settings.DEFAULTS[key] if isinstance(var, tk.BooleanVar) else str(settings.DEFAULTS[key]))
+        self.save()
+
+    def start_server(self):
+        values = self.save()
+        if values is None:
+            return
+        if llm_up(values["port"]):
+            messagebox.showinfo("LLM server", "Already running. Stop it first to apply new server settings.")
+            return
+        subprocess.Popen(llm_server_command(values), creationflags=NEW_WINDOW)
+
+    def stop_server(self):
+        subprocess.run(["taskkill", "/IM", "llama-server.exe", "/F"], capture_output=True)
+
+    def start_assistant(self):
+        if self.assistant and self.assistant.poll() is None:
+            messagebox.showinfo("Assistant", "Already running. Stop it first to apply new assistant settings.")
+            return
+        if self.save() is not None:  # main.py starts the server itself if it is down
+            self.assistant = subprocess.Popen([sys.executable, "main.py"], cwd=ROOT, creationflags=NEW_WINDOW)
+
+    def stop_assistant(self):
+        if self.assistant and self.assistant.poll() is None:
+            self.assistant.terminate()
+
+    def text_chat(self):
+        if self.save() is not None:
+            subprocess.Popen([sys.executable, "test.py"], cwd=ROOT, creationflags=NEW_WINDOW)
+
+    def refresh_status(self):
+        port = settings.load()["port"]
+        server = "running" if llm_up(port) else "stopped"
+        assistant = "running" if self.assistant and self.assistant.poll() is None else "stopped"
+        self.status.config(text=f"LLM server (port {port}): {server}     Assistant: {assistant}")
+        self.after(2000, self.refresh_status)
+
+
+if __name__ == "__main__":
+    ControlPanel().mainloop()

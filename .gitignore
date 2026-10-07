@@ -225,3 +225,5 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+# NIA personal settings (defaults live in settings.py)
+settings.json

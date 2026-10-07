@@ -7,22 +7,20 @@ import pvporcupine
 import pyaudio
 import struct
 from dotenv import load_dotenv
-from moonshine_voice import MicTranscriber, TextToSpeech
+from moonshine_voice import MicTranscriber, ModelArch, TextToSpeech
 
 # Load environment variables
 load_dotenv()
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+import settings
 from agent.chat import AssistantModel, ensure_llm_server
 
 # Set logging
 from utils.logger import logging
 logger = logging.getLogger(__name__)
 
-# ponytail: Kokoro takes ~1 s to start speaking on CPU; "piper_en_US-lessac-medium" takes ~0.2 s but sounds more robotic
-VOICE = "kokoro_af_heart"
-GREETING = "Yes, sir?"
-SESSION_TIMEOUT = 60  # seconds of no exchange before going back to wake-word listening
+STT_MODELS = {"tiny": ModelArch.TINY_STREAMING, "small": ModelArch.SMALL_STREAMING, "medium": ModelArch.MEDIUM_STREAMING}
 
 
 class State(enum.Enum):
@@ -33,16 +31,18 @@ class State(enum.Enum):
 class WakeWordDetector:
     def __init__(self):
         self.state = State.LISTENING
+        self.settings = s = settings.load()
 
-        # Speech to text (Moonshine medium streaming, CPU). Its own mic stream and VAD
+        # Speech to text (Moonshine streaming, CPU). Its own mic stream and VAD
         # end each utterance; completed lines land in this queue.
-        logger.info("Loading Moonshine speech-to-text...")
+        logger.info(f"Loading Moonshine speech-to-text ({s['stt_model']})...")
         self.lines = queue.Queue()
-        self.mic = MicTranscriber().on_line(lambda line: self.lines.put(line.text)).load()
+        self.mic = (MicTranscriber().model_arch(STT_MODELS[s["stt_model"]])
+                    .on_line(lambda line: self.lines.put(line.text)).load())
 
         # Text to speech (CPU)
-        logger.info(f"Loading text-to-speech ({VOICE})...")
-        self.tts = TextToSpeech().language("en_us").voice(VOICE).load()
+        logger.info(f"Loading text-to-speech ({s['voice']})...")
+        self.tts = TextToSpeech().language("en_us").voice(s["voice"]).load()
 
         # Assistant model (Bonsai on llama-server, GPU)
         logger.info("Starting the LLM server if needed...")
@@ -59,7 +59,7 @@ class WakeWordDetector:
         self.porcupine = pvporcupine.create(
             access_key=self.access_key,
             keyword_paths=["wake_word/Hey-Nia_en_windows_v3_0_0.ppn"],
-            sensitivities=[0.5]
+            sensitivities=[s["wake_sensitivity"]]
         )
 
         # Audio init
@@ -139,11 +139,12 @@ class WakeWordDetector:
         # doesn't fill with stale audio (or NIA's own voice)
         self.audio_stream.stop_stream()
 
-        self.speak(GREETING)
+        timeout = self.settings["session_timeout"]
+        self.speak(self.settings["greeting"])
         self.mic.start()
         logger.info("Listening for voice command...")
 
-        deadline = time.time() + SESSION_TIMEOUT
+        deadline = time.time() + timeout
         while (remaining := deadline - time.time()) > 0:
             try:
                 text = self.lines.get(timeout=remaining).strip()
@@ -161,7 +162,7 @@ class WakeWordDetector:
             self.mic.mute(False)
 
             # Only a real exchange keeps the session open - silence must time out
-            deadline = time.time() + SESSION_TIMEOUT
+            deadline = time.time() + timeout
 
         self.mic.stop()
         while not self.lines.empty():  # drop anything said as the session closed
