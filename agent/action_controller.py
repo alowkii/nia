@@ -1,10 +1,14 @@
 import os
 import time
+from pathlib import Path
 from dotenv import load_dotenv
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
 load_dotenv()
+
+# Absolute, so the saved login is found whatever the working directory
+CACHE = Path(__file__).resolve().parent.parent / ".spotify_cache"
 
 
 def _describe(item):
@@ -22,7 +26,7 @@ class SpotifyController:
             client_secret=os.getenv("SPOTIFY_SECRET"),
             redirect_uri="https://aalokpandit.netlify.app/",
             scope="user-modify-playback-state user-read-playback-state user-read-currently-playing",
-            cache_path=".spotify_cache",
+            cache_path=str(CACHE),
             open_browser=True
         ))
 
@@ -150,3 +154,11 @@ class SpotifyController:
             return f"Track '{track_name}' not found"
         self.sp.add_to_queue(track['uri'])
         return f"Successfully added to queue: {_describe(track)}"
+
+
+if __name__ == "__main__":
+    # Log in to Spotify again, e.g. after "Refresh token expired": python -m agent.action_controller
+    CACHE.unlink(missing_ok=True)
+    print("Approve NIA in the browser tab that opens, then paste the address it redirects you to here.")
+    print("Logged in. Spotify says:", SpotifyController().now_playing())
+    input("Press Enter to close.")

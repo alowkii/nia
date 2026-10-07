@@ -85,7 +85,7 @@ class ControlPanel(tk.Tk):
             ("Save", self.save), ("Reset to defaults", self.reset),
             ("Start server", self.start_server), ("Stop server", self.stop_server),
             ("Start assistant", self.start_assistant), ("Stop assistant", self.stop_assistant),
-            ("Text chat", self.text_chat),
+            ("Text chat", self.text_chat), ("Spotify login", self.spotify_login),
         ]):
             ttk.Button(buttons, text=text, command=command).grid(row=col // 2, column=col % 2, sticky="ew", padx=2, pady=2)
         buttons.columnconfigure((0, 1), weight=1)
@@ -161,6 +161,11 @@ class ControlPanel(tk.Tk):
         if self.save() is not None:
             logger.info("Opening text chat from the control panel")
             subprocess.Popen([PYTHON, "test.py"], cwd=ROOT, creationflags=NEW_WINDOW)
+
+    def spotify_login(self):
+        """Fresh Spotify login, for when NIA reports 'Refresh token expired'"""
+        logger.info("Opening Spotify login from the control panel")
+        subprocess.Popen([PYTHON, "-m", "agent.action_controller"], cwd=ROOT, creationflags=NEW_WINDOW)
 
     def refresh_status(self):
         port = settings.load()["port"]
