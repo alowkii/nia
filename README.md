@@ -37,10 +37,14 @@ afterwards — "Other apps' volume while NIA speaks" in the control panel; 1 tur
 Her own voice volume is a tool too: "speak up", "you're too loud", "talk at 50 percent"
 (10-100%; more would only clip). It's saved, so it survives restarts.
 
-The agent is a small LangGraph loop in [agent/chat.py](agent/chat.py): the model
-either answers, or calls Spotify tools; tool results (and errors) go back to the model,
-which then answers in a plain sentence. So you hear "Playing Highway to Hell by AC/DC"
-rather than a raw API response. History keeps the last 20 messages, cut on whole turns.
+The agent is a [Deep Agent](https://github.com/langchain-ai/deepagents) (a LangGraph
+harness) in [agent/chat.py](agent/chat.py): the model either answers, or calls tools —
+Spotify, its own voice volume, the PC's files and shell, or a sub-agent for a multi-step
+job. Tool results (and errors) go back to the model, which then answers in a plain
+sentence, so you hear "Playing Highway to Hell by AC/DC" rather than a raw API response.
+The conversation is kept between turns and summarized before it outgrows Bonsai's
+context. The current time rides on each user turn rather than the system prompt, so the
+prompt prefix stays identical and llama-server reuses its cache.
 
 ## Requirements
 
@@ -142,6 +146,23 @@ one of these:
 Adding a new capability means a method on the controller and a `@tool` function in
 `_spotify_tools()` in [`agent/chat.py`](agent/chat.py). The tool's signature and
 docstring are what the model sees, so the docstring is the prompt.
+
+### Your PC
+
+NIA can also work on the PC itself, with real Windows paths (relative ones start in
+your home folder):
+
+| | |
+|---|---|
+| **Read** — no confirmation | list folders, read files, find files by pattern, search inside files |
+| **Change** — spoken yes first | write, edit and delete files; run `cmd.exe` commands (PowerShell via `powershell -Command`) |
+| **Delegate** | hand a multi-step job to a sub-agent with its own context |
+
+Before any change she reads it back — *"Before I do that: I'll run the command: … Should
+I go ahead?"* — and only a clear yes ("yes", "go ahead", "do it") runs it. Anything
+else, including "yes… no wait", refuses it, and a question left unanswered for 60
+seconds expires. **There is no sandbox:** the shell and files are the real PC, and that
+spoken yes is the only guard — anyone within earshot can answer it.
 
 ## Tests
 

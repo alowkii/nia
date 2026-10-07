@@ -1,4 +1,5 @@
 import logging
+import re
 import subprocess
 import time
 import urllib.request
@@ -6,20 +7,27 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage, trim_messages
+from deepagents import create_deep_agent
+from deepagents.backends import LocalShellBackend
+from langchain.agents.middleware import wrap_tool_call
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
-from langgraph.graph import START, MessagesState, StateGraph
-from langgraph.prebuilt import ToolNode, tools_condition
+from langgraph.checkpoint.memory import InMemorySaver
+from langgraph.errors import GraphBubbleUp
+from langgraph.types import Command
 
 import settings
-from .prompts.initial import initial_prompt
+from .prompts.initial import initial_prompt, pc_prompt
 from .action_controller import SpotifyController
 
 logger = logging.getLogger(__name__)
 
-# ponytail: counts messages, not tokens; use a token counter if replies get long
-MAX_HISTORY = 20
+# Tools that change the PC: NIA reads each call back and only runs it after a spoken "yes"
+NEEDS_APPROVAL = ("write_file", "edit_file", "delete", "execute")
+APPROVAL_EXPIRES = 60  # seconds; a later "yes" must not approve a stale action
+YES = re.compile(r"\b(yes|yeah|yep|yup|sure|confirm(ed)?|approved?|go ahead|do it|ok(ay)?)\b")
+NO = re.compile(r"\b(no|nope|don'?t|do not|stop|cancel|wait|never)\b")
 
 # Server output also goes here, so it survives the server's console window closing
 SERVER_LOG = Path(__file__).resolve().parent.parent / "logs" / "llama-server.log"
@@ -61,29 +69,58 @@ def ensure_llm_server(timeout=180):
     logger.info(f"LLM server up after {time.time() - started:.1f}s")
 
 
+@wrap_tool_call
+def errors_to_model(request, handler):
+    """A failing tool (e.g. Spotify's "No active device") becomes a message the model can
+    explain, instead of crashing the turn"""
+    try:
+        return handler(request)
+    except GraphBubbleUp:  # interrupts and other LangGraph control flow must pass through
+        raise
+    except Exception as e:
+        call = request.tool_call
+        return ToolMessage(f"Error: {e!r}", tool_call_id=call["id"], name=call["name"], status="error")
+
+
+def describe(action):
+    """One spoken line for a pending tool call, so the user knows exactly what they're approving"""
+    args = action["args"]
+    if action["name"] == "execute":
+        return f"run the command: {args.get('command')}"
+    verb = {"write_file": "write the file", "edit_file": "edit the file", "delete": "delete"}[action["name"]]
+    return f"{verb} {args.get('file_path') or args.get('path')}"
+
+
 class AssistantModel:
-    def __init__(self, model="bonsai", llm=None, extra_tools=()):
-        """extra_tools: tools from outside the agent, e.g. the voice layer's own volume control"""
+    """NIA's brain: a Deep Agent (LangGraph) on Bonsai with Spotify tools, the PC's files and shell,
+    and sub-agents. Changes to the PC wait for a spoken yes - see NEEDS_APPROVAL."""
+
+    def __init__(self, model="bonsai", llm=None, extra_tools=(), backend=None):
+        """extra_tools: tools from outside the agent, e.g. the voice layer's own volume control.
+        backend: where file and shell tools act; the real PC unless a test passes another."""
+        s = settings.load()
         self._spotify = None  # built on first music tool call, not at startup
-        self.messages = []
-        tools = self._spotify_tools() + list(extra_tools)
-        # llama-server ignores the model name and key, but the client requires both
-        base_url = f"http://127.0.0.1:{settings.load()['port']}/v1"
-        llm = (llm or ChatOpenAI(model=model, base_url=base_url, api_key="none")).bind_tools(tools)
+        self.pending = None  # (number of actions awaiting approval, when they were asked about)
+        self.config = {"configurable": {"thread_id": "nia"}}
+        # llama-server ignores the model name and key, but the client requires both. The profile tells
+        # Deep Agents the real context size, so it summarizes old turns before overflowing it
+        llm = llm or ChatOpenAI(model=model, base_url=f"http://127.0.0.1:{s['port']}/v1", api_key="none",
+                                profile={"max_input_tokens": s["context"]})
+        self.agent = create_deep_agent(
+            model=llm,
+            tools=self._spotify_tools() + list(extra_tools),
+            system_prompt=initial_prompt + pc_prompt,
+            # ponytail: no sandbox - the shell and files are the real PC; the spoken yes is the only guard
+            backend=backend or LocalShellBackend(root_dir=Path.home(), virtual_mode=False, inherit_env=True, timeout=60),
+            interrupt_on={name: True for name in NEEDS_APPROVAL},
+            middleware=[errors_to_model],
+            checkpointer=InMemorySaver(),  # the conversation, kept between turns
+        )
 
-        def call_model(state: MessagesState):
-            # Refresh the clock every turn - this process stays up for days
-            system = SystemMessage(f"The current time is {datetime.now():%H:%M:%S}.\n\n{initial_prompt}")
-            return {"messages": [llm.invoke([system, *state["messages"]])]}
-
-        # model -> (tool calls? -> tools -> model) -> reply
-        graph = StateGraph(MessagesState)
-        graph.add_node("model", call_model)
-        graph.add_node("tools", ToolNode(tools, handle_tool_errors=True))  # errors go back to the model
-        graph.add_edge(START, "model")
-        graph.add_conditional_edges("model", tools_condition)
-        graph.add_edge("tools", "model")
-        self.graph = graph.compile()
+    @property
+    def messages(self):
+        state = self.agent.get_state(self.config)
+        return state.values.get("messages", []) if state else []
 
     def spotify(self):
         if self._spotify is None:
@@ -91,18 +128,41 @@ class AssistantModel:
         return self._spotify
 
     def respond(self, user_msg):
-        """Run one turn, including any tool calls, and return NIA's reply"""
-        messages = self.graph.invoke({"messages": [*self.messages, HumanMessage(user_msg)]})["messages"]
-        for m in messages[len(self.messages) + 1:]:  # this turn's tool calls and their results
+        """Run one turn, including any tool calls, and return what NIA should say.
+        If a PC change needs approval, that's the question; the next call is taken as the answer."""
+        before = len(self.messages)
+        if self.pending and time.time() - self.pending[1] >= APPROVAL_EXPIRES:
+            # Nobody answered in time: refuse quietly, then treat this as a new request, not as the answer
+            logger.info("Approval expired - refused")
+            self.agent.invoke(Command(resume={"decisions": [{"type": "reject"}] * self.pending[0]}), self.config)
+            self.pending = None
+            before = len(self.messages)
+        if self.pending:
+            answer = user_msg.lower()
+            approved = bool(YES.search(answer)) and not NO.search(answer)
+            logger.info(f"Approval {'given' if approved else 'refused'}: {user_msg!r}")
+            decision = {"type": "approve"} if approved else {"type": "reject"}
+            result = self.agent.invoke(Command(resume={"decisions": [decision] * self.pending[0]}), self.config)
+        else:
+            # The clock rides on the user turn, not the system prompt, so the prompt prefix stays
+            # identical and llama-server can reuse its cache
+            message = HumanMessage(f"{user_msg}\n\n[{datetime.now():%A %d %B %Y, %H:%M}]")
+            result = self.agent.invoke({"messages": [message]}, self.config)
+
+        for m in result["messages"][before:]:  # this turn's tool calls and their results
             if isinstance(m, AIMessage):
                 for call in m.tool_calls:
                     logger.info(f"Tool call: {call['name']}({call['args']})")
             elif isinstance(m, ToolMessage):
-                logger.info(f"Tool result ({m.name}): {m.content}")
-        # Keep whole turns only, so a tool result never loses the call it answers
-        self.messages = trim_messages(messages, max_tokens=MAX_HISTORY, token_counter=len,
-                                      strategy="last", start_on="human")
-        return messages[-1].content
+                logger.info(f"Tool result ({m.name}): {str(m.content)[:500]}")
+
+        if result.get("__interrupt__"):
+            actions = result["__interrupt__"][0].value["action_requests"]
+            self.pending = (len(actions), time.time())
+            logger.info(f"Awaiting approval for: {actions}")
+            return "Before I do that: I'll " + ", then ".join(describe(a) for a in actions) + ". Should I go ahead?"
+        self.pending = None
+        return result["messages"][-1].content
 
     def _spotify_tools(self):
         sp = self.spotify  # called inside each tool so the client stays lazy

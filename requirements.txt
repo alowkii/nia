@@ -8,7 +8,9 @@ moonshine-voice==0.1.5
 # Turns other apps down while NIA speaks (Windows volume mixer)
 pycaw==20260927
 
-# LLM agent - talks to llama-server's OpenAI-compatible API
+# LLM agent - a Deep Agent (LangGraph harness: files, shell, sub-agents, approvals)
+# talking to llama-server's OpenAI-compatible API
+deepagents==0.7.23
 langgraph==1.2.12
 langchain-openai==1.6.7
 

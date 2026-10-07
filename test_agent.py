@@ -1,8 +1,13 @@
-"""Offline checks for the agent graph: scripted model, fake Spotify. Run: python test_agent.py"""
+"""Offline checks for the agent: scripted model, fake Spotify, in-memory files (never the real PC).
+Run: python test_agent.py"""
+import time
+
+from deepagents.backends import StateBackend
 from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
-from agent.chat import AssistantModel, MAX_HISTORY
+from agent import chat
+from agent.chat import AssistantModel
 from agent.action_controller import SpotifyController
 
 
@@ -31,8 +36,8 @@ def call(name, **args):
     return AIMessage("", tool_calls=[{"name": name, "args": args, "id": name}])
 
 
-def assistant(*replies, spotify=None):
-    a = AssistantModel(llm=ScriptedLLM(messages=iter(replies)))
+def assistant(*replies, spotify=None, extra_tools=()):
+    a = AssistantModel(llm=ScriptedLLM(messages=iter(replies)), extra_tools=extra_tools, backend=StateBackend())
     a._spotify = spotify
     return a
 
@@ -69,14 +74,49 @@ def test_chat_does_not_build_spotify():
     assert a._spotify is None, "built a Spotify client for a plain chat turn"
 
 
-def test_history_is_trimmed_to_whole_turns():
-    turns = 30
-    a = assistant(*[m for _ in range(turns) for m in (call("pause"), AIMessage("ok"))],
-                  spotify=FakeSpotify())
-    for _ in range(turns):
-        a.respond("pause")
-    assert len(a.messages) <= MAX_HISTORY
-    assert isinstance(a.messages[0], HumanMessage), "history must start on a user turn"
+def test_conversation_carries_over_turns():
+    a = assistant(AIMessage("Evening, sir."), AIMessage("You said hello, sir."))
+    a.respond("hello")
+    a.respond("what did I just say?")
+    humans = [m for m in a.messages if isinstance(m, HumanMessage)]
+    assert len(humans) == 2 and humans[0].content.startswith("hello")
+    assert "[" in humans[0].content, "the user turn carries the current time"
+
+
+def written(a, path):
+    return path in (a.agent.get_state(a.config).values.get("files") or {})
+
+
+def test_pc_changes_need_a_spoken_yes():
+    # Approved: the read-back names the file, and the write happens only after "yes"
+    a = assistant(call("write_file", file_path="/notes.txt", content="milk"), AIMessage("Saved, sir."))
+    question = a.respond("note down milk")
+    assert "write the file /notes.txt" in question and "go ahead" in question.lower()
+    assert not written(a, "/notes.txt"), "wrote before the user said yes"
+    assert a.respond("yes, go ahead") == "Saved, sir."
+    assert written(a, "/notes.txt")
+
+    # Refused: anything but a clear yes, including "yes... no wait"
+    for answer in ("no", "nope, cancel that", "yes - no wait", "what?"):
+        a = assistant(call("execute", command="del C:\\stuff"), AIMessage("Okay, I won't, sir."))
+        assert "run the command: del C:\\stuff" in a.respond("clean up")
+        assert a.respond(answer) == "Okay, I won't, sir.", answer
+        tool_msg = next(m for m in a.messages if isinstance(m, ToolMessage))
+        assert tool_msg.status == "error" or "reject" in str(tool_msg.content).lower(), tool_msg
+
+    # Stale: once the question expires, the next sentence is a new request, not the answer
+    a = assistant(call("write_file", file_path="/old.txt", content="x"), AIMessage("Left it alone, sir."),
+                  AIMessage("Evening, sir."))
+    a.respond("write old.txt")
+    count, asked = a.pending
+    a.pending = (count, asked - chat.APPROVAL_EXPIRES - 1)
+    assert a.respond("yes, hello") == "Evening, sir."  # answered as a new turn
+    assert not written(a, "/old.txt"), "a late yes approved a stale action"
+    assert a.pending is None
+
+    # Reading needs no approval
+    a = assistant(call("ls", path="/"), AIMessage("Nothing there, sir."))
+    assert a.respond("what's in my files?") == "Nothing there, sir."
 
 
 def test_extra_tools_reach_the_agent():
@@ -90,8 +130,7 @@ def test_extra_tools_reach_the_agent():
         heard.append(percent)
         return "ok"
 
-    llm = ScriptedLLM(messages=iter([call("set_voice_volume", percent=60), AIMessage("Quieter now, sir.")]))
-    a = AssistantModel(llm=llm, extra_tools=[set_voice_volume])
+    a = assistant(call("set_voice_volume", percent=60), AIMessage("Quieter now, sir."), extra_tools=[set_voice_volume])
     assert a.respond("talk at 60 percent") == "Quieter now, sir."
     assert heard == [60]
 
@@ -124,7 +163,8 @@ if __name__ == "__main__":
     test_tools_reach_spotify()
     test_spotify_errors_go_back_to_the_model()
     test_chat_does_not_build_spotify()
-    test_history_is_trimmed_to_whole_turns()
+    test_conversation_carries_over_turns()
+    test_pc_changes_need_a_spoken_yes()
     test_extra_tools_reach_the_agent()
     test_playback_wakes_an_idle_device()
     print("ok")
