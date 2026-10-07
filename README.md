@@ -2,16 +2,16 @@
 
 A Jarvis-style voice assistant that runs entirely on your own machine. Wake phrase,
 speech recognition, reasoning, and speech synthesis are all local — nothing is sent
-to a cloud API, and no accounts or keys are needed. The only network calls are to
-Spotify, and only when you ask for music.
+to a cloud AI API. The only network calls are to Spotify and YouTube, and only when
+you ask for them; the only account needed is a Spotify developer app.
 
 Say **"Hey Nia"**, then talk — or say it all at once: "Hey Nia, play some lofi".
 
 ## How it works
 
 ```
-  mic ──▶ Moonshine ──────────────────▶ LangGraph agent ◀──▶ spotipy
-          (wake phrase + streaming       (Bonsai 2 27B on
+  mic ──▶ Moonshine ──────────────────▶ Deep Agent ◀──▶ Spotify, YouTube,
+          (wake phrase + streaming       (Bonsai 2 27B on   the PC's files + shell
            STT + VAD, CPU)                llama-server, GPU)
   speaker ◀── Kokoro TTS (CPU) ◀────────────────┘
 ```
@@ -132,8 +132,9 @@ crash so you can read the error.
 
 ## What it can do
 
-Spotify is the only integration so far. Ask in plain language; the model maps it to
-one of these:
+Ask in plain language; the model maps it to a tool.
+
+### Spotify
 
 | | |
 |---|---|
@@ -143,9 +144,30 @@ one of these:
 | **Modes** | shuffle; repeat track; repeat playlist; repeat off |
 | **Query** | what's playing right now |
 
-Adding a new capability means a method on the controller and a `@tool` function in
-`_spotify_tools()` in [`agent/chat.py`](agent/chat.py). The tool's signature and
-docstring are what the model sees, so the docstring is the prompt.
+If the Spotify app is open but idle, playback starts on it anyway. When the login
+expires ("Refresh token expired"), use **Spotify login** in the control panel.
+
+### YouTube
+
+| | |
+|---|---|
+| **Play** | "play X on YouTube" searches and opens the top result in your browser |
+| **Transcript** | "summarize this video" reads what's said in the video last played (or a link, ID or search) |
+
+No API key or account: search goes through [yt-dlp](https://github.com/yt-dlp/yt-dlp)
+and transcripts through [youtube-transcript-api](https://github.com/jdepoix/youtube-transcript-api).
+Neither needs a spoken yes — the only thing they can open is a youtube.com watch link.
+YouTube returns no results at all for some searches (age-restricted artists, for one);
+NIA says so. Long transcripts are cut to the first few minutes to fit Bonsai's context.
+
+### Her own voice
+
+"Speak up", "you're too loud", "talk at 50 percent" set her voice volume (see above).
+
+Adding a new capability means a `@tool` function the model can call — Spotify's are in
+`_spotify_tools()` in [`agent/chat.py`](agent/chat.py), YouTube's in
+[`agent/youtube.py`](agent/youtube.py). The tool's signature and docstring are what the
+model sees, so the docstring is the prompt.
 
 ### Your PC
 
@@ -175,12 +197,16 @@ python test_voice.py
 ```
 
 [test_voice.py](test_voice.py) checks the fuzzy wake-phrase matcher against real Moonshine
-transcripts — what should wake her, what shouldn't, and where the threshold cuts.
+transcripts — what should wake her, what shouldn't, and where the threshold cuts — plus
+the cleanup of replies before they're spoken and her voice volume.
 
-[test_agent.py](test_agent.py) runs the real agent graph offline with a scripted
-model and a fake Spotify client, so it needs no network, no mic, and no LLM server. It
-checks that tool calls reach the right controller method, that Spotify errors go back
-to the model instead of crashing, and that history is trimmed on whole turns.
+[test_agent.py](test_agent.py) runs the real Deep Agent offline with a scripted model, a
+fake Spotify client, a stubbed YouTube and an in-memory filesystem, so it needs no
+network, no mic, no LLM server — and never touches the real PC. It checks that tool calls
+reach the right place, that tool errors go back to the model instead of crashing, that PC
+changes wait for a clear spoken yes (and a late or hedged one refuses), that long tool
+results are cut and an overflowing conversation starts fresh, and that YouTube opens only
+watch links without asking.
 
 ## Layout
 
@@ -190,8 +216,9 @@ ui.py                               control panel: settings, start/stop everythi
 settings.py                         setting defaults (overrides in settings.json)
 voice_assistant/voice_assistant.py  state machine, STT, TTS
 run_bonsai.bat                      starts the LLM server (llama-server + Bonsai)
-agent/chat.py                       LangGraph agent and Spotify tools
-agent/action_controller.py          Spotify operations
+agent/chat.py                       Deep Agent, PC backend, approvals, Spotify tools
+agent/action_controller.py          Spotify operations (and re-login: python -m agent.action_controller)
+agent/youtube.py                    YouTube tools
 agent/prompts/                      system prompt
 preprocess_voice.py                 builds a speaker embedding from a voice sample
 test_agent.py, test_voice.py         offline tests
@@ -204,11 +231,33 @@ test.py                             text-only REPL
   your voice is present but commented out in `voice_assistant.py` — it added too much
   latency per command. `preprocess_voice.py` still generates the reference embedding.
   Anyone within earshot can currently issue commands.
-- **Replies take ~3–4 s** from the end of your sentence: Bonsai reads the prompt and
-  tools, calls a tool, then words the result. Kokoro adds ~1 s before speech starts;
-  set `VOICE = "piper_en_US-lessac-medium"` for ~0.2 s with a more robotic voice.
-- **Spotify needs an active device.** Playback commands fail if Spotify isn't already
-  open somewhere.
+- **Replies take ~2–4 s** from the end of your sentence: Bonsai reads the prompt and
+  tools, calls a tool, then words the result. Kokoro adds ~1 s before speech starts; pick
+  `piper_en_US-lessac-medium` as the voice in the control panel for ~0.2 s, sounding
+  more robotic.
+- **Spotify must be open somewhere.** An idle app is woken, but with no Spotify app
+  running at all there's nothing to play on.
+
+## Credits
+
+NIA stands on these projects — thank you to everyone behind them. Each is under its own
+license; see its page.
+
+| Project | Used for |
+|---|---|
+| [Ternary Bonsai 2 27B](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf) by [PrismML](https://github.com/PrismML-Eng) | the LLM: a ternary build of [Qwen](https://huggingface.co/Qwen)'s Qwen3.8-27B that fits in 8 GB of VRAM |
+| [PrismML's llama.cpp fork](https://github.com/PrismML-Eng/llama.cpp), built on [llama.cpp](https://github.com/ggml-org/llama.cpp) | serving Bonsai (`llama-server`) with its ternary kernels |
+| [Deep Agents](https://github.com/langchain-ai/deepagents) | the agent harness: tool loop, files and shell, sub-agents, approvals, summarization |
+| [LangGraph](https://github.com/langchain-ai/langgraph) and [LangChain](https://github.com/langchain-ai/langchain) (`langchain-openai`) | the graph Deep Agents runs on, tools, and the OpenAI-compatible client |
+| [Moonshine](https://github.com/moonshine-ai/moonshine) (`moonshine-voice`) | wake phrase, speech recognition with voice-activity detection, and the TTS runtime |
+| [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) and [Piper](https://github.com/rhasspy/piper) voices | NIA's voice, through Moonshine |
+| [spotipy](https://github.com/spotipy-dev/spotipy) | Spotify Web API client |
+| [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [youtube-transcript-api](https://github.com/jdepoix/youtube-transcript-api) | YouTube search and transcripts |
+| [pycaw](https://github.com/AndreMiras/pycaw) | turning other apps down while NIA speaks (Windows mixer) |
+| [python-dotenv](https://github.com/theskumar/python-dotenv) | loading `.env` |
+| [Resemblyzer](https://github.com/resemble-ai/Resemblyzer) | the speaker embedding in `preprocess_voice.py` |
+
+NIA isn't affiliated with or endorsed by any of these projects, Spotify or YouTube.
 
 ## License
 

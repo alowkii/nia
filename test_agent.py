@@ -162,6 +162,30 @@ def test_context_overflow_starts_a_fresh_conversation():
     assert a.config["configurable"]["thread_id"] != old_thread
 
 
+def test_youtube_plays_the_top_result_and_reads_its_transcript():
+    from agent import youtube
+    opened, fetched = [], []
+    youtube.first_video = lambda q: ("abcdefghijk", f"Top video for {q}", "Some Channel")
+    youtube.webbrowser.open = opened.append
+
+    class FakeTranscripts:
+        def fetch(self, video_id, languages):
+            fetched.append(video_id)
+            return [type("Snippet", (), {"text": "hello"})(), type("Snippet", (), {"text": "world"})()]
+    youtube.YouTubeTranscriptApi = FakeTranscripts
+
+    a = assistant(call("play_youtube", query="lofi"), AIMessage("Playing it, sir."),
+                  call("youtube_transcript"), AIMessage("They say hello world, sir."))
+    assert a.respond("play lofi on youtube") == "Playing it, sir."
+    assert opened == ["https://www.youtube.com/watch?v=abcdefghijk"], "opened something other than a watch link"
+    assert a.pending is None, "YouTube must not need approval"
+    assert a.respond("summarize this video") == "They say hello world, sir."
+    assert fetched == ["abcdefghijk"], "the transcript should default to the video just played"
+    # Links and IDs are read directly, without searching
+    assert youtube.youtube_transcript.invoke({"video": "https://youtu.be/dQw4w9WgXcQ?t=5"}).count("hello world") == 1
+    assert fetched[-1] == "dQw4w9WgXcQ"
+
+
 def test_playback_wakes_an_idle_device():
     class StubAPI:
         def __init__(self, devices):
@@ -195,5 +219,6 @@ if __name__ == "__main__":
     test_extra_tools_reach_the_agent()
     test_long_tool_results_are_cut_to_fit()
     test_context_overflow_starts_a_fresh_conversation()
+    test_youtube_plays_the_top_result_and_reads_its_transcript()
     test_playback_wakes_an_idle_device()
     print("ok")

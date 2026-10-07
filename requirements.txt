@@ -17,6 +17,10 @@ langchain-openai==1.6.7
 # Spotify control
 spotipy==2.25.2
 
+# YouTube: top-result search and transcripts, no API key
+yt-dlp==2026.8.19
+youtube-transcript-api==1.2.4
+
 # Config
 python-dotenv==1.2.1
 

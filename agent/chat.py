@@ -19,6 +19,7 @@ from langgraph.errors import GraphBubbleUp
 from langgraph.types import Command
 
 import settings
+from . import youtube
 from .prompts.initial import initial_prompt, pc_prompt
 from .action_controller import SpotifyController
 
@@ -130,7 +131,7 @@ class AssistantModel:
                                 profile={"max_input_tokens": s["context"]})
         self.agent = create_deep_agent(
             model=llm,
-            tools=self._spotify_tools() + list(extra_tools),
+            tools=self._spotify_tools() + youtube.TOOLS + list(extra_tools),
             system_prompt=initial_prompt + pc_prompt,
             backend=backend or pc_backend(),
             interrupt_on={name: True for name in NEEDS_APPROVAL},
