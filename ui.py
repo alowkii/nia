@@ -13,6 +13,8 @@ from utils.logger import logging
 logger = logging.getLogger("ui")
 ROOT = Path(__file__).resolve().parent
 NEW_WINDOW = subprocess.CREATE_NEW_CONSOLE  # each process gets its own console, so its logs stay visible
+# python.exe even when this panel runs under pythonw.exe, which has no console or stdin for its children
+PYTHON = str(Path(sys.executable).with_name("python.exe"))
 
 # (key, label, widget) - a None key starts a new section
 FIELDS = [
@@ -144,7 +146,7 @@ class ControlPanel(tk.Tk):
         if self.save() is not None:  # main.py starts the server itself if it is down
             logger.info("Starting assistant from the control panel")
             env = {**os.environ, "NIA_PAUSE_ON_CRASH": "1"}  # keep its window open on a crash
-            self.assistant = subprocess.Popen([sys.executable, "main.py"], cwd=ROOT, env=env, creationflags=NEW_WINDOW)
+            self.assistant = subprocess.Popen([PYTHON, "main.py"], cwd=ROOT, env=env, creationflags=NEW_WINDOW)
 
     def stop_assistant(self):
         if self.assistant and self.assistant.poll() is None:
@@ -154,7 +156,7 @@ class ControlPanel(tk.Tk):
     def text_chat(self):
         if self.save() is not None:
             logger.info("Opening text chat from the control panel")
-            subprocess.Popen([sys.executable, "test.py"], cwd=ROOT, creationflags=NEW_WINDOW)
+            subprocess.Popen([PYTHON, "test.py"], cwd=ROOT, creationflags=NEW_WINDOW)
 
     def refresh_status(self):
         port = settings.load()["port"]
