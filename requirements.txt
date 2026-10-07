@@ -21,8 +21,9 @@ openai-whisper==20250625
 # Text to speech
 TTS==0.22.0
 
-# LLM
-ollama==0.6.1
+# LLM agent
+langgraph==1.2.12
+langchain-ollama==1.1.0
 
 # Spotify control
 spotipy==2.25.2

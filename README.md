@@ -9,11 +9,10 @@ Say **"Hey Nia"**, then talk.
 ## How it works
 
 ```
-  mic ──▶ Porcupine ──▶ sounddevice ──▶ Whisper ──▶ Ollama ──▶ JSON action
-        (wake word)      (record +      (tiny,     (gemma3:4b)      │
-                          silence VAD)   local)                     ├──▶ spotipy
-                                                                    │
-        speaker ◀── VITS TTS ◀───────────────────────────────────── ┘
+  mic ──▶ Porcupine ──▶ sounddevice ──▶ Whisper ──▶ LangGraph agent ◀──▶ spotipy
+        (wake word)      (record +      (tiny,     (Ollama, tool calls)
+                          silence VAD)   local)            │
+        speaker ◀── VITS TTS ◀─────────────────────────────┘
 ```
 
 A three-state machine drives it ([voice_assistant/voice_assistant.py](voice_assistant/voice_assistant.py)):
@@ -27,15 +26,15 @@ A three-state machine drives it ([voice_assistant/voice_assistant.py](voice_assi
 Recording ends on its own. The noise floor is measured before each capture and
 speech is considered finished after 1.0s below that threshold, with a 10s hard cap.
 
-The model always replies as JSON — `action_type`, `action_subtype`, `action_keyword`,
-`action_platform`, `text_reply`. If an action is requested, it runs, and the result
-string is fed back through the model to be reworded before it's spoken, so you hear
-"Playing Highway to Hell by AC/DC" rather than a raw API response.
+The agent is a small LangGraph loop in [agent/chat.py](agent/chat.py): the model
+either answers, or calls Spotify tools; tool results (and errors) go back to the model,
+which then answers in a plain sentence. So you hear "Playing Highway to Hell by AC/DC"
+rather than a raw API response. History keeps the last 20 messages, cut on whole turns.
 
 ## Requirements
 
 - **Python 3.11** — Coqui TTS 0.22 does not support 3.12+
-- **[Ollama](https://ollama.com)** running locally, with `gemma3:4b` pulled
+- **[Ollama](https://ollama.com)** running locally, with `qwen3:8b` pulled
 - A working microphone and speaker
 - **NVIDIA GPU (optional)** — CUDA is used when available; falls back to CPU automatically
 - A [Picovoice](https://picovoice.ai) access key (free tier is fine)
@@ -57,7 +56,7 @@ python -m venv .venv
 
 pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu121
 
-ollama pull gemma3:4b
+ollama pull qwen3:8b
 ```
 
 Create a `.env` in the project root:
@@ -103,10 +102,9 @@ one of these:
 | **Modes** | shuffle; repeat track; repeat playlist; repeat off |
 | **Query** | what's playing right now |
 
-Adding a new capability means three edits: the subtype in
-[`agent/actions.json`](agent/actions.json), a method on the controller, and a line in
-the dispatch dict in [`agent/chat.py`](agent/chat.py). The prompt is generated from
-`actions.json`, so the model learns the new action automatically.
+Adding a new capability means a method on the controller and a `@tool` function in
+`_spotify_tools()` in [`agent/chat.py`](agent/chat.py). The tool's signature and
+docstring are what the model sees, so the docstring is the prompt.
 
 ## Tests
 
@@ -114,21 +112,19 @@ the dispatch dict in [`agent/chat.py`](agent/chat.py). The prompt is generated f
 python test_agent.py
 ```
 
-[test_agent.py](test_agent.py) covers JSON parsing and action dispatch offline — it
-uses a fake Spotify client, so it needs no network, no mic, and no models. It asserts
-that **every** subtype declared in `actions.json` routes to a real handler, which is
-the check that catches the most common failure here: the prompt advertising an action
-that nothing implements, leaving the model to hallucinate a confident answer instead.
+[test_agent.py](test_agent.py) runs the real agent graph offline with a scripted
+model and a fake Spotify client, so it needs no network, no mic, and no Ollama. It
+checks that tool calls reach the right controller method, that Spotify errors go back
+to the model instead of crashing, and that history is trimmed on whole turns.
 
 ## Layout
 
 ```
 main.py                             entry point
 voice_assistant/voice_assistant.py  state machine, audio capture, STT, TTS
-agent/chat.py                       Ollama client, JSON parsing, action dispatch
+agent/chat.py                       LangGraph agent and Spotify tools
 agent/action_controller.py          Spotify operations
-agent/actions.json                  action catalogue - drives the prompt
-agent/prompts/                      system and feedback prompts
+agent/prompts/                      system prompt
 wake_word/                          Porcupine .ppn model
 preprocess_voice.py                 builds a speaker embedding from a voice sample
 test_agent.py                       offline tests
@@ -143,7 +139,6 @@ test.py                             text-only REPL
   Anyone within earshot can currently issue commands.
 - **Whisper `tiny`** is chosen for speed, not accuracy. Unusual track names get
   mangled. Moving to `base` or `small` is a one-word change with a latency cost.
-- **Conversation history is unbounded** — a long session grows the context indefinitely.
 - **Spotify needs an active device.** Playback commands fail if Spotify isn't already
   open somewhere.
 

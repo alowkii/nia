@@ -1,5 +1,8 @@
-"""Offline checks for the agent's JSON parsing and action dispatch. Run: python test_agent.py"""
-from agent.chat import AssistantModel
+"""Offline checks for the agent graph: scripted model, fake Spotify. Run: python test_agent.py"""
+from langchain_core.language_models.fake_chat_models import GenericFakeChatModel
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+from agent.chat import AssistantModel, MAX_HISTORY
 from agent.action_controller import SpotifyController
 
 
@@ -17,52 +20,68 @@ class FakeSpotify(SpotifyController):
         return record
 
 
-def test_clean_json():
-    a = AssistantModel()
-    assert a.clean_json('{"a": 1}') == {"a": 1}
-    assert a.clean_json('sure!\n```json\n{"a": 1}\n```') == {"a": 1}
-    for bad in ("", "   ", "no json here"):
-        try:
-            a.clean_json(bad)
-            assert False, f"should have raised on {bad!r}"
-        except ValueError:
-            pass
+class ScriptedLLM(GenericFakeChatModel):
+    """Replays canned AIMessages; tools are already wired by the graph."""
+    def bind_tools(self, tools, **kwargs):
+        return self
 
 
-def test_dispatch():
-    a = AssistantModel()
-    a._spotify = FakeSpotify()
+def call(name, **args):
+    """A model turn that calls one tool"""
+    return AIMessage("", tool_calls=[{"name": name, "args": args, "id": name}])
 
-    def act(subtype, keyword="none"):
-        return a.take_action({"action_type": "music", "action_platform": "Spotify",
-                              "action_subtype": subtype, "action_keyword": keyword})
 
-    assert act("play_track", "Highway to Hell") == "did play_track"
-    assert a._spotify.calls[-1] == ("play_track", ("Highway to Hell",))
+def assistant(*replies, spotify=None):
+    a = AssistantModel(llm=ScriptedLLM(messages=iter(replies)))
+    a._spotify = spotify
+    return a
 
-    # every subtype the prompt advertises must route somewhere
-    import json
-    subtypes = json.load(open("agent/actions.json"))["sub_actions"]["music"]
-    for subtype in subtypes:
-        assert act(subtype) is not None, f"{subtype} has no handler"
 
-    # repeat_* must pass the right mode through, not just fire
-    act("repeat_off")
-    assert a._spotify.calls[-1] == ("repeat", ("off",))
+def test_tools_reach_spotify():
+    cases = [
+        (call("play", query="Back in Black", kind="album"), ("play_album", ("Back in Black",))),
+        (call("play", query="Highway to Hell"), ("play_track", ("Highway to Hell",))),
+        (call("skip", direction="previous"), ("previous", ())),
+        (call("repeat", mode="off"), ("repeat", ("off",))),
+        (call("change_volume", step=-10), ("change_volume", (-10,))),
+    ]
+    for tool_call, expected in cases:
+        a = assistant(tool_call, AIMessage("Done, sir."), spotify=FakeSpotify())
+        assert a.respond("do it") == "Done, sir."
+        assert a._spotify.calls == [expected], (tool_call.tool_calls, a._spotify.calls)
 
-    # non-music and non-spotify are not our problem
-    assert act("nonexistent_subtype") is None
-    assert a.take_action({"action_type": "weather"}) is None
-    assert a.take_action({"action_type": "music", "action_platform": "youtube",
-                          "action_subtype": "play_track"}) is None
 
-    # dispatch must not build a Spotify client for actions it does not own
-    fresh = AssistantModel()
-    assert fresh.take_action({"action_type": "weather"}) is None
-    assert fresh._spotify is None, "built a Spotify client for a non-music action"
+def test_spotify_errors_go_back_to_the_model():
+    class Boom:
+        def __getattr__(self, name):
+            def fail(*args):
+                raise RuntimeError("no active device")
+            return fail
+    a = assistant(call("pause"), AIMessage("No device is active, sir."), spotify=Boom())
+    assert a.respond("pause") == "No device is active, sir."
+    tool_msg = next(m for m in a.messages if isinstance(m, ToolMessage))
+    assert "no active device" in tool_msg.content
+
+
+def test_chat_does_not_build_spotify():
+    a = assistant(AIMessage("Evening, sir."))
+    assert a.respond("Hey Nia!") == "Evening, sir."
+    assert a._spotify is None, "built a Spotify client for a plain chat turn"
+
+
+def test_history_is_trimmed_to_whole_turns():
+    turns = 30
+    a = assistant(*[m for _ in range(turns) for m in (call("pause"), AIMessage("ok"))],
+                  spotify=FakeSpotify())
+    for _ in range(turns):
+        a.respond("pause")
+    assert len(a.messages) <= MAX_HISTORY
+    assert isinstance(a.messages[0], HumanMessage), "history must start on a user turn"
 
 
 if __name__ == "__main__":
-    test_clean_json()
-    test_dispatch()
+    test_tools_reach_spotify()
+    test_spotify_errors_go_back_to_the_model()
+    test_chat_does_not_build_spotify()
+    test_history_is_trimmed_to_whole_turns()
     print("ok")

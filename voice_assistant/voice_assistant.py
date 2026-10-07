@@ -19,7 +19,6 @@ load_dotenv()
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from agent.chat import AssistantModel
-from agent.prompts.feedback import feedback_prompt
 
 # Set logging
 from utils.logger import logging
@@ -35,11 +34,6 @@ class WakeWordDetector:
     def __init__(self):
         self.state = State.LISTENING
 
-        # Clear the GPU cache
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-
         self._use_gpu = torch.cuda.is_available()
 
         # Whisper model (local)
@@ -54,7 +48,7 @@ class WakeWordDetector:
 
         # Assistant model (Ollama)
         logger.info("Initializing Assistant Model...")
-        self.assistant = AssistantModel(model="gemma3:4b")
+        self.assistant = AssistantModel()
         logger.info("Assistant ready!")
 
         # Porcupine access key
@@ -183,11 +177,9 @@ class WakeWordDetector:
         #     self.state = State.LISTENING
 
         # First interaction after wake word
-        response = self.assistant.chat("Hey Nia!")
-        self.speak(response.get("text_reply"), blocking=True)
+        self.speak(self.assistant.respond("Hey Nia!"), blocking=True)
         
-        time.sleep(0.5)             # Small delay after speech completes
-        self.flush_audio_buffer()   # Clear buffer
+        time.sleep(0.5)  # Small delay after speech completes (speak() already flushed)
 
         start_time = time.time()
         while time.time() - start_time < 60:  # 1 minute
@@ -213,13 +205,7 @@ class WakeWordDetector:
 
             if text:  # Only if we got actual text
                 logger.info(f"Sending to assistant: {text}")
-                response = self.assistant.chat(text)
-                if response.get("action_type") == "feedback":
-                    response = self.assistant.chat(
-                        feedback_prompt.format(response_text=response.get("text_reply", ""))
-                    )
-                logger.info(f"Assistant JSON response: {response}")
-                reply = response.get("text_reply")
+                reply = self.assistant.respond(text)
                 logger.info(f"Assistant response: {reply}")
                 if reply:
                     self.speak(reply, blocking=True)
