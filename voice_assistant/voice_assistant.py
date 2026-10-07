@@ -38,7 +38,7 @@ class WakeWordDetector:
         logger.info(f"Loading Moonshine speech-to-text ({s['stt_model']})...")
         self.lines = queue.Queue()
         self.mic = (MicTranscriber().model_arch(STT_MODELS[s["stt_model"]])
-                    .on_line(lambda line: self.lines.put(line.text)).load())
+                    .on_line(self.lines.put).load())
 
         # Text to speech (CPU)
         logger.info(f"Loading text-to-speech ({s['voice']})...")
@@ -88,7 +88,7 @@ class WakeWordDetector:
                     self.handle_command_mode_state()
 
         except KeyboardInterrupt:
-            logger.error("\nStopping...")
+            logger.info("Stopping (Ctrl+C)")
         finally:
             self.cleanup()
 
@@ -147,18 +147,24 @@ class WakeWordDetector:
         deadline = time.time() + timeout
         while (remaining := deadline - time.time()) > 0:
             try:
-                text = self.lines.get(timeout=remaining).strip()
+                line = self.lines.get(timeout=remaining)
             except queue.Empty:
                 break
+            text = line.text.strip()
             if not text:
                 continue
 
-            logger.info(f"Recognized command: {text}")
+            logger.info(f"Heard: {text!r} (transcribed {line.duration:.1f}s of speech, "
+                        f"{line.last_transcription_latency_ms} ms after you stopped)")
             self.mic.mute(True)  # ignore the room while thinking
+            started = time.perf_counter()
             reply = self.assistant.respond(text)
-            logger.info(f"Assistant response: {reply}")
+            thought = time.perf_counter() - started
+            logger.info(f"Reply: {reply!r} (LLM {thought:.1f}s)")
             if reply:
+                started = time.perf_counter()
                 self.speak(reply)
+                logger.info(f"Spoke in {time.perf_counter() - started:.1f}s")
             self.mic.mute(False)
 
             # Only a real exchange keeps the session open - silence must time out
@@ -168,7 +174,7 @@ class WakeWordDetector:
         while not self.lines.empty():  # drop anything said as the session closed
             self.lines.get_nowait()
 
-        logger.info("Returning to wake-word listening mode.")
+        logger.info(f"No command for {timeout}s - returning to wake-word listening mode.")
         self.audio_stream.start_stream()
         self.state = State.LISTENING
 

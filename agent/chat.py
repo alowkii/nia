@@ -1,3 +1,4 @@
+import logging
 import subprocess
 import time
 import urllib.request
@@ -5,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal
 
-from langchain_core.messages import HumanMessage, SystemMessage, trim_messages
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage, trim_messages
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.graph import START, MessagesState, StateGraph
@@ -15,20 +16,26 @@ import settings
 from .prompts.initial import initial_prompt
 from .action_controller import SpotifyController
 
+logger = logging.getLogger(__name__)
+
 # ponytail: counts messages, not tokens; use a token counter if replies get long
 MAX_HISTORY = 20
+
+# Server output also goes here, so it survives the server's console window closing
+SERVER_LOG = Path(__file__).resolve().parent.parent / "logs" / "llama-server.log"
 
 
 def llm_server_command(s=None):
     """llama-server (PrismML's fork) running Bonsai 2 27B fully on the GPU, from settings"""
     s = s or settings.load()
     bonsai = Path(s["bonsai_dir"])
+    SERVER_LOG.parent.mkdir(exist_ok=True)
     return [str(bonsai / "llama-prism" / "llama-server.exe"), "-m", str(bonsai / s["model_file"]),
             "-ngl", "99", "-fa", "on", "-c", str(s["context"]), "-np", "1",
             "--reasoning", "on" if s["thinking"] else "off",
             "--temp", str(s["temperature"]), "--top-p", str(s["top_p"]), "--top-k", str(s["top_k"]),
             "--presence-penalty", str(s["presence_penalty"]),
-            "--host", "127.0.0.1", "--port", str(s["port"])]
+            "--host", "127.0.0.1", "--port", str(s["port"]), "--log-file", str(SERVER_LOG), "--log-colors", "off"]
 
 
 def llm_up(port):
@@ -42,13 +49,16 @@ def ensure_llm_server(timeout=180):
     """Start llama-server in its own window unless it is already up, then wait for it"""
     s = settings.load()
     if llm_up(s["port"]):
+        logger.info(f"LLM server already running on port {s['port']}")
         return
+    logger.info(f"Starting LLM server: {' '.join(llm_server_command(s))}")
+    started = time.time()
     subprocess.Popen(llm_server_command(s), creationflags=subprocess.CREATE_NEW_CONSOLE)
-    deadline = time.time() + timeout
     while not llm_up(s["port"]):
-        if time.time() > deadline:
-            raise RuntimeError(f"llama-server did not come up on port {s['port']} - check the Bonsai window")
+        if time.time() - started > timeout:
+            raise RuntimeError(f"llama-server did not come up on port {s['port']} - see {SERVER_LOG}")
         time.sleep(1)
+    logger.info(f"LLM server up after {time.time() - started:.1f}s")
 
 
 class AssistantModel:
@@ -82,6 +92,12 @@ class AssistantModel:
     def respond(self, user_msg):
         """Run one turn, including any tool calls, and return NIA's reply"""
         messages = self.graph.invoke({"messages": [*self.messages, HumanMessage(user_msg)]})["messages"]
+        for m in messages[len(self.messages) + 1:]:  # this turn's tool calls and their results
+            if isinstance(m, AIMessage):
+                for call in m.tool_calls:
+                    logger.info(f"Tool call: {call['name']}({call['args']})")
+            elif isinstance(m, ToolMessage):
+                logger.info(f"Tool result ({m.name}): {m.content}")
         # Keep whole turns only, so a tool result never loses the call it answers
         self.messages = trim_messages(messages, max_tokens=MAX_HISTORY, token_counter=len,
                                       strategy="last", start_on="human")

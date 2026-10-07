@@ -110,6 +110,18 @@ prompts — use [test.py](test.py):
 python test.py
 ```
 
+## Logs
+
+Everything lands in `logs/`:
+
+| File | What's in it |
+|---|---|
+| `nia.log` | Each turn — what was heard (and transcription latency), tool calls with arguments and results, the reply, LLM and speech timings — plus startup, control-panel actions, and every crash with its full traceback. Rotates at 5 MB, keeping 3 old files. |
+| `llama-server.log` | The LLM server's own output: model loading, per-request token speeds, errors. Rewritten each time the server starts. |
+
+When the assistant is started from the control panel, its window stays open after a
+crash so you can read the error.
+
 ## What it can do
 
 Spotify is the only integration so far. Ask in plain language; the model maps it to

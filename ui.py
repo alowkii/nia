@@ -1,4 +1,5 @@
 """NIA control panel: edit settings, start/stop the LLM server and the assistant. Run: python ui.py"""
+import os
 import subprocess
 import sys
 import tkinter as tk
@@ -7,7 +8,9 @@ from tkinter import messagebox, ttk
 
 import settings
 from agent.chat import llm_server_command, llm_up
+from utils.logger import logging
 
+logger = logging.getLogger("ui")
 ROOT = Path(__file__).resolve().parent
 NEW_WINDOW = subprocess.CREATE_NEW_CONSOLE  # each process gets its own console, so its logs stay visible
 
@@ -103,10 +106,16 @@ class ControlPanel(tk.Tk):
             return None
         return values
 
+    def report_callback_exception(self, exc_type, exc, tb):
+        """tkinter swallows button-handler errors; log them and show them instead"""
+        logger.error("Control panel error", exc_info=(exc_type, exc, tb))
+        messagebox.showerror("Error", f"{exc_type.__name__}: {exc}\n\nDetails in logs/nia.log")
+
     def save(self):
         values = self.collect()
         if values is not None:
             settings.save(values)
+            logger.info(f"Settings saved: {values}")
         return values
 
     def reset(self):
@@ -121,9 +130,11 @@ class ControlPanel(tk.Tk):
         if llm_up(values["port"]):
             messagebox.showinfo("LLM server", "Already running. Stop it first to apply new server settings.")
             return
+        logger.info("Starting LLM server from the control panel")
         subprocess.Popen(llm_server_command(values), creationflags=NEW_WINDOW)
 
     def stop_server(self):
+        logger.info("Stopping LLM server from the control panel")
         subprocess.run(["taskkill", "/IM", "llama-server.exe", "/F"], capture_output=True)
 
     def start_assistant(self):
@@ -131,14 +142,18 @@ class ControlPanel(tk.Tk):
             messagebox.showinfo("Assistant", "Already running. Stop it first to apply new assistant settings.")
             return
         if self.save() is not None:  # main.py starts the server itself if it is down
-            self.assistant = subprocess.Popen([sys.executable, "main.py"], cwd=ROOT, creationflags=NEW_WINDOW)
+            logger.info("Starting assistant from the control panel")
+            env = {**os.environ, "NIA_PAUSE_ON_CRASH": "1"}  # keep its window open on a crash
+            self.assistant = subprocess.Popen([sys.executable, "main.py"], cwd=ROOT, env=env, creationflags=NEW_WINDOW)
 
     def stop_assistant(self):
         if self.assistant and self.assistant.poll() is None:
+            logger.info("Stopping assistant from the control panel")
             self.assistant.terminate()
 
     def text_chat(self):
         if self.save() is not None:
+            logger.info("Opening text chat from the control panel")
             subprocess.Popen([sys.executable, "test.py"], cwd=ROOT, creationflags=NEW_WINDOW)
 
     def refresh_status(self):

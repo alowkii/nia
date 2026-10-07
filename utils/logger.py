@@ -1,10 +1,17 @@
 import logging
+import sys
+import threading
+from logging.handlers import RotatingFileHandler
+from pathlib import Path
+
+# Absolute, so the log lands in the same place whatever the working directory
+LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
+LOG_DIR.mkdir(exist_ok=True)
 
 logging.basicConfig(
     level=logging.INFO,
-    filemode="a",
-    filename="logs.log",
     format='%(asctime)s - %(levelname)s - %(name)s - %(message)s',
+    handlers=[RotatingFileHandler(LOG_DIR / "nia.log", maxBytes=5_000_000, backupCount=3, encoding="utf-8")],
     force=True
 )
 
@@ -13,3 +20,18 @@ console.setLevel(logging.INFO)
 formatter = logging.Formatter('%(asctime)s - %(levelname)s - %(message)s')
 console.setFormatter(formatter)
 logging.getLogger().addHandler(console)
+
+# One line per LLM request is noise; the agent logs each turn itself
+for name in ("httpx", "httpx2"):  # the openai client logs through httpx2
+    logging.getLogger(name).setLevel(logging.WARNING)
+
+
+# Crashes go to the log too, not just to a console window that may already be gone
+def _log_crash(exc_type, exc, tb):
+    if issubclass(exc_type, KeyboardInterrupt):
+        return sys.__excepthook__(exc_type, exc, tb)
+    logging.getLogger("crash").critical("Uncaught exception", exc_info=(exc_type, exc, tb))
+
+
+sys.excepthook = _log_crash
+threading.excepthook = lambda args: _log_crash(args.exc_type, args.exc_value, args.exc_traceback)
