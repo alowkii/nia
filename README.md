@@ -153,6 +153,7 @@ Ask in plain language; the model maps it to a tool.
 | **Modes** | shuffle; repeat track; repeat playlist; repeat off |
 | **Query** | what's playing right now |
 | **Anything** | "open Spotify", "play some music", "surprise me" — a random pick, shuffled |
+| **Restart** | "restart Spotify" — force-closes and reopens only the Spotify app, no approval needed |
 
 If the Spotify app isn't running, NIA opens it (through Windows' `spotify:` link — no
 shell, nothing to approve) and waits for it to come online; if it's open but idle,

@@ -29,7 +29,8 @@ logger = logging.getLogger(__name__)
 # Tools that change the PC: NIA reads each call back and only runs it after a spoken "yes"
 NEEDS_APPROVAL = ("write_file", "edit_file", "delete", "execute")
 APPROVAL_EXPIRES = 60  # seconds; a later "yes" must not approve a stale action
-YES = re.compile(r"\b(yes|yeah|yep|yup|sure|confirm(ed)?|approved?|go ahead|do it|ok(ay)?)\b")
+YES = re.compile(r"\b(yes|yeah|yep|yup|sure|confirm(ed)?|approved?|go ahead|go for it|do (it|that|so)|please do|"
+                 r"of course|absolutely|ok(ay)?|alright|all right)\b")
 NO = re.compile(r"\b(no|nope|don'?t|do not|stop|cancel|wait|never)\b")
 
 # Server output also goes here, so it survives the server's console window closing
@@ -131,6 +132,17 @@ RISKS = [
 ]
 
 
+# Plain words for everyday commands, when the model doesn't say what it's doing
+COMMON_COMMANDS = [
+    (r"\b(tasklist|get-process)\b", "check which programs are running"),
+    (r"\b(dir|ls|get-childitem|gci)\b", "list a folder"),
+    (r"\b(type|cat|get-content|gc)\b", "read a file"),
+    (r"\b(ipconfig|ping|tracert|nslookup|test-connection)\b", "check the network"),
+    (r"\b(systeminfo|get-computerinfo|wmic|get-ciminstance)\b", "look up system information"),
+    (r"^\s*start\s", "open something"),
+]
+
+
 def describe(action):
     """What NIA plans to do, in plain words - never the raw command (the log keeps that)"""
     args, name = action["args"], action["name"]
@@ -142,7 +154,14 @@ def describe(action):
         return f"open {url.group(0)}"  # spoken as "the youtube link"
     if re.search(r"sendkeys", command, re.I):
         return "press keys in the active window"
-    return "run a PowerShell command" if "powershell" in command.lower() else "run a command"
+    if programs := re.findall(r"(?:/im|-name)\s+\"?([\w.-]+?)(?:\.exe)?\"?(?:\s|;|$)", command, re.I):
+        if re.search(r"taskkill|stop-process", command, re.I):
+            return "force-close " + " and ".join(dict.fromkeys(p.title() for p in programs))
+    for pattern, summary in COMMON_COMMANDS:
+        if re.search(pattern, command, re.I):
+            return summary
+    first = re.match(r"\s*(?:powershell\S*\s+(?:-\S+\s+)*\"?)?([\w.-]+)", command)
+    return f"run {first.group(1)}" if first else "run a command"
 
 
 def risks(action):
@@ -157,7 +176,8 @@ def approval_question(actions, intent):
     intent = " ".join(str(intent or "").split()[:25]).strip()
     commands = any(a["name"] == "execute" for a in actions)
     plan = intent.rstrip(".") if intent and commands else "I'll " + ", then ".join(describe(a) for a in actions)
-    notes = sorted({note for a in actions for note in risks(a)})
+    # A risk the plan already names ("force-close Spotify" / "it closes programs") needn't be said twice
+    notes = sorted({note for a in actions for note in risks(a) if note.split()[1][:4] not in plan.lower()})
     warning = f" Note that {' and '.join(notes)}." if notes else ""
     return f"Before I do that: {plan}.{warning} Should I go ahead?"
 
@@ -263,6 +283,12 @@ class AssistantModel:
             return sp().play_something(mood)
 
         @tool
+        def restart_spotify() -> str:
+            """Force-close and reopen the Spotify app on this PC. For "restart Spotify", or when Spotify is
+            stuck (it accepts commands but nothing plays). Use this - never the shell - for closing Spotify"""
+            return sp().restart_app()
+
+        @tool
         def add_to_queue(query: str) -> str:
             """Queue a track to play next. query is the track name, plus the artist if known"""
             return sp().add_to_queue(query)
@@ -302,5 +328,5 @@ class AssistantModel:
             """Repeat the current track, repeat the current playlist or album ('context'), or turn repeat off"""
             return sp().repeat(mode)
 
-        return [now_playing, play, play_something, add_to_queue, pause, resume, skip, set_volume, change_volume,
-                shuffle, repeat]
+        return [now_playing, play, play_something, restart_spotify, add_to_queue, pause, resume, skip, set_volume,
+                change_volume, shuffle, repeat]

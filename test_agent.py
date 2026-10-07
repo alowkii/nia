@@ -89,6 +89,17 @@ def test_approval_question_says_what_not_how():
     # For file changes the file's name beats a vague "I'll create that file for you"
     assert q([{"name": "write_file", "args": {"file_path": "/c/Users/me/groceries.txt"}}], "I'll create that file for you now.") == \
         "Before I do that: I'll save groceries.txt. Should I go ahead?"
+    # Without the model's words, everyday commands still get plain descriptions - never "run a command"
+    run = lambda cmd: q([{"name": "execute", "args": {"command": cmd}}], "")
+    assert run("tasklist | findstr /i spotify") == "Before I do that: I'll check which programs are running. Should I go ahead?"
+    assert run("taskkill /F /IM Spotify.exe; taskkill /F /IM SpotifyLauncher.exe") == \
+        "Before I do that: I'll force-close Spotify and Spotifylauncher. Should I go ahead?"  # no repeated warning
+    assert run("python backup.py") == "Before I do that: I'll run python. Should I go ahead?"
+    # Every way people say yes counts; anything hedged doesn't
+    for answer in ("Do that.", "Do it.", "Sure, go ahead", "Yes please", "Go for it", "Okay", "Alright", "Of course"):
+        assert chat.YES.search(answer.lower()) and not chat.NO.search(answer.lower()), answer
+    for answer in ("No, don't", "Wait", "Yes, no wait", "Hmm"):
+        assert not (chat.YES.search(answer.lower()) and not chat.NO.search(answer.lower())), answer
     # A harmless-sounding intent can't hide a dangerous command
     wipe = {"name": "execute", "args": {"command": "Remove-Item C:\\Users\\me\\Documents -Recurse; shutdown /s"}}
     asked = q([wipe], "I'll tidy up your documents.")
@@ -285,6 +296,24 @@ def test_play_something_opens_spotify_and_picks_from_preferences():
         assert launched == ["spotify:"], "an app that's already open isn't launched again"
 
 
+def test_restart_spotify_only_touches_spotify():
+    from agent import action_controller
+    action_controller.time.sleep = lambda s: None
+    killed, launched = [], []
+    action_controller.subprocess.run = lambda cmd, **kw: killed.append(cmd)
+    action_controller.os.startfile = launched.append
+
+    class StubAPI:
+        def devices(self):  # the app is gone until it's relaunched
+            return {"devices": [{"id": "laptop", "type": "Computer", "is_active": False}] if launched else []}
+
+    c = object.__new__(SpotifyController)  # skip OAuth
+    c.sp = StubAPI()
+    assert "back online" in c.restart_app()
+    assert killed == [["taskkill", "/F", "/IM", "Spotify.exe"], ["taskkill", "/F", "/IM", "SpotifyLauncher.exe"]]
+    assert launched == ["spotify:"]
+
+
 def test_playback_wakes_an_idle_device_and_checks_it_started():
     from agent import action_controller
     action_controller.time.sleep = lambda s: None  # no real waiting for the start check
@@ -342,5 +371,6 @@ if __name__ == "__main__":
     test_context_overflow_starts_a_fresh_conversation()
     test_youtube_plays_one_video_and_reads_its_transcript()
     test_play_something_opens_spotify_and_picks_from_preferences()
+    test_restart_spotify_only_touches_spotify()
     test_playback_wakes_an_idle_device_and_checks_it_started()
     print("ok")

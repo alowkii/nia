@@ -1,5 +1,6 @@
 import os
 import random
+import subprocess
 import time
 from pathlib import Path
 from dotenv import load_dotenv
@@ -48,6 +49,15 @@ class SpotifyController:
                 return devices
         raise RuntimeError(f"Opened the Spotify app, but it didn't come online within {timeout} seconds")
 
+    def restart_app(self):
+        """Force-close Spotify on this PC and open it again - the fix for an app that accepts
+        commands but plays nothing. Only ever touches Spotify's own processes"""
+        for image in ("Spotify.exe", "SpotifyLauncher.exe"):
+            subprocess.run(["taskkill", "/F", "/IM", image], capture_output=True)
+        time.sleep(2)  # let Spotify drop off the device list before waiting for it to come back
+        self.open_app()
+        return "Restarted the Spotify app on this PC; it's back online"
+
     def _start(self, **kwargs):
         """start_playback, opening the Spotify app first if no device is available, and waking an
         idle device when none is active - an open Spotify app that hasn't played recently is listed
@@ -69,7 +79,7 @@ class SpotifyController:
                 return
         where = playback["device"]["name"] if playback and playback.get("device") else "the device"
         raise RuntimeError(f"Spotify accepted the command but nothing started playing on {where}. The Spotify app "
-                           "there is probably stuck: tell the user to quit it from the system tray and open it again")
+                           "there is probably stuck: offer to restart it with restart_spotify, then try again")
 
     def _search(self, query, kind):
         """Top hit for kind 'track', 'playlist' or 'album', or None"""
