@@ -2,52 +2,51 @@ import os
 import sys
 import time
 import enum
+import queue
 import pvporcupine
 import pyaudio
 import struct
-import numpy as np
-import sounddevice as sd
-import scipy.io.wavfile as wavfile
 from dotenv import load_dotenv
-import whisper
-from TTS.api import TTS
-import torch
-import threading
+from moonshine_voice import MicTranscriber, TextToSpeech
 
 # Load environment variables
 load_dotenv()
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from agent.chat import AssistantModel
+from agent.chat import AssistantModel, ensure_llm_server
 
 # Set logging
 from utils.logger import logging
 logger = logging.getLogger(__name__)
 
+# ponytail: Kokoro takes ~1 s to start speaking on CPU; "piper_en_US-lessac-medium" takes ~0.2 s but sounds more robotic
+VOICE = "kokoro_af_heart"
+GREETING = "Yes, sir?"
+SESSION_TIMEOUT = 60  # seconds of no exchange before going back to wake-word listening
+
+
 class State(enum.Enum):
     LISTENING = 1
-    WAKE_DETECTED = 2
-    COMMAND_MODE = 3
+    COMMAND_MODE = 2
 
 
 class WakeWordDetector:
     def __init__(self):
         self.state = State.LISTENING
 
-        self._use_gpu = torch.cuda.is_available()
+        # Speech to text (Moonshine medium streaming, CPU). Its own mic stream and VAD
+        # end each utterance; completed lines land in this queue.
+        logger.info("Loading Moonshine speech-to-text...")
+        self.lines = queue.Queue()
+        self.mic = MicTranscriber().on_line(lambda line: self.lines.put(line.text)).load()
 
-        # Whisper model (local)
-        logger.info("Loading Whisper model locally (tiny)...")
-        self.whisper_model = whisper.load_model("tiny", device="cuda" if self._use_gpu else "cpu")
+        # Text to speech (CPU)
+        logger.info(f"Loading text-to-speech ({VOICE})...")
+        self.tts = TextToSpeech().language("en_us").voice(VOICE).load()
 
-        # TTS model (VITS - fast inference)
-        logger.info("Loading VITS TTS model...")
-        self.tts = TTS("tts_models/en/ljspeech/vits", gpu=self._use_gpu)
-        self.tts_rate = self.tts.synthesizer.tts_config.audio["sample_rate"]
-        logger.info(f"VITS TTS ready! (GPU: {self._use_gpu})")
-
-        # Assistant model (Ollama)
-        logger.info("Initializing Assistant Model...")
+        # Assistant model (Bonsai on llama-server, GPU)
+        logger.info("Starting the LLM server if needed...")
+        ensure_llm_server()
         self.assistant = AssistantModel()
         logger.info("Assistant ready!")
 
@@ -62,9 +61,6 @@ class WakeWordDetector:
             keyword_paths=["wake_word/Hey-Nia_en_windows_v3_0_0.ppn"],
             sensitivities=[0.5]
         )
-
-        # Scratch dir for recorded commands (absent on a fresh clone)
-        os.makedirs("temp", exist_ok=True)
 
         # Audio init
         self.pa = pyaudio.PyAudio()
@@ -88,9 +84,6 @@ class WakeWordDetector:
                 if self.state == State.LISTENING:
                     self.handle_listening_state()
 
-                elif self.state == State.WAKE_DETECTED:
-                    self.handle_wake_detected_state()
-
                 elif self.state == State.COMMAND_MODE:
                     self.handle_command_mode_state()
 
@@ -99,35 +92,17 @@ class WakeWordDetector:
         finally:
             self.cleanup()
 
-    def speak(self, text, blocking=True):
-        """Convert text to speech and play it."""
-        def _speak():
-            try:
-                logger.info(f"Speaking: {text}")
-                
-                # PAUSE audio recording while speaking
-                stream_was_active = False
-                if self.audio_stream and self.audio_stream.is_active():
-                    stream_was_active = True
-                    self.audio_stream.stop_stream()
-                
-                wav = np.array(self.tts.tts(text))
-                sd.play(wav, self.tts_rate)
-                sd.wait()
-                
-                # RESUME audio recording after speaking
-                if self.audio_stream and stream_was_active:
-                    self.audio_stream.start_stream()
-                    time.sleep(0.3)  # Small delay before flushing
-                    self.flush_audio_buffer()  # Clear any buffered audio
-                    
-            except Exception as e:
-                logger.error(f"TTS error: {e}")
-        
-        if blocking:
-            _speak()
-        else:
-            threading.Thread(target=_speak, daemon=True).start()
+    def speak(self, text):
+        """Speak text, with the mic muted so NIA doesn't transcribe herself."""
+        logger.info(f"Speaking: {text}")
+        self.mic.mute(True)
+        try:
+            self.tts.say(text)
+            self.tts.wait()
+        except Exception as e:
+            logger.error(f"TTS error: {e}")
+        finally:
+            self.mic.mute(False)
 
     # --------------------------
     # STATE: LISTENING
@@ -140,17 +115,7 @@ class WakeWordDetector:
 
         if keyword_index >= 0:
             logger.info("Wake word detected!")
-            self.state = State.WAKE_DETECTED
-
-    # --------------------------
-    # STATE: WAKE DETECTED
-    # --------------------------
-    def handle_wake_detected_state(self):
-        time.sleep(1.0)
-        self.flush_audio_buffer()
-
-        logger.info("Entering command mode...")
-        self.state = State.COMMAND_MODE
+            self.state = State.COMMAND_MODE
 
     # TODO: This is creating too much latency
     # def valid_command_from_your_voice(self):
@@ -170,139 +135,45 @@ class WakeWordDetector:
     # STATE: COMMAND MODE
     # --------------------------
     def handle_command_mode_state(self):
-        # TODO: Creating too much latency
-        # if not self.valid_command_from_your_voice():
-        #     # Terminate if the voice is not recognized.
-        #     logger.info("Person Invalid! Returning to wake-word listening mode.")
-        #     self.state = State.LISTENING
+        # Porcupine pauses while Moonshine owns the conversation, so its buffer
+        # doesn't fill with stale audio (or NIA's own voice)
+        self.audio_stream.stop_stream()
 
-        # First interaction after wake word
-        self.speak(self.assistant.respond("Hey Nia!"), blocking=True)
-        
-        time.sleep(0.5)  # Small delay after speech completes (speak() already flushed)
+        self.speak(GREETING)
+        self.mic.start()
+        logger.info("Listening for voice command...")
 
-        start_time = time.time()
-        while time.time() - start_time < 60:  # 1 minute
+        deadline = time.time() + SESSION_TIMEOUT
+        while (remaining := deadline - time.time()) > 0:
+            try:
+                text = self.lines.get(timeout=remaining).strip()
+            except queue.Empty:
+                break
+            if not text:
+                continue
 
-            logger.info("Listening for voice command...")
-
-            audio = self.record_audio()
-
-            # Save to file
-            wavfile.write("temp/command.wav", 16000, audio)
-
-            # Transcribe using Whisper
-            logger.info("Transcribing with Whisper...")
-            result = self.whisper_model.transcribe("temp/command.wav",
-                                                    fp16=True,  # Use half precision
-                                                    language="en",  # Skip language detection
-                                                    beam_size=1,  # Faster but slightly less accurate
-                                                    best_of=1
-                                                )
-
-            text = result["text"].strip()
             logger.info(f"Recognized command: {text}")
+            self.mic.mute(True)  # ignore the room while thinking
+            reply = self.assistant.respond(text)
+            logger.info(f"Assistant response: {reply}")
+            if reply:
+                self.speak(reply)
+            self.mic.mute(False)
 
-            if text:  # Only if we got actual text
-                logger.info(f"Sending to assistant: {text}")
-                reply = self.assistant.respond(text)
-                logger.info(f"Assistant response: {reply}")
-                if reply:
-                    self.speak(reply, blocking=True)
+            # Only a real exchange keeps the session open - silence must time out
+            deadline = time.time() + SESSION_TIMEOUT
 
-                # Only a real exchange keeps the session open - silence must time out
-                start_time = time.time()
+        self.mic.stop()
+        while not self.lines.empty():  # drop anything said as the session closed
+            self.lines.get_nowait()
 
-        # After command, return to listening
         logger.info("Returning to wake-word listening mode.")
+        self.audio_stream.start_stream()
         self.state = State.LISTENING
 
-    # --------------------------
-    # AUDIO RECORDING
-    # --------------------------
-    def record_audio(self, sample_rate=16000):
-        """
-        Improved voice recording with:
-        - auto-adjusted silence threshold
-        - reliable speech detection
-        - max duration fallback
-        """
-
-        logger.info("Speak now...")
-
-        CHUNK = 1024
-        MAX_DURATION = 10  # seconds max record
-        MIN_SPEECH_DURATION = 0.3
-        SILENCE_DURATION = 1.0
-
-        # Measure ambient noise before recording, so the threshold tracks the room
-        # ponytail: fixed 2.5x RMS multiplier, tune if it clips quiet speech
-        logger.info("Calibrating noise floor...")
-        noise_samples = []
-
-        with sd.InputStream(samplerate=sample_rate, channels=1) as stream:
-            start_time = time.time()
-            while time.time() - start_time < 0.1:
-                frame, _ = stream.read(CHUNK)
-                frame = frame.flatten()
-                noise_samples.append(frame)
-
-            noise = np.concatenate(noise_samples)
-            noise_rms = np.sqrt(np.mean(noise ** 2))
-            silence_threshold = max(noise_rms * 2.5, 0.0008)
-
-            logger.info(f"Noise RMS={noise_rms:.6f}, using silence_threshold={silence_threshold:.6f}")
-
-            # Begin actual recording
-            frames = []
-            silence_start = None
-            record_start = time.time()
-            speech_started = False
-
-            while True:
-                frame, _ = stream.read(CHUNK)
-                frame = frame.flatten()
-                frames.append(frame)
-
-                rms = np.sqrt(np.mean(frame ** 2))
-
-                # Detect speech start
-                if rms > silence_threshold:
-                    speech_started = True
-                    silence_start = None
-
-                # If speech already started, detect end
-                if speech_started:
-                    if rms < silence_threshold:
-                        if silence_start is None:
-                            silence_start = time.time()
-                        elif time.time() - silence_start >= SILENCE_DURATION:
-                            logger.info("Silence detected, stopping.")
-                            break
-
-                # Max recording safety
-                if time.time() - record_start > MAX_DURATION:
-                    logger.info("Max recording time reached. Stopping.")
-                    break
-
-            audio = np.concatenate(frames)
-
-        return audio.astype(np.float32)
-
-    # --------------------------
-    # UTILITIES
-    # --------------------------
-    def flush_audio_buffer(self):
-        """Flush audio buffer only if stream is active"""
-        if self.audio_stream and self.audio_stream.is_active():
-            for _ in range(5):
-                try:
-                    self.audio_stream.read(self.porcupine.frame_length, exception_on_overflow=False)
-                except OSError as e:
-                    logger.warning(f"Error flushing buffer: {e}")
-                    break
-
     def cleanup(self):
+        self.mic.close()
+        self.tts.close()
         if self.audio_stream:
             self.audio_stream.close()
         if self.pa:

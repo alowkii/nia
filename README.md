@@ -9,22 +9,24 @@ Say **"Hey Nia"**, then talk.
 ## How it works
 
 ```
-  mic ──▶ Porcupine ──▶ sounddevice ──▶ Whisper ──▶ LangGraph agent ◀──▶ spotipy
-        (wake word)      (record +      (tiny,     (Ollama, tool calls)
-                          silence VAD)   local)            │
-        speaker ◀── VITS TTS ◀─────────────────────────────┘
+  mic ──▶ Porcupine ──▶ Moonshine ──────────▶ LangGraph agent ◀──▶ spotipy
+        (wake word)     (streaming STT + VAD,  (Bonsai 2 27B on
+                         CPU)                   llama-server, GPU)
+        speaker ◀── Kokoro TTS (CPU) ◀────────────────┘
 ```
 
-A three-state machine drives it ([voice_assistant/voice_assistant.py](voice_assistant/voice_assistant.py)):
+Everything but the LLM runs on the CPU, so the GPU is left to Bonsai alone.
+
+A two-state machine drives it ([voice_assistant/voice_assistant.py](voice_assistant/voice_assistant.py)):
 
 | State | What happens |
 |---|---|
 | `LISTENING` | Porcupine scans mic frames for the wake word. Cheap; this is the idle state. |
-| `WAKE_DETECTED` | Flushes buffered audio so the wake word itself isn't transcribed as a command. |
-| `COMMAND_MODE` | Greets you, then loops: record → transcribe → reason → act → speak. Returns to `LISTENING` after 60s with no exchange. |
+| `COMMAND_MODE` | Says "Yes, sir?", then loops: transcribe → reason → act → speak. Returns to `LISTENING` after 60s with no exchange. |
 
-Recording ends on its own. The noise floor is measured before each capture and
-speech is considered finished after 1.0s below that threshold, with a 10s hard cap.
+Moonshine transcribes while you talk and its voice-activity detection decides when
+you've finished, so there's no fixed recording window. The mic is muted while NIA
+thinks and speaks, so she doesn't transcribe herself.
 
 The agent is a small LangGraph loop in [agent/chat.py](agent/chat.py): the model
 either answers, or calls Spotify tools; tool results (and errors) go back to the model,
@@ -33,10 +35,14 @@ rather than a raw API response. History keeps the last 20 messages, cut on whole
 
 ## Requirements
 
-- **Python 3.11** — Coqui TTS 0.22 does not support 3.12+
-- **[Ollama](https://ollama.com)** running locally, with `qwen3:8b` pulled
+- **Python 3.11** (tested)
+- **NVIDIA GPU with 8 GB VRAM** for the LLM. Bonsai 2 27B (`PTQ1_0`, 5.95 GB) runs fully on
+  the GPU at ~35 tok/s on an RTX 4060 Laptop
+- **[PrismML's llama.cpp fork](https://github.com/PrismML-Eng/llama.cpp/releases)**, since
+  stock llama.cpp and Ollama can't load Bonsai's ternary format, plus
+  [`Ternary-Bonsai-2-27B-PTQ1_0.gguf`](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf).
+  [run_bonsai.bat](run_bonsai.bat) expects both under `D:\bonsai` — edit `BONSAI=` there
 - A working microphone and speaker
-- **NVIDIA GPU (optional)** — CUDA is used when available; falls back to CPU automatically
 - A [Picovoice](https://picovoice.ai) access key (free tier is fine)
 - A [Spotify Developer](https://developer.spotify.com/dashboard) app, for music control
 
@@ -54,10 +60,10 @@ python -m venv .venv
 .venv\Scripts\activate          # Windows
 # source .venv/bin/activate     # Linux / macOS
 
-pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu121
-
-ollama pull qwen3:8b
+pip install -r requirements.txt
 ```
+
+The Moonshine speech model and the Kokoro voice download on first run.
 
 Create a `.env` in the project root:
 
@@ -80,7 +86,8 @@ The first music command opens a browser once for OAuth and caches the token in
 python main.py
 ```
 
-Wait for `Listening for wake words...`, then say "Hey Nia".
+If the LLM server isn't running, this starts [run_bonsai.bat](run_bonsai.bat) in its own
+window and waits for it (~20 s). Wait for `Listening for wake words...`, then say "Hey Nia".
 
 For a keyboard-driven session with no audio stack at all — useful for iterating on
 prompts — use [test.py](test.py):
@@ -113,7 +120,7 @@ python test_agent.py
 ```
 
 [test_agent.py](test_agent.py) runs the real agent graph offline with a scripted
-model and a fake Spotify client, so it needs no network, no mic, and no Ollama. It
+model and a fake Spotify client, so it needs no network, no mic, and no LLM server. It
 checks that tool calls reach the right controller method, that Spotify errors go back
 to the model instead of crashing, and that history is trimmed on whole turns.
 
@@ -121,7 +128,8 @@ to the model instead of crashing, and that history is trimmed on whole turns.
 
 ```
 main.py                             entry point
-voice_assistant/voice_assistant.py  state machine, audio capture, STT, TTS
+voice_assistant/voice_assistant.py  state machine, STT, TTS
+run_bonsai.bat                      starts the LLM server (llama-server + Bonsai)
 agent/chat.py                       LangGraph agent and Spotify tools
 agent/action_controller.py          Spotify operations
 agent/prompts/                      system prompt
@@ -137,8 +145,9 @@ test.py                             text-only REPL
   your voice is present but commented out in `voice_assistant.py` — it added too much
   latency per command. `preprocess_voice.py` still generates the reference embedding.
   Anyone within earshot can currently issue commands.
-- **Whisper `tiny`** is chosen for speed, not accuracy. Unusual track names get
-  mangled. Moving to `base` or `small` is a one-word change with a latency cost.
+- **Replies take ~3–4 s** from the end of your sentence: Bonsai reads the prompt and
+  tools, calls a tool, then words the result. Kokoro adds ~1 s before speech starts;
+  set `VOICE = "piper_en_US-lessac-medium"` for ~0.2 s with a more robotic voice.
 - **Spotify needs an active device.** Playback commands fail if Spotify isn't already
   open somewhere.
 
