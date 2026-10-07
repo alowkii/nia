@@ -1,9 +1,13 @@
+import subprocess
+import time
+import urllib.request
 from datetime import datetime
+from pathlib import Path
 from typing import Literal
 
 from langchain_core.messages import HumanMessage, SystemMessage, trim_messages
 from langchain_core.tools import tool
-from langchain_ollama import ChatOllama
+from langchain_openai import ChatOpenAI
 from langgraph.graph import START, MessagesState, StateGraph
 from langgraph.prebuilt import ToolNode, tools_condition
 
@@ -13,13 +17,36 @@ from .action_controller import SpotifyController
 # ponytail: counts messages, not tokens; use a token counter if replies get long
 MAX_HISTORY = 20
 
+# llama-server running Bonsai 2 27B, started by run_bonsai.bat
+LLM_URL = "http://127.0.0.1:8081"
+
+
+def ensure_llm_server(timeout=180):
+    """Start run_bonsai.bat in its own window unless llama-server is already up, then wait for it"""
+    def up():
+        try:
+            return urllib.request.urlopen(f"{LLM_URL}/health", timeout=2).status == 200
+        except OSError:  # refused while starting, 503 while the model loads
+            return False
+
+    if up():
+        return
+    script = Path(__file__).resolve().parent.parent / "run_bonsai.bat"
+    subprocess.Popen(["cmd", "/c", str(script)], creationflags=subprocess.CREATE_NEW_CONSOLE)
+    deadline = time.time() + timeout
+    while not up():
+        if time.time() > deadline:
+            raise RuntimeError(f"llama-server did not come up on {LLM_URL} - check the Bonsai window")
+        time.sleep(1)
+
 
 class AssistantModel:
-    def __init__(self, model="qwen3:8b", llm=None):
+    def __init__(self, model="bonsai", llm=None):
         self._spotify = None  # built on first music tool call, not at startup
         self.messages = []
         tools = self._spotify_tools()
-        llm = (llm or ChatOllama(model=model, reasoning=False)).bind_tools(tools)
+        # llama-server ignores the model name and key, but the client requires both
+        llm = (llm or ChatOpenAI(model=model, base_url=f"{LLM_URL}/v1", api_key="none")).bind_tools(tools)
 
         def call_model(state: MessagesState):
             # Refresh the clock every turn - this process stays up for days

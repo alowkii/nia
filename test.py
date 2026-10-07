@@ -1,5 +1,6 @@
-from agent.chat import AssistantModel
+from agent.chat import AssistantModel, ensure_llm_server
 
+ensure_llm_server()
 assistant = AssistantModel()
 text = "Me: Hey Nia!"
 print(text)

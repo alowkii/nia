@@ -21,9 +21,9 @@ openai-whisper==20250625
 # Text to speech
 TTS==0.22.0
 
-# LLM agent
+# LLM agent - talks to llama-server's OpenAI-compatible API
 langgraph==1.2.12
-langchain-ollama==1.1.0
+langchain-openai==1.6.7
 
 # Spotify control
 spotipy==2.25.2
