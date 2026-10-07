@@ -39,6 +39,8 @@ FIELDS = [
     ("duck_level", "Other apps' volume while NIA speaks (0-1, 1 = off)", "entry"),
     ("session_timeout", "Session timeout (s)", "entry"),
     ("music_moods", "Random music picks (comma-separated)", "entry"),
+    ("approval_model", "Approval model (Ollama; empty = always ask)", "entry"),
+    ("approval_threshold", "Approval threshold (0-1, lower asks more)", "entry"),
 ]
 
 
@@ -110,6 +112,7 @@ class ControlPanel(tk.Tk):
                 return None
         for key, label, low, high in (("wake_threshold", "Wake match threshold", 0, 1),
                                       ("duck_level", "Other apps' volume", 0, 1),
+                                      ("approval_threshold", "Approval threshold", 0, 1),
                                       ("voice_volume", "NIA's voice volume", 0.1, 1)):
             if not low <= values[key] <= high:
                 messagebox.showerror("Invalid setting", f"{label} must be between {low} and {high}")

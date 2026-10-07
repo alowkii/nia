@@ -29,6 +29,10 @@ DEFAULTS = {
     "greeting": "Yes, sir?",
     "duck_level": 0.3,  # other apps' volume while NIA speaks, as a fraction of their own; 1 = no ducking
     "session_timeout": 60,
+    # Decision model for PC commands that aren't on the read-only allowlist (see agent/approval.py): run
+    # without asking if every hazard scores below the threshold. Empty model name = always ask
+    "approval_model": "openthai-cpu",
+    "approval_threshold": 0.5,
     # What "play some music" picks from, at random, when no song is named (comma-separated playlist searches)
     "music_moods": "lofi beats, chill hits, feel good pop, indie favourites, throwback hits",  # seconds of no exchange before going back to wake-word listening
 }

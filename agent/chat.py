@@ -20,7 +20,8 @@ from langgraph.errors import GraphBubbleUp
 from langgraph.types import Command
 
 import settings
-from . import youtube
+from . import approval, youtube
+from .approval import risks
 from .prompts.initial import initial_prompt, pc_prompt
 from .action_controller import SpotifyController
 
@@ -122,17 +123,6 @@ def tool_guard(request, handler):
     return result
 
 
-# Said out loud whatever the stated intent, so a loose description can't hide a dangerous command
-RISKS = [
-    (r"\b(del|erase|rm|rmdir|rd|remove-item)\b", "it deletes files"),
-    (r"\b(format|diskpart|clear-disk)\b", "it formats or wipes a disk"),
-    (r"\b(shutdown|restart-computer|stop-computer|logoff)\b", "it shuts down or restarts the PC"),
-    (r"\b(taskkill|stop-process|kill)\b", "it closes programs"),
-    (r"\b(reg|regedit|set-itemproperty|new-itemproperty)\b|hk(lm|cu):", "it changes the registry"),
-    (r"\b(invoke-webrequest|iwr|curl|wget|bitsadmin)\b.*\|\s*(iex|invoke-expression)", "it downloads and runs code"),
-]
-
-
 # Plain words for everyday commands, when the model doesn't say what it's doing
 COMMON_COMMANDS = [
     (r"\b(tasklist|get-process)\b", "check which programs are running"),
@@ -165,11 +155,6 @@ def describe(action):
     return f"run {first.group(1)}" if first else "run a command"
 
 
-def risks(action):
-    command = str(action["args"].get("command", "")) if action["name"] == "execute" else ""
-    return [note for pattern, note in RISKS if re.search(pattern, command, re.I)]
-
-
 def approval_question(actions, intent):
     """The spoken approval question, plus any risk the commands carry. File changes are summarized
     with the file's name ("save groceries.txt") - the one detail that matters there. For commands,
@@ -194,6 +179,7 @@ class AssistantModel:
         self._spotify = None  # built on first music tool call, not at startup
         self.pending = None  # (number of actions awaiting approval, when they were asked about)
         self.config = {"configurable": {"thread_id": "nia"}}
+        self.approval_model, self.approval_threshold = s["approval_model"], s["approval_threshold"]
         # llama-server ignores the model name and key, but the client requires both. The profile tells
         # Deep Agents the real context size, so it summarizes old turns before overflowing it
         llm = llm or ChatOpenAI(model=model, base_url=f"http://127.0.0.1:{s['port']}/v1", api_key="none",
@@ -251,6 +237,16 @@ class AssistantModel:
             # identical and llama-server can reuse its cache
             message = HumanMessage(f"{user_msg}\n\n[{datetime.now():%A %d %B %Y, %H:%M}]")
             result = self.agent.invoke({"messages": [message]}, self.config)
+
+        # Commands the approval layers clear run straight away; anything else waits for a spoken yes
+        while result.get("__interrupt__"):
+            actions = result["__interrupt__"][0].value["action_requests"]
+            verdicts = [approval.decide(a, self.approval_model, self.approval_threshold) for a in actions]
+            for action, (verdict, why) in zip(actions, verdicts):
+                logger.info(f"Approval check: {verdict} - {why} | {action['name']}({action['args']})")
+            if not all(verdict == "run" for verdict, _ in verdicts):
+                break
+            result = self.agent.invoke(Command(resume={"decisions": [{"type": "approve"}] * len(actions)}), self.config)
 
         if result.get("__interrupt__"):
             actions = result["__interrupt__"][0].value["action_requests"]

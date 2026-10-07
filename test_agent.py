@@ -36,9 +36,10 @@ def call(name, **args):
     return AIMessage("", tool_calls=[{"name": name, "args": args, "id": name}])
 
 
-def assistant(*replies, spotify=None, extra_tools=()):
+def assistant(*replies, spotify=None, extra_tools=(), approval_model=None):
     a = AssistantModel(llm=ScriptedLLM(messages=iter(replies)), extra_tools=extra_tools, backend=StateBackend())
     a._spotify = spotify
+    a.approval_model = approval_model  # no decision model unless a test stubs one in - never real Ollama
     return a
 
 
@@ -76,11 +77,61 @@ def test_chat_does_not_build_spotify():
     assert a._spotify is None, "built a Spotify client for a plain chat turn"
 
 
+def test_read_only_allowlist():
+    from agent.approval import read_only
+    for command in ["tasklist | findstr /i spotify", 'dir "C:\\Users\\me\\OneDrive\\Desktop"', "ipconfig", "whoami",
+                    'type "C:\\notes.txt" | more', "git -C D:\\nia status", "git log", "netstat -ano | findstr 8081",
+                    'powershell -NoProfile -Command "Get-PSDrive -PSProvider FileSystem"',
+                    'powershell -NoProfile -Command "Get-Process | Where-Object { $_.CPU -gt 10 } | Sort-Object CPU"']:
+        assert read_only(command), command
+    for command in ["tasklist & shutdown /s /t 0", "ipconfig && del x", "dir > listing.txt", "type a.txt | python",
+                    "git branch -D main", "git push", "notepad", "python backup.py", "echo hi", "start outlook",
+                    'powershell -NoProfile -Command "Get-Process chrome | Stop-Process"',
+                    'powershell -NoProfile -Command "Get-ChildItem; Remove-Item x"',
+                    'powershell -NoProfile -Command "Get-Content $(Invoke-WebRequest x)"',
+                    "powershell -NoProfile -Command \"(New-Object -ComObject WScript.Shell).SendKeys('^w')\""]:
+        assert not read_only(command), command
+
+
+def test_approval_layers():
+    from agent import approval
+    run = lambda command: {"name": "execute", "args": {"command": command}}
+    calls = []
+
+    def model_says(level):
+        def hazards(command, model):
+            calls.append(command)
+            return None if level is None else {name: level for name in approval.HAZARDS}
+        return hazards
+
+    approval.hazards = model_says(0.0)  # the model thinks everything is harmless...
+    assert approval.decide(run("taskkill /F /IM chrome.exe"), "m", 0.5)[0] == "ask"  # ...but risks always ask
+    assert approval.decide(run("winget install VLC"), "m", 0.5)[0] == "ask"
+    assert approval.decide(run("powershell \"...SendKeys('^w')\""), "m", 0.5)[0] == "ask"
+    assert approval.decide({"name": "write_file", "args": {"file_path": "/a.txt"}}, "m", 0.5)[0] == "ask"
+    assert calls == [], "the model must never be asked about risky commands or file changes"
+    assert approval.decide(run("ipconfig"), "m", 0.5) == ("run", "read-only command") and calls == []
+    assert approval.decide(run("explorer D:\\nia"), "m", 0.5)[0] == "run"  # unknown: the model decides
+    approval.hazards = model_says(0.9)
+    assert approval.decide(run("explorer D:\\nia"), "m", 0.5)[0] == "ask"
+    approval.hazards = model_says(None)  # Ollama down
+    assert approval.decide(run("explorer D:\\nia"), "m", 0.5) == ("ask", "decision model unavailable")
+    assert approval.decide(run("explorer D:\\nia"), "", 0.5) == ("ask", "no decision model set")
+
+    # In the agent: a cleared command runs with no question; an uncleared one is asked about
+    a = assistant(call("execute", command="tasklist"), AIMessage("Spotify isn't running, sir."))
+    assert a.respond("is spotify running?") == "Spotify isn't running, sir." and a.pending is None
+    approval.hazards = model_says(0.9)
+    a = assistant(call("execute", command="explorer D:\\nia"), AIMessage("Opened it, sir."), approval_model="m")
+    assert "Should I go ahead?" in a.respond("open the nia folder") and a.pending
+
+
 def test_approval_question_says_what_not_how():
     q = chat.approval_question
     close_tab = {"name": "execute", "args": {"command": "powershell -NoProfile -Command \"...SendKeys('%w')\""}}
     # The model's own words are what's heard - never the command
-    assert q([close_tab], "I'll close the YouTube tab.") == "Before I do that: I'll close the YouTube tab. Should I go ahead?"
+    assert q([close_tab], "I'll close the YouTube tab.") == \
+        "Before I do that: I'll close the YouTube tab. Note that it presses keys in another window. Should I go ahead?"
     # Without them, a plain summary
     assert q([close_tab], "") == "Before I do that: I'll press keys in the active window. Should I go ahead?"
     assert q([{"name": "execute", "args": {"command": "start https://www.youtube.com/watch?v=x"}}], "") == \
@@ -362,6 +413,8 @@ if __name__ == "__main__":
     test_tools_reach_spotify()
     test_spotify_errors_go_back_to_the_model()
     test_chat_does_not_build_spotify()
+    test_read_only_allowlist()
+    test_approval_layers()
     test_approval_question_says_what_not_how()
     test_conversation_carries_over_turns()
     test_pc_changes_need_a_spoken_yes()

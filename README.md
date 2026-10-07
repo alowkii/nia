@@ -197,8 +197,34 @@ She prefers the file tools, since reading needs no confirmation and the shell al
 | | |
 |---|---|
 | **Read** — no confirmation | list folders, read files, find files by pattern, search inside files |
-| **Change** — spoken yes first | write, edit and delete files; run `cmd.exe` commands (PowerShell via `powershell -Command`) |
+| **Run commands** — see below | `cmd.exe` commands (PowerShell via `powershell -Command`) |
+| **Change files** — spoken yes first | write, edit and delete files |
 | **Delegate** | hand a multi-step job to a sub-agent with its own context |
+
+Commands go through three checks in [agent/approval.py](agent/approval.py), cheapest first:
+
+1. **Risk rule** (code) — anything that deletes, closes programs, shuts down, installs, formats,
+   touches the registry, presses keys in another window or runs as administrator always asks.
+2. **Read-only allowlist** (code, instant) — one known read command (`tasklist`, `dir`, `type`,
+   `ipconfig`, `git status`, PowerShell `Get-*` …), piped only into filters like `findstr`, with
+   nothing chained or redirected, just runs.
+3. **Decision model** — everything else is scored by [OpenThai-SystemOne](https://huggingface.co/iapp/OpenThai-SystemOne-Ollama)
+   (0.8B, on the CPU through Ollama's `/v1/systemone`): six narrow questions — does it write files,
+   delete, open or start something, stop programs, install, run code? If every one is under the
+   threshold (0.5) it runs; otherwise she asks. ~4–5 s per check; if Ollama is down, she asks.
+
+Set it up once:
+
+```bash
+ollama pull hf.co/iapp/OpenThai-SystemOne-Ollama:Q8_0
+ollama create openthai-cpu -f openthai-cpu.Modelfile
+```
+
+The Modelfile adds the `decision` capability the upstream build is missing and keeps it off the GPU.
+Clear **Approval model** in the control panel to skip this layer (anything not on the allowlist
+then asks). [eval_approval.py](eval_approval.py) re-runs the 40 commands the design was chosen on
+(20 harmless, 20 risky, 16 of them unseen by the questions): currently 20/20 harmless run, 0/20
+risky. Every decision and its scores are logged.
 
 Before any change she says what she's about to do — *"Before I do that: I'll close the
 YouTube tab. Should I go ahead?"* — in plain words, never the raw command (the log keeps
@@ -243,6 +269,9 @@ agent/youtube.py                    YouTube tools
 agent/prompts/                      system prompt
 preprocess_voice.py                 builds a speaker embedding from a voice sample
 test_agent.py, test_voice.py         offline tests
+eval_approval.py                    live check of the approval layers (needs Ollama)
+agent/approval.py                   which PC commands run without asking
+openthai-cpu.Modelfile              builds the approval model for Ollama
 test.py                             text-only REPL
 ```
 
@@ -274,6 +303,7 @@ license; see its page.
 | [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) and [Piper](https://github.com/rhasspy/piper) voices | NIA's voice, through Moonshine |
 | [spotipy](https://github.com/spotipy-dev/spotipy) | Spotify Web API client |
 | [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [youtube-transcript-api](https://github.com/jdepoix/youtube-transcript-api) | YouTube search and transcripts |
+| [OpenThai-SystemOne](https://huggingface.co/iapp/OpenThai-SystemOne-Ollama) by iApp Technology, run by [Ollama](https://github.com/ollama/ollama) | the decision model that clears harmless PC commands — chosen with the [S1MB leaderboard](https://huggingface.co/spaces/hotchpotch/S1MB-leaderboard) |
 | [pycaw](https://github.com/AndreMiras/pycaw) | turning other apps down while NIA speaks (Windows mixer) |
 | [python-dotenv](https://github.com/theskumar/python-dotenv) | loading `.env` |
 | [Resemblyzer](https://github.com/resemble-ai/Resemblyzer) | the speaker embedding in `preprocess_voice.py` |
