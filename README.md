@@ -149,8 +149,11 @@ docstring are what the model sees, so the docstring is the prompt.
 
 ### Your PC
 
-NIA can also work on the PC itself, with real Windows paths (relative ones start in
-your home folder):
+NIA can also work on the PC itself. Deep Agents' file tools only accept `/`-style
+paths, so each drive is mounted as a folder — `C:\Users` is `/c/Users`, `D:\nia` is
+`/d/nia` — while the shell takes normal Windows paths. Her prompt includes where
+Windows really keeps your Desktop, Documents and Downloads (OneDrive often moves them).
+She prefers the file tools, since reading needs no confirmation and the shell always does:
 
 | | |
 |---|---|

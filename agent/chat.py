@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Literal
 
 from deepagents import create_deep_agent
-from deepagents.backends import LocalShellBackend
+from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
 from langchain.agents.middleware import wrap_tool_call
 from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 from langchain_core.tools import tool
@@ -69,6 +69,17 @@ def ensure_llm_server(timeout=180):
     logger.info(f"LLM server up after {time.time() - started:.1f}s")
 
 
+def pc_backend():
+    """The real PC for the file and shell tools. Deep Agents' file tools only take /-style paths
+    (they reject C:\\...), so each drive is mounted as /c/, /d/, ...; anything else is under the
+    home folder. The shell runs in the home folder and takes normal Windows paths."""
+    drives = {f"/{letter.lower()}/": FilesystemBackend(root_dir=f"{letter}:\\", virtual_mode=True)
+              for letter in "CDEFGHIJ" if Path(f"{letter}:\\").exists()}
+    # ponytail: no sandbox - the shell and files are the real PC; the spoken yes is the only guard
+    shell = LocalShellBackend(root_dir=Path.home(), virtual_mode=True, inherit_env=True, timeout=60)
+    return CompositeBackend(default=shell, routes=drives)
+
+
 @wrap_tool_call
 def errors_to_model(request, handler):
     """A failing tool (e.g. Spotify's "No active device") becomes a message the model can
@@ -110,8 +121,7 @@ class AssistantModel:
             model=llm,
             tools=self._spotify_tools() + list(extra_tools),
             system_prompt=initial_prompt + pc_prompt,
-            # ponytail: no sandbox - the shell and files are the real PC; the spoken yes is the only guard
-            backend=backend or LocalShellBackend(root_dir=Path.home(), virtual_mode=False, inherit_env=True, timeout=60),
+            backend=backend or pc_backend(),
             interrupt_on={name: True for name in NEEDS_APPROVAL},
             middleware=[errors_to_model],
             checkpointer=InMemorySaver(),  # the conversation, kept between turns
