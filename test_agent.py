@@ -76,6 +76,26 @@ def test_chat_does_not_build_spotify():
     assert a._spotify is None, "built a Spotify client for a plain chat turn"
 
 
+def test_approval_question_says_what_not_how():
+    q = chat.approval_question
+    close_tab = {"name": "execute", "args": {"command": "powershell -NoProfile -Command \"...SendKeys('%w')\""}}
+    # The model's own words are what's heard - never the command
+    assert q([close_tab], "I'll close the YouTube tab.") == "Before I do that: I'll close the YouTube tab. Should I go ahead?"
+    # Without them, a plain summary
+    assert q([close_tab], "") == "Before I do that: I'll press keys in the active window. Should I go ahead?"
+    assert q([{"name": "execute", "args": {"command": "start https://www.youtube.com/watch?v=x"}}], "") == \
+        "Before I do that: I'll open https://www.youtube.com/watch?v=x. Should I go ahead?"  # spoken as "the youtube link"
+    assert "edit notes.txt" in q([{"name": "edit_file", "args": {"file_path": "/c/Users/me/notes.txt"}}], "")
+    # For file changes the file's name beats a vague "I'll create that file for you"
+    assert q([{"name": "write_file", "args": {"file_path": "/c/Users/me/groceries.txt"}}], "I'll create that file for you now.") == \
+        "Before I do that: I'll save groceries.txt. Should I go ahead?"
+    # A harmless-sounding intent can't hide a dangerous command
+    wipe = {"name": "execute", "args": {"command": "Remove-Item C:\\Users\\me\\Documents -Recurse; shutdown /s"}}
+    asked = q([wipe], "I'll tidy up your documents.")
+    assert asked.startswith("Before I do that: I'll tidy up your documents.")
+    assert "it deletes files" in asked and "it shuts down or restarts the PC" in asked
+
+
 def test_conversation_carries_over_turns():
     a = assistant(AIMessage("Evening, sir."), AIMessage("You said hello, sir."))
     a.respond("hello")
@@ -93,7 +113,7 @@ def test_pc_changes_need_a_spoken_yes():
     # Approved: the read-back names the file, and the write happens only after "yes"
     a = assistant(call("write_file", file_path="/notes.txt", content="milk"), AIMessage("Saved, sir."))
     question = a.respond("note down milk")
-    assert "write the file /notes.txt" in question and "go ahead" in question.lower()
+    assert "save notes.txt" in question and "go ahead" in question.lower() and "/notes" not in question
     assert not written(a, "/notes.txt"), "wrote before the user said yes"
     assert a.respond("yes, go ahead") == "Saved, sir."
     assert written(a, "/notes.txt")
@@ -101,7 +121,8 @@ def test_pc_changes_need_a_spoken_yes():
     # Refused: anything but a clear yes, including "yes... no wait"
     for answer in ("no", "nope, cancel that", "yes - no wait", "what?"):
         a = assistant(call("execute", command="del C:\\stuff"), AIMessage("Okay, I won't, sir."))
-        assert "run the command: del C:\\stuff" in a.respond("clean up")
+        question = a.respond("clean up")
+        assert "del C:" not in question and "it deletes files" in question, question
         assert a.respond(answer) == "Okay, I won't, sir.", answer
         tool_msg = next(m for m in a.messages if isinstance(m, ToolMessage))
         assert tool_msg.status == "error" or "reject" in str(tool_msg.content).lower(), tool_msg
@@ -312,6 +333,7 @@ if __name__ == "__main__":
     test_tools_reach_spotify()
     test_spotify_errors_go_back_to_the_model()
     test_chat_does_not_build_spotify()
+    test_approval_question_says_what_not_how()
     test_conversation_carries_over_turns()
     test_pc_changes_need_a_spoken_yes()
     test_extra_tools_reach_the_agent()

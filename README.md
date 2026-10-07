@@ -197,8 +197,12 @@ She prefers the file tools, since reading needs no confirmation and the shell al
 | **Change** — spoken yes first | write, edit and delete files; run `cmd.exe` commands (PowerShell via `powershell -Command`) |
 | **Delegate** | hand a multi-step job to a sub-agent with its own context |
 
-Before any change she reads it back — *"Before I do that: I'll run the command: … Should
-I go ahead?"* — and only a clear yes ("yes", "go ahead", "do it") runs it. Anything
+Before any change she says what she's about to do — *"Before I do that: I'll close the
+YouTube tab. Should I go ahead?"* — in plain words, never the raw command (the log keeps
+that). File changes name the file ("I'll save groceries.txt"); commands use her own short
+account of what they do, and anything that deletes, closes programs, shuts down, formats or
+touches the registry is always added out loud ("Note that it deletes files"), however
+harmless the description sounds. Only a clear yes ("yes", "go ahead", "do it") runs it. Anything
 else, including "yes… no wait", refuses it, and a question left unanswered for 60
 seconds expires. **There is no sandbox:** the shell and files are the real PC, and that
 spoken yes is the only guard — anyone within earshot can answer it.

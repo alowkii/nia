@@ -120,13 +120,46 @@ def tool_guard(request, handler):
     return result
 
 
+# Said out loud whatever the stated intent, so a loose description can't hide a dangerous command
+RISKS = [
+    (r"\b(del|erase|rm|rmdir|rd|remove-item)\b", "it deletes files"),
+    (r"\b(format|diskpart|clear-disk)\b", "it formats or wipes a disk"),
+    (r"\b(shutdown|restart-computer|stop-computer|logoff)\b", "it shuts down or restarts the PC"),
+    (r"\b(taskkill|stop-process|kill)\b", "it closes programs"),
+    (r"\b(reg|regedit|set-itemproperty|new-itemproperty)\b|hk(lm|cu):", "it changes the registry"),
+    (r"\b(invoke-webrequest|iwr|curl|wget|bitsadmin)\b.*\|\s*(iex|invoke-expression)", "it downloads and runs code"),
+]
+
+
 def describe(action):
-    """One spoken line for a pending tool call, so the user knows exactly what they're approving"""
-    args = action["args"]
-    if action["name"] == "execute":
-        return f"run the command: {args.get('command')}"
-    verb = {"write_file": "write the file", "edit_file": "edit the file", "delete": "delete"}[action["name"]]
-    return f"{verb} {args.get('file_path') or args.get('path')}"
+    """What NIA plans to do, in plain words - never the raw command (the log keeps that)"""
+    args, name = action["args"], action["name"]
+    if name != "execute":
+        file = Path(str(args.get("file_path") or args.get("path") or "")).name or "a file"
+        return {"write_file": f"save {file}", "edit_file": f"edit {file}", "delete": f"delete {file}"}[name]
+    command = str(args.get("command", ""))
+    if url := re.search(r"https?://\S+|www\.\S+", command):
+        return f"open {url.group(0)}"  # spoken as "the youtube link"
+    if re.search(r"sendkeys", command, re.I):
+        return "press keys in the active window"
+    return "run a PowerShell command" if "powershell" in command.lower() else "run a command"
+
+
+def risks(action):
+    command = str(action["args"].get("command", "")) if action["name"] == "execute" else ""
+    return [note for pattern, note in RISKS if re.search(pattern, command, re.I)]
+
+
+def approval_question(actions, intent):
+    """The spoken approval question, plus any risk the commands carry. File changes are summarized
+    with the file's name ("save groceries.txt") - the one detail that matters there. For commands,
+    the model's own short intent ("I'll close the YouTube tab") says more than a summary can"""
+    intent = " ".join(str(intent or "").split()[:25]).strip()
+    commands = any(a["name"] == "execute" for a in actions)
+    plan = intent.rstrip(".") if intent and commands else "I'll " + ", then ".join(describe(a) for a in actions)
+    notes = sorted({note for a in actions for note in risks(a)})
+    warning = f" Note that {' and '.join(notes)}." if notes else ""
+    return f"Before I do that: {plan}.{warning} Should I go ahead?"
 
 
 class AssistantModel:
@@ -201,8 +234,10 @@ class AssistantModel:
         if result.get("__interrupt__"):
             actions = result["__interrupt__"][0].value["action_requests"]
             self.pending = (len(actions), time.time())
-            logger.info(f"Awaiting approval for: {actions}")
-            return "Before I do that: I'll " + ", then ".join(describe(a) for a in actions) + ". Should I go ahead?"
+            logger.info(f"Awaiting approval for: {actions}")  # the exact commands, for the record
+            # The model's text alongside its tool call is its own short account of what it's doing
+            intent = result["messages"][-1].content if result["messages"] else ""
+            return approval_question(actions, intent if isinstance(intent, str) else "")
         self.pending = None
         return result["messages"][-1].content
 
