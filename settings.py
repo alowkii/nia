@@ -10,6 +10,8 @@ DEFAULTS = {
     "model_file": "Ternary-Bonsai-2-27B-PTQ1_0.gguf",
     "port": 8081,  # 8080 is taken by httpd on this machine
     "context": 16384,  # tokens; ~7.5 of 8 GB VRAM on an RTX 4060 with the display. The agent harness alone is ~3.6K
+    # 8-bit context cache: measured 478 MB less VRAM at 16K with the same speed (34.5 vs 34.6 tok/s)
+    "cache_8bit": True,
     "thinking": False,  # model card suggests temperature 1.0, top_p 0.95 with thinking on
     "temperature": 0.7,
     "top_p": 0.8,

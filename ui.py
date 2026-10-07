@@ -23,6 +23,7 @@ FIELDS = [
     ("model_file", "Model file", "entry"),
     ("port", "Port", "entry"),
     ("context", "Context (tokens)", "entry"),
+    ("cache_8bit", "8-bit context cache (saves ~0.5 GB VRAM)", "check"),
     ("thinking", "Thinking", "check"),
     ("temperature", "Temperature", "entry"),
     ("top_p", "Top-p", "entry"),

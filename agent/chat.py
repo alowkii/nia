@@ -47,7 +47,8 @@ def llm_server_command(s=None):
             "--reasoning", "on" if s["thinking"] else "off",
             "--temp", str(s["temperature"]), "--top-p", str(s["top_p"]), "--top-k", str(s["top_k"]),
             "--presence-penalty", str(s["presence_penalty"]),
-            "--host", "127.0.0.1", "--port", str(s["port"]), "--log-file", str(SERVER_LOG), "--log-colors", "off"]
+            "--host", "127.0.0.1", "--port", str(s["port"]), "--log-file", str(SERVER_LOG), "--log-colors", "off"] + \
+        (["--cache-type-k", "q8_0", "--cache-type-v", "q8_0"] if s["cache_8bit"] else [])
 
 
 def llm_up(port):
