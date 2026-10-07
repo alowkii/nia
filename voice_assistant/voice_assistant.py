@@ -24,26 +24,32 @@ logger = logging.getLogger(__name__)
 STT_MODELS = {"tiny": ModelArch.TINY_STREAMING, "small": ModelArch.SMALL_STREAMING, "medium": ModelArch.MEDIUM_STREAMING}
 
 
-def wake_command(text, phrase, threshold):
-    """If text starts with the wake phrase, return whatever follows it ('' for just the phrase), else None.
+def wake_match(text, phrase):
+    """How closely the best spot in text matches the wake phrase (0-1), and what follows that spot.
 
-    Fuzzy, because the recogniser hears "Hey Nia" as "Hey, Nia." or "Hey Nia" or prefixes a stray
-    "Yeah." - so the phrase is compared, spaces and punctuation dropped, to short word windows
-    near the start of the line.
+    Fuzzy, because the recogniser hears "Hey Nia" as "Hey, Nia." or "Heania" - so the phrase is
+    compared, spaces and punctuation dropped, to short word windows. Every position is tried:
+    with music or talk in the room the phrase often lands mid-line, not at the start.
     """
     words = list(re.finditer(r"[a-z']+", text.lower()))
     target = "".join(phrase.lower().split())
     size = len(phrase.split())
     best, end = 0.0, 0
-    for start in range(min(3, len(words))):  # skip up to two stray leading words
+    for start in range(len(words)):
         for n in range(1, size + 2):  # the phrase may come out as fewer or more words
             window = "".join(w.group() for w in words[start:start + n])
             score = SequenceMatcher(None, window, target).ratio()
             if score > best:
                 best, end = score, min(start + n, len(words))
-    if best < threshold:
-        return None
-    return text[words[end - 1].end():].lstrip(" ,.!?;:-")
+    if not words:
+        return 0.0, ""
+    return best, text[words[end - 1].end():].lstrip(" ,.!?;:-")
+
+
+def wake_command(text, phrase, threshold):
+    """Whatever follows the wake phrase ('' for just the phrase), or None if it isn't there."""
+    score, rest = wake_match(text, phrase)
+    return rest if score >= threshold else None
 
 
 # Symbols the voice gets wrong, mapped to what should be said
@@ -136,9 +142,12 @@ class WakeWordDetector:
                     continue
 
                 # The phrase also counts mid-session, where people repeat it out of habit
-                command = wake_command(text, s["wake_phrase"], s["wake_threshold"])
+                score, rest = wake_match(text, s["wake_phrase"])
+                command = rest if score >= s["wake_threshold"] else None
                 if command is None and not awake:
-                    continue  # not for NIA - and not logged, it's just the room
+                    # Logged so a missed wake shows what was heard and how close it came
+                    logger.info(f"Ignored {text!r} (wake match {score:.2f}, needs {s['wake_threshold']})")
+                    continue
                 if command is not None:
                     if not awake:
                         logger.info(f"Wake phrase heard: {text!r}")

@@ -14,6 +14,8 @@ assert wake("Hey, Nia!") == ""
 assert wake("Hey Nia play some loafy beats.") == "play some loafy beats."
 assert wake("Hey Nia, what time is it?") == "what time is it?"
 assert wake("Yeah. Hey Nia what time is it?") == "what time is it?"  # stray leading word
+# Mid-line, as when music or talk runs into the phrase
+assert wake("I just can't stop loving you Hey Nia, pause the music.") == "pause the music."
 
 # Not woken
 assert wake("Hey nice to meet you.") is None  # 0.77, just under the default
