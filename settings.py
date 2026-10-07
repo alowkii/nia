@@ -18,6 +18,7 @@ DEFAULTS = {
     # Assistant (CPU) - restart the assistant to apply
     # ponytail: Kokoro takes ~1 s to start speaking on CPU; "piper_en_US-lessac-medium" ~0.2 s but more robotic
     "voice": "kokoro_af_heart",
+    "voice_volume": 1.0,  # NIA's own voice, 0.1-1 (1 = full; more would clip); also set by voice ("speak quieter")
     "stt_model": "medium",  # Moonshine streaming: tiny / small / medium (tiny rarely hears "Nia")
     "wake_phrase": "hey nia",
     # How closely the start of what you say must match the wake phrase, 0-1. Lower wakes more easily:

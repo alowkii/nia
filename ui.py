@@ -30,6 +30,7 @@ FIELDS = [
     ("presence_penalty", "Presence penalty", "entry"),
     (None, "Assistant  (CPU - restart the assistant to apply)", None),
     ("voice", "Voice", "voice"),
+    ("voice_volume", "NIA's voice volume (0.1-1, 1 = full)", "entry"),
     ("stt_model", "Speech-to-text model", "stt"),
     ("wake_phrase", "Wake phrase", "entry"),
     ("wake_threshold", "Wake match threshold (0-1, lower wakes easier)", "entry"),
@@ -105,9 +106,11 @@ class ControlPanel(tk.Tk):
             except ValueError:
                 messagebox.showerror("Invalid setting", f"{key} must be a {'whole ' if kind is int else ''}number, got {var.get()!r}")
                 return None
-        for key, label in (("wake_threshold", "Wake match threshold"), ("duck_level", "Other apps' volume")):
-            if not 0 <= values[key] <= 1:
-                messagebox.showerror("Invalid setting", f"{label} must be between 0 and 1")
+        for key, label, low, high in (("wake_threshold", "Wake match threshold", 0, 1),
+                                      ("duck_level", "Other apps' volume", 0, 1),
+                                      ("voice_volume", "NIA's voice volume", 0.1, 1)):
+            if not low <= values[key] <= high:
+                messagebox.showerror("Invalid setting", f"{label} must be between {low} and {high}")
                 return None
         if not values["wake_phrase"].strip():
             messagebox.showerror("Invalid setting", "Wake phrase can't be empty")

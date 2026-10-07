@@ -62,10 +62,11 @@ def ensure_llm_server(timeout=180):
 
 
 class AssistantModel:
-    def __init__(self, model="bonsai", llm=None):
+    def __init__(self, model="bonsai", llm=None, extra_tools=()):
+        """extra_tools: tools from outside the agent, e.g. the voice layer's own volume control"""
         self._spotify = None  # built on first music tool call, not at startup
         self.messages = []
-        tools = self._spotify_tools()
+        tools = self._spotify_tools() + list(extra_tools)
         # llama-server ignores the model name and key, but the client requires both
         base_url = f"http://127.0.0.1:{settings.load()['port']}/v1"
         llm = (llm or ChatOpenAI(model=model, base_url=base_url, api_key="none")).bind_tools(tools)

@@ -1,6 +1,10 @@
-"""Checks the voice text helpers: the fuzzy wake-phrase matcher on real Moonshine transcripts,
-and the cleanup of replies before they're spoken. Run: python test_voice.py"""
-from voice_assistant.voice_assistant import speakable, wake_command
+"""Checks the voice helpers: the fuzzy wake-phrase matcher on real Moonshine transcripts,
+the cleanup of replies before they're spoken, and NIA's own voice volume. Run: python test_voice.py"""
+import tempfile
+from pathlib import Path
+
+import settings
+from voice_assistant.voice_assistant import WakeWordDetector, speakable, wake_command
 
 
 def wake(text, threshold=0.8):
@@ -36,5 +40,24 @@ assert speakable("Some R&B, then AC/DC → enjoy!") == "Some R and B, then AC DC
 assert speakable("Plain text stays as it is.") == "Plain text stays as it is."
 assert speakable("Wait—what?") == "Wait, what?"
 assert all(ord(c) < 128 for c in speakable("Café ☕ — naïve “quotes” ‘and’ © 2026 ✓"))
+
+# Voice volume: applied to the TTS, clamped to 0.1-1 (more clips), saved for the next start
+class StubTTS:
+    def volume(self, level):
+        self.level = level
+
+with tempfile.TemporaryDirectory() as tmp:
+    settings.PATH = Path(tmp) / "settings.json"  # never touch the real settings.json
+    nia = WakeWordDetector.__new__(WakeWordDetector)  # skip mic, models and LLM
+    nia.settings, nia.tts = settings.load(), StubTTS()
+    set_volume, change_volume = nia._voice_tools()
+    assert set_volume.invoke({"percent": 50}) == "Your voice volume is now 50%"
+    assert nia.tts.level == 0.5 and settings.load()["voice_volume"] == 0.5
+    assert change_volume.invoke({"step": 25}) == "Your voice volume is now 75%"
+    assert nia.tts.level == 0.75 and settings.load()["voice_volume"] == 0.75
+    assert "maximum" in change_volume.invoke({"step": 100})  # capped, and says so
+    assert nia.tts.level == 1.0
+    change_volume.invoke({"step": -500})
+    assert nia.tts.level == 0.1  # never silent
 
 print("ok")

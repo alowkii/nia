@@ -7,6 +7,7 @@ import queue
 import unicodedata
 from difflib import SequenceMatcher
 from dotenv import load_dotenv
+from langchain_core.tools import tool
 from moonshine_voice import MicTranscriber, ModelArch, TextToSpeech
 from pycaw.pycaw import AudioUtilities
 
@@ -114,13 +115,43 @@ class WakeWordDetector:
 
         # Text to speech (CPU)
         logger.info(f"Loading text-to-speech ({s['voice']})...")
-        self.tts = TextToSpeech().language("en_us").voice(s["voice"]).load()
+        self.tts = TextToSpeech().language("en_us").voice(s["voice"]).volume(s["voice_volume"]).load()
 
         # Assistant model (Bonsai on llama-server, GPU)
         logger.info("Starting the LLM server if needed...")
         ensure_llm_server()
-        self.assistant = AssistantModel()
+        self.assistant = AssistantModel(extra_tools=self._voice_tools())
         logger.info("Assistant ready!")
+
+    def set_voice_volume(self, level):
+        """NIA's own voice gain, clamped to 0.1-1 and saved so it survives restarts.
+        The TTS already peaks at full scale at 1.0, so more would only clip and distort."""
+        level = round(min(max(level, 0.1), 1.0), 2)
+        self.settings["voice_volume"] = level
+        self.tts.volume(level)
+        saved = settings.load()
+        saved["voice_volume"] = level
+        settings.save(saved)
+        logger.info(f"Voice volume set to {level:.0%}")
+        if level == 1.0:
+            return "Your voice is at 100%, its maximum - for louder, the user can turn up the Windows volume"
+        return f"Your voice volume is now {level:.0%}"
+
+    def _voice_tools(self):
+        @tool
+        def set_voice_volume(percent: int) -> str:
+            """Set how loud YOUR OWN voice is, in percent (10-100, 100 is the maximum), e.g. "talk at 50 percent".
+            Not for music - use the Spotify volume tools for that"""
+            return self.set_voice_volume(percent / 100)
+
+        @tool
+        def change_voice_volume(step: int) -> str:
+            """Make YOUR OWN voice louder (positive step) or quieter (negative step), in percent.
+            For "speak up", "talk quieter", "you're too loud". Use 25 or -25 unless told an amount.
+            Not for music - use the Spotify volume tools for that"""
+            return self.set_voice_volume(self.settings["voice_volume"] + step / 100)
+
+        return [set_voice_volume, change_voice_volume]
 
     def run(self):
         s = self.settings

@@ -79,6 +79,23 @@ def test_history_is_trimmed_to_whole_turns():
     assert isinstance(a.messages[0], HumanMessage), "history must start on a user turn"
 
 
+def test_extra_tools_reach_the_agent():
+    """The voice layer hands in its own tools (e.g. voice volume) next to Spotify's"""
+    from langchain_core.tools import tool
+    heard = []
+
+    @tool
+    def set_voice_volume(percent: int) -> str:
+        """Set your own voice volume"""
+        heard.append(percent)
+        return "ok"
+
+    llm = ScriptedLLM(messages=iter([call("set_voice_volume", percent=60), AIMessage("Quieter now, sir.")]))
+    a = AssistantModel(llm=llm, extra_tools=[set_voice_volume])
+    assert a.respond("talk at 60 percent") == "Quieter now, sir."
+    assert heard == [60]
+
+
 def test_playback_wakes_an_idle_device():
     class StubAPI:
         def __init__(self, devices):
@@ -108,5 +125,6 @@ if __name__ == "__main__":
     test_spotify_errors_go_back_to_the_model()
     test_chat_does_not_build_spotify()
     test_history_is_trimmed_to_whole_turns()
+    test_extra_tools_reach_the_agent()
     test_playback_wakes_an_idle_device()
     print("ok")

@@ -34,6 +34,8 @@ false-triggers more — "Hey Mia" already scores 0.83. The mic is muted while NI
 and speaks, so she doesn't transcribe herself. While she speaks, every other app (Spotify,
 browser, games) is turned down to 30% of its volume in the Windows mixer and restored
 afterwards — "Other apps' volume while NIA speaks" in the control panel; 1 turns it off.
+Her own voice volume is a tool too: "speak up", "you're too loud", "talk at 50 percent"
+(10-100%; more would only clip). It's saved, so it survives restarts.
 
 The agent is a small LangGraph loop in [agent/chat.py](agent/chat.py): the model
 either answers, or calls Spotify tools; tool results (and errors) go back to the model,
