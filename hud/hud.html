@@ -4,6 +4,9 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>NIA</title>
+<link rel="icon" href="/logo/svg/nia-favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/logo/png/apple-touch-icon-180.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
 <style>
@@ -48,7 +51,10 @@
          column-gap: 48px; row-gap: 24px; background: var(--bg); color: var(--text); font-family: var(--mono);
          font-size: 12px; overflow: hidden; }
   header { grid-column: 1 / 4; display: flex; align-items: center; justify-content: space-between; }
-  .brand { font-family: var(--display); font-weight: 600; font-size: 22px; letter-spacing: 8px; }
+  .brand { display: flex; align-items: center; height: 28px; }
+  .brand svg { height: 28px; width: auto; overflow: visible; }
+  .brand .mark { color: var(--main); }   /* the apex mark in the theme's accent... */
+  .brand .word { color: var(--text); }   /* ...and NIA in its text colour */
   .chip { display: flex; align-items: center; gap: 10px; color: var(--c); letter-spacing: 3px; font-size: 11px;
           min-width: 120px; justify-content: center; }
   .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
@@ -162,7 +168,17 @@
 <div id="stage">
 <div class="hud" id="hud">
   <header>
-    <span class="brand">NIA</span>
+    <span class="brand" role="img" aria-label="NIA">
+      <svg viewBox="12 4 206 92" aria-hidden="true">
+        <g class="mark" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 86L50 34l28 52" stroke-width="7"></path>
+          <path d="M38 86l12-22 12 22" stroke-opacity=".45" stroke-width="5"></path>
+          <circle cx="50" cy="18" r="6.5" fill="currentColor" stroke="none"></circle>
+        </g>
+        <path class="word" transform="translate(112 0)" d="M0 70V30l30 40V30M48 70V30M66 70l18-40 18 40"
+              fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"></path>
+      </svg>
+    </span>
     <div class="chip" role="status" aria-live="polite"><span class="dot blink"></span><span id="chip">BOOTING</span></div>
     <div class="right">
       <span id="clock"></span>

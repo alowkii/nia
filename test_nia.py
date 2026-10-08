@@ -126,6 +126,23 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         assert restarted == [1] and helper_server.restarts == server_restarts, what
     assert nia.Assistant(hub).handle({"state": "awake"}) == {"state": "awake"}
 
+    # The logo: the window's icon and header, served from assets/logo only
+    page = urllib.request.urlopen(base + "/").read().decode("utf-8")
+    assert 'href="/logo/svg/nia-favicon.svg"' in page and 'href="/favicon.ico"' in page
+    assert 'class="brand" role="img" aria-label="NIA"' in page
+    for path, kind in (("/favicon.ico", "image/x-icon"), ("/logo/svg/nia-favicon.svg", "image/svg+xml"),
+                       ("/logo/png/apple-touch-icon-180.png", "image/png")):
+        with urllib.request.urlopen(base + path) as response:
+            assert response.headers["Content-Type"] == kind and response.read() == nia.logo_file(path).read_bytes()
+    # ...and nothing else on the PC, however the path is dressed up
+    for path in ("/logo/../nia.py", "/logo/../../.env", "/logo/svg/../../../settings.json", "/logo/%2e%2e/nia.py",
+                 "/logo/nope.svg", "/logo/"):
+        try:
+            urllib.request.urlopen(base + path)
+            raise AssertionError(f"served {path}")
+        except urllib.error.HTTPError as e:
+            assert e.code == 404, path
+
     # The window's quit
     assert post("/quit")[0] == 204 and done.is_set()
     httpd.shutdown()

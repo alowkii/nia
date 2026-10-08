@@ -1,3 +1,10 @@
+<p align="center">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo/svg/nia-logo-tagline-white.svg">
+    <img src="assets/logo/svg/nia-logo-tagline-ink.svg" alt="NIA — Next-gen Intelligence Agent" width="440">
+  </picture>
+</p>
+
 # NIA — Next-gen Intelligence Agent
 
 A Jarvis-style voice assistant that runs entirely on your own machine. Wake phrase,
@@ -394,6 +401,7 @@ fixes from a real session (album playback, 404 retry, no repeat restarts).
 ```
 nia.py                              start here: NIA's window, with the LLM server and assistant behind it
 hud/hud.html                        the window itself (HUD, settings panel)
+assets/logo/                        the NIA logo: SVG and PNG in every lockup, app icons, favicon
 main.py                             the assistant on its own (nia.py runs it hidden)
 settings.py                         setting defaults and checks (overrides in settings.json)
 voice_assistant/voice_assistant.py  state machine, STT, TTS

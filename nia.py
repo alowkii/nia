@@ -76,6 +76,22 @@ VOICES = ["kokoro_bm_fable", "kokoro_bm_george", "kokoro_af_heart"]
 STT_MODELS = ["tiny", "small", "medium"]
 
 
+LOGO = ROOT / "assets" / "logo"
+LOGO_TYPES = {".svg": "image/svg+xml", ".png": "image/png", ".ico": "image/x-icon"}
+
+
+def logo_file(path):
+    """The logo file a page asks for (/favicon.ico, /logo/svg/nia-favicon.svg...), or None - only files inside
+    assets/logo, by their exact path, so nothing else on the PC can be fetched through the window"""
+    name = {"/favicon.ico": "favicon.ico"}.get(path) or (path[len("/logo/"):] if path.startswith("/logo/") else None)
+    if not name:
+        return None
+    file = (LOGO / name).resolve()
+    if LOGO.resolve() not in file.parents or file.suffix not in LOGO_TYPES or not file.is_file():
+        return None
+    return file
+
+
 def config():
     """What the page needs to know beyond NIA's state"""
     s = settings.load()
@@ -296,6 +312,8 @@ def handler(hub, assistant, server, done):
                                             "current": settings.load()["mic_device"]}).encode())
             elif self.path == "/events":
                 self.events()
+            elif file := logo_file(self.path):  # the logo, favicon and app icons
+                self.reply(200, file.read_bytes(), LOGO_TYPES[file.suffix])
             else:
                 self.reply(404)
 
