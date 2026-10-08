@@ -9,11 +9,16 @@
 
 A Jarvis-style voice assistant that runs entirely on your own machine. Wake phrase,
 speech recognition, reasoning, and speech synthesis are all local — nothing is sent
-to a cloud AI API. The only network calls are to Spotify, YouTube and web search (DuckDuckGo, and the
-pages it finds), and only when you ask for them, plus the window's two fonts from Google Fonts (it falls back to Windows'
+to a cloud AI API unless she asks Claude (optional, through Claude Code). The other network calls are to Spotify,
+YouTube and web search (DuckDuckGo, and the pages it finds), and only when you ask for them, plus the window's two fonts from Google Fonts (it falls back to Windows'
 own fonts offline); the only account needed is a Spotify developer app.
 
 Say **"Hey Nia"**, then talk — or say it all at once: "Hey Nia, play some lofi".
+
+<p align="center">
+  <img src="assets/screenshots/thinking.png" alt="NIA's window while she works through a research job: the orb in amber reads Thinking, step 2 of 4; the voice pipeline on the left shows Bonsai reasoning and the web tool in use; on the right, the request and her four-step plan with the first step ticked" width="900">
+  <br><sub><i>Thinking through a job of several steps: her plan on the right, the stage she's at on the left.</i></sub>
+</p>
 
 ## How it works
 
@@ -143,6 +148,17 @@ onto her. Say "reboot" to restart all of it — see **Rebooting** under [How it 
 
 ### The window
 
+<table>
+  <tr>
+    <td width="50%"><img src="assets/screenshots/standby.png" alt="Standing by: a calm blue orb waiting for Hey Nia, every stage of the voice pipeline ready"><br><sub><b>Standing by</b> — waiting for "Hey Nia"</sub></td>
+    <td width="50%"><img src="assets/screenshots/listening.png" alt="Listening: the orb ripples while the words being heard appear on the right"><br><sub><b>Listening</b> — your words appear as they're heard</sub></td>
+  </tr>
+  <tr>
+    <td width="50%"><img src="assets/screenshots/speaking.png" alt="Speaking: the orb has become a soft green blob moving with her voice, with the request and her reply on the right"><br><sub><b>Speaking</b> — the orb moves with each word</sub></td>
+    <td width="50%"><img src="assets/screenshots/settings.png" alt="The settings panel open on the right of the window: theme swatches, wake word, push-to-talk and spoken-reply switches, and the LLM server settings"><br><sub><b>Settings</b> — every setting, inside the window</sub></td>
+  </tr>
+</table>
+
 - **Centre:** the orb — rings, core and label in the colour of her state: *Booting*, *Standing by*
   (waiting for the wake phrase), *Listening* (it ripples, and shows your words as they're heard),
   *Thinking*, speaking (the core and the bars move with the loudness of each word), and *Offline*.
@@ -157,6 +173,11 @@ onto her. Say "reboot" to restart all of it — see **Rebooting** under [How it 
   restarts only what needs it — voice speed or greetings apply at once; a new voice restarts the
   assistant (a few seconds); server settings restart the server too. Spotify login and an LLM server
   restart are there as well.
+
+<p align="center">
+  <img src="assets/screenshots/themes.png" alt="Four of the six colour themes: arc gold while listening, violet while speaking, mint standing by, and red alert while thinking" width="900">
+  <br><sub><i>Four of the six themes: arc gold, violet, mint and red alert (cyan and ice white are the others).</i></sub>
+</p>
 
 The window is [hud/hud.html](hud/hud.html) in an Edge app window, served by [nia.py](nia.py) on
 `127.0.0.1:8765` and updated live over an event stream. The assistant runs as a hidden child process
@@ -418,6 +439,7 @@ agent/server.py                     the LLM server command and health check
 agent/prompts/                      system prompt
 utils/                              the assistant's link to the window, microphones, logging
 assets/logo/                        the NIA logo: SVG and PNG in every lockup, app icons, favicon
+assets/screenshots/                 the window, for this README
 tests/                              the offline test suites (test_agent, test_voice, test_nia)
 scripts/run_bonsai.bat              starts just the LLM server (llama-server + Bonsai)
 scripts/text_chat.py                text-only chat in the console, no audio
