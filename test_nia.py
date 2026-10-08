@@ -76,6 +76,15 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
     assert post("/settings", {"no_such": 1})[0] == 400
     assert settings.load()["voice_speed"] == settings.DEFAULTS["voice_speed"], "a refused save changes nothing"
 
+    # The microphones on offer, for the picker beside the mic button and the settings form
+    listed = json.load(urllib.request.urlopen(base + "/mics"))
+    assert listed["mics"] == nia.mics.names() and listed["current"] == ""
+    assert json.load(urllib.request.urlopen(base + "/settings"))["mics"] == listed["mics"]
+    assistant.sent.clear()
+    assert post("/settings", {"mic_device": "Microphone (Test)"}) == (200, {"restarting": []}), "switches live"
+    assert assistant.sent == [{"type": "settings", "values": {"mic_device": "Microphone (Test)"}}]
+    assert hub.latest["config"]["mic_device"] == "Microphone (Test)"
+
     # Live settings apply at once, with no restart
     assistant.sent.clear()
     assert post("/settings", {"voice_speed": "1.4", "spoken_replies": False}) == (200, {"restarting": []})

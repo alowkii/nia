@@ -9,27 +9,31 @@
 <style>
   /* Colours are set per theme from THEMES below; --c is the current state's colour */
   :root { --bg: #03070A; --main: #5FE3FF; --text: #D7F6FF; --sub: #9CC2D1; --sub2: #7FA6B6; --muted: #6F95A6;
-          --off: #3E5966; --done: #7CF5C4; --rgb: 95,227,255; --c: #6B8CFF;
+          --off: #3E5966; --done: #7CF5C4; --c: #6B8CFF;
           --display: Rajdhani, Bahnschrift, "Segoe UI", sans-serif;
           --mono: "JetBrains Mono", "Cascadia Mono", Consolas, ui-monospace, monospace; }
+  /* Registered, so every colour change - a new state, a new theme - fades instead of snapping */
+  @property --c { syntax: '<color>'; inherits: true; initial-value: #6B8CFF; }
+  @property --bg { syntax: '<color>'; inherits: true; initial-value: #03070A; }
+  @property --main { syntax: '<color>'; inherits: true; initial-value: #5FE3FF; }
+  @property --text { syntax: '<color>'; inherits: true; initial-value: #D7F6FF; }
+  @property --sub { syntax: '<color>'; inherits: true; initial-value: #9CC2D1; }
+  @property --sub2 { syntax: '<color>'; inherits: true; initial-value: #7FA6B6; }
+  @property --muted { syntax: '<color>'; inherits: true; initial-value: #6F95A6; }
+  @property --off { syntax: '<color>'; inherits: true; initial-value: #3E5966; }
+  @property --done { syntax: '<color>'; inherits: true; initial-value: #7CF5C4; }
+  :root { transition: --c .9s ease, --bg .9s ease, --main .9s ease, --text .9s ease, --sub .9s ease, --sub2 .9s ease, --muted .9s ease, --off .9s ease, --done .9s ease; }
   html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
   a { color: var(--main); }
-  @keyframes spin { to { transform: rotate(360deg); } }
-  @keyframes spinr { to { transform: rotate(-360deg); } }
   @keyframes wave { 0%, 100% { transform: scaleY(.3); } 50% { transform: scaleY(1); } }
   @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
-  @keyframes breathe { 0%, 100% { transform: scale(.94); opacity: .6; } 50% { transform: scale(1); opacity: 1; } }
   @keyframes flutter { 0% { transform: scale(1); } 20% { transform: scale(1.05); } 40% { transform: scale(.98); }
                        60% { transform: scale(1.03); } 100% { transform: scale(1); } }
-  .rot { transform-box: fill-box; transform-origin: center; animation: spin 40s linear infinite; }
-  .rotr { transform-box: fill-box; transform-origin: center; animation: spinr 40s linear infinite; }
   .bar { transform-origin: center; animation: wave .9s ease-in-out infinite; }
   .blink { animation: blink 1.6s ease-in-out infinite; }
-  .core { transform-box: fill-box; transform-origin: center; }
-  .core-breathe { animation: breathe 4s ease-in-out infinite; }
   .flutter { animation: flutter .7s ease-out 1; }
   @media (prefers-reduced-motion: reduce) {
-    .rot, .rotr, .bar, .blink, .core-breathe, .flutter { animation: none !important; }
+    .bar, .blink, .flutter { animation: none !important; }
   }
   button { font: inherit; cursor: pointer; }
   button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--main); outline-offset: 3px; }
@@ -61,7 +65,10 @@
   .module .status { font-size: 10px; letter-spacing: 2px; }
 
   .center { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28px; min-height: 0; }
-  #orb { position: relative; width: 460px; height: 460px; transition: opacity .6s; }
+  #orb { position: relative; width: 460px; height: 460px; transition: opacity .6s; color: var(--c); }
+  .head { filter: drop-shadow(0 0 5px currentColor); transition: opacity .6s; }
+  .module .dot, .module .name, .module .status, .mode, .mode .dot {
+    transition: color .9s ease, background-color .9s ease, border-color .9s ease; }
   #orb svg { position: absolute; inset: 0; }
   .orb-text { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
               justify-content: center; gap: 12px; text-align: center; }
@@ -76,6 +83,14 @@
   .turn p { margin: 0; font-size: 14px; line-height: 1.6; color: var(--text); overflow-wrap: anywhere;
             display: -webkit-box; -webkit-line-clamp: 9; -webkit-box-orient: vertical; overflow: hidden; }
   #liveWho { color: var(--c); }
+  /* Her plan for a multi-step job */
+  #plan { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+  #plan li { display: flex; gap: 10px; font-size: 12px; line-height: 1.5; color: var(--sub2); transition: color .6s; }
+  #plan li .mark { flex-shrink: 0; width: 14px; text-align: center; color: var(--off); transition: color .6s; }
+  #plan li.in_progress { color: var(--text); }
+  #plan li.in_progress .mark { color: var(--c); animation: blink 1.6s ease-in-out infinite; }
+  #plan li.completed { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--off); }
+  #plan li.completed .mark { color: var(--done); }
   #liveText { color: var(--sub); }
 
   footer { grid-column: 1 / 4; display: flex; align-items: center; justify-content: space-between; gap: 32px; }
@@ -83,17 +98,34 @@
   .mode { min-height: 44px; padding: 0 10px; border-bottom: 1px solid transparent; color: var(--muted);
           letter-spacing: 2px; font-size: 10px; display: flex; align-items: center; gap: 8px; box-sizing: border-box; }
   .footer-right { display: flex; align-items: center; gap: 20px; }
+  /* The microphone picker beside the mic button */
+  .mic-picker { position: relative; }
+  #micPick { min-height: 44px; max-width: 220px; padding: 0 4px; background: transparent; border: none; color: var(--muted);
+             font-size: 10px; letter-spacing: 2px; text-transform: uppercase; display: flex; align-items: center; gap: 8px;
+             transition: color .3s; }
+  #micPick:hover, #micPick[aria-expanded="true"] { color: var(--text); }
+  #micName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #micMenu { position: absolute; bottom: calc(100% + 12px); right: -8px; width: 340px; padding: 8px 0; box-sizing: border-box;
+             background: var(--bg); border: 1px solid color-mix(in srgb, var(--main) 20%, transparent); z-index: 10;
+             display: flex; flex-direction: column; }
+  #micMenu .caption { padding: 8px 16px 6px; }
+  .mic-option { min-height: 44px; padding: 0 16px; background: transparent; border: none; color: var(--sub); text-align: left;
+                display: flex; align-items: center; gap: 12px; font-size: 12px; }
+  .mic-option:hover, .mic-option:focus-visible { color: var(--text); background: color-mix(in srgb, var(--main) 6%, transparent); }
+  .mic-option[aria-checked="true"] { color: var(--text); }
+  .mic-option .dot { background: transparent; border: 1px solid var(--off); box-sizing: border-box; }
+  .mic-option[aria-checked="true"] .dot { background: var(--c); border-color: var(--c); }
   #mic { width: 56px; height: 56px; border-radius: 50%; border: 1px solid var(--c); background: transparent;
          display: flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--c); touch-action: none; }
-  #mic.active { background: rgba(var(--rgb), .08); }
+  #mic.active { background: color-mix(in srgb, var(--main) 8%, transparent); }
   #cmd { width: 380px; height: 44px; box-sizing: border-box; padding: 0 4px; background: transparent; border: none;
-         border-bottom: 1px solid rgba(var(--rgb), .25); color: var(--text); font-family: var(--mono); font-size: 13px; }
+         border-bottom: 1px solid color-mix(in srgb, var(--main) 25%, transparent); color: var(--text); font-family: var(--mono); font-size: 13px; }
 
   /* Settings */
   #settings { position: absolute; top: 96px; right: 52px; width: 340px; max-height: 764px; overflow-y: auto;
               box-sizing: border-box; padding: 24px; display: flex; flex-direction: column; gap: 22px;
-              background: var(--bg); border: 1px solid rgba(var(--rgb), .2); z-index: 10;
-              scrollbar-width: thin; scrollbar-color: rgba(var(--rgb), .3) transparent; }
+              background: var(--bg); border: 1px solid color-mix(in srgb, var(--main) 20%, transparent); z-index: 10;
+              scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--main) 30%, transparent) transparent; }
   #settings[hidden] { display: none; }
   .panel-head { display: flex; align-items: center; justify-content: space-between; }
   .heading { font-size: 10px; letter-spacing: 3px; color: var(--sub2); }
@@ -102,12 +134,12 @@
   .swatches { display: flex; margin-left: -12px; }
   .swatch span { width: 18px; height: 18px; border-radius: 50%; box-shadow: 0 0 0 3px var(--bg), 0 0 0 4px transparent; }
   .swatch[aria-pressed="true"] span { box-shadow: 0 0 0 3px var(--bg), 0 0 0 4px var(--text); }
-  .switch { min-height: 56px; padding: 0; background: transparent; border: none; border-top: 1px solid rgba(var(--rgb), .1);
+  .switch { min-height: 56px; padding: 0; background: transparent; border: none; border-top: 1px solid color-mix(in srgb, var(--main) 10%, transparent);
             display: flex; align-items: center; justify-content: space-between; gap: 12px; text-align: left; color: var(--text); width: 100%; }
   .switch .txt { display: flex; flex-direction: column; gap: 4px; }
   .switch .txt span:first-child { font-size: 12px; }
   .switch .hint { font-size: 10px; color: var(--muted); }
-  .track { position: relative; width: 36px; height: 20px; border-radius: 10px; background: rgba(var(--rgb), .18); flex-shrink: 0; }
+  .track { position: relative; width: 36px; height: 20px; border-radius: 10px; background: color-mix(in srgb, var(--main) 18%, transparent); flex-shrink: 0; }
   .knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted);
           transition: left .15s; }
   .switch[aria-checked="true"] .track { background: var(--main); }
@@ -115,11 +147,11 @@
   .field { display: flex; flex-direction: column; gap: 4px; }
   .field label { font-size: 11px; color: var(--sub); }
   .field input, .field select, .paste { height: 32px; box-sizing: border-box; padding: 0 4px; background: transparent; border: none;
-            border-bottom: 1px solid rgba(var(--rgb), .25); color: var(--text); font-family: var(--mono); font-size: 12px; width: 100%; }
+            border-bottom: 1px solid color-mix(in srgb, var(--main) 25%, transparent); color: var(--text); font-family: var(--mono); font-size: 12px; width: 100%; }
   .field select option { background: var(--bg); color: var(--text); }
   .fields { display: flex; flex-direction: column; gap: 12px; }
   .fields .switch { min-height: 44px; }
-  .text-btn { min-height: 44px; padding: 0 14px; background: transparent; border: 1px solid rgba(var(--rgb), .35);
+  .text-btn { min-height: 44px; padding: 0 14px; background: transparent; border: 1px solid color-mix(in srgb, var(--main) 35%, transparent);
               color: var(--main); letter-spacing: 2px; font-size: 10px; }
   .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
   .note { font-size: 11px; color: var(--sub); line-height: 1.6; min-height: 1em; }
@@ -145,11 +177,21 @@
   <section class="center">
     <div id="orb">
       <svg width="460" height="460" viewBox="0 0 460 460" fill="none" aria-hidden="true">
+        <defs>
+          <!-- Lit from the upper left, so the core reads as a sphere -->
+          <radialGradient id="sphere" cx="38%" cy="34%" r="70%">
+            <stop offset="0" stop-color="currentColor" stop-opacity="1"></stop>
+            <stop offset=".55" stop-color="currentColor" stop-opacity=".7"></stop>
+            <stop offset="1" stop-color="currentColor" stop-opacity=".3"></stop>
+          </radialGradient>
+        </defs>
         <circle cx="230" cy="230" r="226" stroke="currentColor" stroke-opacity=".12" stroke-width="1"></circle>
-        <circle id="ring1" class="rot" cx="230" cy="230" r="196" stroke="currentColor" stroke-opacity=".55" stroke-width="1.5" stroke-linecap="round"></circle>
-        <circle id="ring2" class="rotr" cx="230" cy="230" r="164" stroke="currentColor" stroke-width="2" stroke-linecap="round"></circle>
         <circle cx="230" cy="230" r="164" stroke="currentColor" stroke-opacity=".1" stroke-width="1"></circle>
-        <circle id="core" class="core" cx="230" cy="230" r="128" fill="currentColor"></circle>
+        <path id="core" fill="url(#sphere)"></path>
+        <path id="arc1" stroke="currentColor" stroke-opacity=".55" stroke-width="1.5" stroke-linecap="round"></path>
+        <path id="arc2" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+        <circle id="head1" class="head" r="2.5" fill="currentColor"></circle>
+        <circle id="head2" class="head" r="3" fill="currentColor"></circle>
       </svg>
       <div class="orb-text">
         <span id="label"></span>
@@ -168,11 +210,24 @@
       <span class="who" id="liveWho"></span>
       <p id="liveText"></p>
     </div>
+    <div class="turn" id="planTurn" hidden>
+      <span class="who" id="planWho">PLAN</span>
+      <ol id="plan"></ol>
+    </div>
   </section>
 
   <footer>
     <div id="modes" aria-label="Assistant state"></div>
     <div class="footer-right">
+      <div class="mic-picker">
+        <button type="button" id="micPick" aria-haspopup="true" aria-expanded="false" aria-controls="micMenu"
+                aria-label="Microphone" title="Choose the microphone">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3"></path></svg>
+          <span id="micName">DEFAULT MIC</span>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 15l6-6 6 6"></path></svg>
+        </button>
+        <div id="micMenu" role="menu" aria-label="Microphone" hidden></div>
+      </div>
       <button type="button" id="mic" aria-label="Start listening">
         <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3"></path></svg>
       </button>
@@ -229,14 +284,24 @@ const THEMES = {
             s: { booting: '#A8A29E', asleep: '#6B8CFF', awake: '#FF5A4E', ripple: '#FFA79F', thinking: '#FFD166', speaking: '#7CF5C4', offline: '#8C8C94' } }
 };
 const THEME_NAMES = { cyan: 'Cyan', gold: 'Arc gold', ice: 'Ice white', mint: 'Mint', violet: 'Violet', red: 'Red alert' };
-// How each state looks: ring periods (s), core glow and animation, ring dashes
+// How each state looks: its label and the core's glow
 const LOOK = {
-  booting:  { label: 'BOOTING',     short: 'BOOT',   d: [6, 3],    glow: 0.05, core: 'core-breathe', dash: ['60 40', '30 30'] },
-  asleep:   { label: 'STANDING BY', short: 'SLEEP',  d: [120, 90], glow: 0.04, core: 'core-breathe', dash: ['260 972', '120 910'] },
-  awake:    { label: 'LISTENING',   short: 'LISTEN', d: [28, 12],  glow: 0.08, core: '',             dash: ['260 972', '120 910'] },
-  thinking: { label: 'THINKING',    short: 'THINK',  d: [10, 4],   glow: 0.08, core: '',             dash: ['260 972', '120 910'] },
-  speaking: { label: '',            short: 'SPEAK',  d: [20, 8],   glow: 0.16, core: '',             dash: ['260 972', '120 910'] },
-  offline:  { label: 'OFFLINE',     short: 'OFF',    d: [1, 1],    glow: 0,    core: '',             dash: ['260 972', '120 910'] }
+  booting:  { label: 'BOOTING',     glow: 0.05 },
+  asleep:   { label: 'STANDING BY', glow: 0.04 },
+  awake:    { label: 'LISTENING',   glow: 0.08 },
+  thinking: { label: 'THINKING',    glow: 0.08 },
+  speaking: { label: '',            glow: 0.12 },
+  offline:  { label: 'OFFLINE',     glow: 0 }
+};
+// How the two arcs move: spin (degrees a second, outer and inner), length (share of their ring), and how far they
+// chase - growing and shrinking in turn, like a spinner - while she's busy
+const MOTION = {
+  booting:  { spin: [60, 120], len: [0.10, 0.08],   chase: 0.30 },
+  asleep:   { spin: [3, 4],    len: [0.14, 0.08],   chase: 0 },
+  awake:    { spin: [13, 30],  len: [0.21, 0.12],   chase: 0 },
+  thinking: { spin: [36, 90],  len: [0.10, 0.08],   chase: 0.34 },
+  speaking: { spin: [18, 45],  len: [0.21, 0.12],   chase: 0 },
+  offline:  { spin: [0, 0],    len: [0.015, 0.015], chase: 0 }
 };
 // The voice pipeline column: [status, kind] per state - a = active, d = done, o = idle
 const PIPELINE = {
@@ -251,16 +316,18 @@ const MODULES = ['Wake word', 'Speech to text', 'Speaker', 'Reasoning', 'Tools',
 const SPOTIFY = /^(now_playing|play|play_something|restart_spotify|add_to_queue|pause|resume|skip|set_volume|change_volume|shuffle|repeat)$/;
 const toolLabel = (name) => SPOTIFY.test(name) ? 'SPOTIFY' : /youtube/.test(name) ? 'YOUTUBE'
   : name === 'open_link' ? 'BROWSER' : name === 'execute' ? 'SHELL' : /file|^ls$|glob|grep|delete/.test(name) ? 'FILES'
+  : /^(web_search|read_page)$/.test(name) ? 'WEB' : name === 'write_todos' ? 'PLAN' : name === 'ask_claude' ? 'CLAUDE'
   : /remember|forget/.test(name) ? 'MEMORY' : name === 'task' ? 'AGENT' : /voice_volume/.test(name) ? 'VOICE'
   : name.replace(/_/g, ' ').toUpperCase().slice(0, 10);
 
 const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 const post = (path, data) => fetch(path, { method: 'POST', headers: { 'X-NIA': '1', 'Content-Type': 'application/json' },
                                              body: JSON.stringify(data || {}) });
 let config = { author: 'you', wake_phrase: 'hey nia', theme: 'cyan', wake_word: true, push_to_talk: false, spoken_replies: true, voice: '', voice_speed: 1 };
 let t = THEMES.cyan;
 let mode = 'booting', ripple = false, rippleTimer = null, tool = null, server = 'loading', error = null;
-let you = '', nia = '', partial = '';
+let you = '', nia = '', partial = '', plan = [];
 let envelope = null, envelopeFps = 60, envelopeStart = 0, level = 0;
 
 // ---- Fit the 1440x900 artboard to the window
@@ -304,10 +371,15 @@ MODES.forEach(([key, short]) => {
 function applyTheme(name) {
   t = THEMES[name] || THEMES.cyan;
   const root = document.documentElement.style;
-  for (const k of ['bg', 'main', 'text', 'sub', 'sub2', 'muted', 'off', 'done', 'rgb']) root.setProperty('--' + k, t[k]);
+  for (const k of ['bg', 'main', 'text', 'sub', 'sub2', 'muted', 'off', 'done']) root.setProperty('--' + k, t[k]);
   document.querySelectorAll('.swatch').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.theme === name)));
 }
 
+// The step she's on, numbered from 1, if she's working through a plan
+const current = () => {
+  const i = plan.findIndex((s) => s.status === 'in_progress');
+  return i < 0 ? null : { n: i + 1, step: plan[i].step };
+};
 const wakeWords = () => config.wake_phrase.replace(/\b\w/g, (c) => c.toUpperCase());
 
 // ---- Everything that changes with NIA's state (per event, not per frame)
@@ -323,29 +395,15 @@ function render() {
     booting: server === 'loading' ? 'Loading speech models · connecting to Bonsai' : 'Loading speech models',
     asleep: config.wake_word ? `Waiting for “${wakeWords()}”` : config.push_to_talk ? 'Hold the mic to talk' : 'Tap the mic to talk',
     awake: rip ? '' : 'Waiting for your command',
-    thinking: tool ? `Bonsai · ${toolLabel(tool).toLowerCase()}` : 'Asking Bonsai',
+    thinking: current() ? `Step ${current().n}/${plan.length} · ${current().step}`
+      : tool ? `Bonsai · ${toolLabel(tool).toLowerCase()}` : 'Asking Bonsai',
     speaking: '',
     offline: error ? 'Stopped unexpectedly · tap the mic to restart' : 'Stopped · tap the mic to restart'
   };
   $('sub').textContent = server === 'down' && mode !== 'offline' ? 'The LLM server stopped · see logs/llama-server.log' : subs[mode];
 
-  // Orb
-  const orb = $('orb');
-  orb.style.color = color;
-  orb.style.opacity = mode === 'offline' ? 0.45 : 1;
-  const ringPlay = mode === 'offline' ? 'paused' : 'running';
-  const ring1 = $('ring1'), ring2 = $('ring2');
-  ring1.setAttribute('stroke-dasharray', look.dash[0]);
-  ring2.setAttribute('stroke-dasharray', look.dash[1]);
-  ring1.style.animationDuration = look.d[0] + 's';
-  ring2.style.animationDuration = look.d[1] + 's';
-  ring1.style.animationPlayState = ring2.style.animationPlayState = ringPlay;
-  const core = $('core');
-  core.setAttribute('class', 'core ' + look.core);
-  if (mode !== 'speaking') {
-    core.style.transform = '';
-    core.setAttribute('fill-opacity', rip ? 0.18 : look.glow);
-  }
+  // Orb (drawn per frame)
+  $('orb').style.opacity = mode === 'offline' ? 0.45 : 1;
 
   // Bars (speaking ones are driven per frame by the voice)
   const play = mode === 'asleep' || mode === 'offline' ? 'paused' : 'running';
@@ -371,9 +429,9 @@ function render() {
   if (server === 'down') rows[3] = ['DOWN', 'o'];
   modulesEl.querySelectorAll('.module').forEach((el, i) => {
     const [status, kind] = rows[i];
-    const dot = kind === 'a' ? color : kind === 'd' ? t.done : t.off;
+    const dot = kind === 'a' ? 'var(--c)' : kind === 'd' ? 'var(--done)' : 'var(--off)';  // fade with the state
     el.querySelector('.dot').style.background = dot;
-    el.querySelector('.name').style.color = kind === 'a' ? t.text : t.sub2;
+    el.querySelector('.name').style.color = kind === 'a' ? 'var(--text)' : 'var(--sub2)';
     const st = el.querySelector('.status');
     st.textContent = status;
     st.style.color = dot;
@@ -385,7 +443,7 @@ function render() {
     const on = key === 'ripple' ? rip : key === mode && !(key === 'awake' && rip);
     const c = key === 'ripple' ? t.s.ripple : t.s[key];
     el.querySelector('.dot').style.background = c;
-    el.style.color = on ? c : t.muted;
+    el.style.color = on ? c : 'var(--muted)';
     el.style.borderBottomColor = on ? c : 'transparent';
     el.setAttribute('aria-current', on ? 'true' : 'false');
   });
@@ -403,24 +461,88 @@ function render() {
   $('you').textContent = you;
   let live = null;
   if (rip && partial) live = ['NIA · HEARING', `“…${partial}”`];
-  else if (mode === 'thinking') live = ['NIA · THINKING', tool ? `Using ${toolLabel(tool).toLowerCase()}…` : 'Asking Bonsai…'];
+  else if (mode === 'thinking') live = ['NIA · THINKING', current() ? `On step ${current().n}: ${current().step}`
+    : tool ? `Using ${toolLabel(tool).toLowerCase()}…` : 'Asking Bonsai…'];
   else if (nia) live = ['NIA', nia];
   $('liveTurn').hidden = !live;
   if (live) { $('liveWho').textContent = live[0]; $('liveText').textContent = live[1]; }
+
+  // Her plan, while there is one
+  $('planTurn').hidden = !plan.length;
+  if (plan.length) {
+    const done = plan.filter((s) => s.status === 'completed').length;
+    $('planWho').textContent = `PLAN · ${done}/${plan.length}`;
+    $('plan').innerHTML = plan.map((s) => `<li class="${esc(s.status)}"><span class="mark" aria-hidden="true">${
+      s.status === 'completed' ? '✓' : s.status === 'in_progress' ? '●' : '○'}</span><span>${esc(s.step)}</span></li>`).join('');
+  }
 }
 
-// ---- Per frame: the core and bars follow the words being spoken
+// ---- Per frame: everything that moves. Each value eases toward its target, so no state change ever jumps
+const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const CX = 230, CY = 230, R1 = 196, R2 = 164, CORE = 128, POINTS = 48;
+const ease = (from, to, rate, dt) => from + (to - from) * (1 - Math.exp(-rate * dt));
+const at = (r, deg) => [CX + r * Math.cos(deg * Math.PI / 180), CY + r * Math.sin(deg * Math.PI / 180)];
+const fmt = ([x, y]) => `${x.toFixed(1)} ${y.toFixed(1)}`;
+function arc(r, from, share) {
+  const to = from + Math.max(share, 0.001) * 360;
+  return `M ${fmt(at(r, from))} A ${r} ${r} 0 ${share > 0.5 ? 1 : 0} 1 ${fmt(at(r, to))}`;
+}
+const orbit = { angle: [-90, 90], spin: [3, 4], len: [0.14, 0.08] };
+let wobble = 0, coreScale = 0.97, glow = 0.04, last = performance.now();
+
 function frame(now) {
+  const dt = Math.min((now - last) / 1000, 0.05);
+  last = now;
+  const sec = now / 1000;
   let target = 0;
   if (envelope) {
     const i = Math.floor((now - envelopeStart) / 1000 * envelopeFps);
-    if (i < envelope.length) target = envelope[i];
+    if (i >= 0 && i < envelope.length) target = envelope[i];  // a frame can be stamped just before the sentence arrived
   }
   level += (target - level) * (target > level ? 0.55 : 0.14);  // quick to rise with a syllable, slower to fall
-  if (mode === 'speaking') {
-    const core = $('core');
-    core.style.transform = `scale(${(0.9 + 0.22 * level).toFixed(3)})`;
-    core.setAttribute('fill-opacity', (0.1 + 0.12 * level).toFixed(3));
+  const speaking = mode === 'speaking', rip = ripple && mode === 'awake';
+
+  // The arcs: spin, and a length that stretches with her voice or yours, or chases in turn while she works
+  const m = MOTION[mode];
+  for (const i of [0, 1]) {
+    orbit.spin[i] = ease(orbit.spin[i], still ? 0 : m.spin[i] * (rip ? 1.6 : 1), 2.5, dt);
+    orbit.angle[i] += orbit.spin[i] * dt * (i ? -1 : 1);  // outer clockwise, inner against it
+    const chase = still ? 0 : m.chase * (0.5 + 0.5 * Math.sin(sec * 4.2 + i * Math.PI));
+    const lenTarget = m.len[i] + chase + (speaking ? [0.26, 0.2][i] * level : 0) + (rip ? 0.08 : 0);
+    orbit.len[i] = ease(orbit.len[i], lenTarget, 7, dt);
+  }
+  const [a1, a2] = orbit.angle, [l1, l2] = orbit.len;
+  $('arc1').setAttribute('d', arc(R1, a1, l1));
+  $('arc2').setAttribute('d', arc(R2, a2, l2));
+  const h1 = at(R1, a1 + l1 * 360), h2 = at(R2, a2);  // each head leads its arc
+  $('head1').setAttribute('cx', h1[0].toFixed(1)); $('head1').setAttribute('cy', h1[1].toFixed(1));
+  $('head2').setAttribute('cx', h2[0].toFixed(1)); $('head2').setAttribute('cy', h2[1].toFixed(1));
+  $('head1').style.opacity = $('head2').style.opacity = mode === 'offline' ? 0 : 1;
+
+  // The sphere: a calm circle at rest - breathing on standby, pulsing while she thinks - that becomes a
+  // rippling blob, swelling with each word, while she speaks
+  const rest = mode === 'asleep' || mode === 'booting' ? 0.97 + 0.03 * Math.sin(sec * Math.PI / 2)
+    : mode === 'thinking' ? 0.98 + 0.02 * Math.sin(sec * 5) : mode === 'offline' ? 0.9 : 1;
+  coreScale = ease(coreScale, still ? 1 : speaking ? 0.95 + 0.09 * level : rest, 6, dt);
+  wobble = ease(wobble, still ? 0 : speaking ? 0.035 + 0.11 * level : rip ? 0.02 : 0, speaking ? 10 : 3, dt);
+  glow = ease(glow, rip ? 0.18 : speaking ? 0.12 + 0.16 * level : LOOK[mode].glow, 5, dt);
+  const points = [];
+  for (let k = 0; k < POINTS; k++) {
+    const th = k / POINTS * Math.PI * 2;
+    const ripples = 0.55 * Math.sin(3 * th + sec * 1.7) + 0.3 * Math.sin(5 * th - sec * 2.3 + 1)
+                  + 0.15 * Math.sin(7 * th + sec * 3.1 + 2);
+    const r = CORE * coreScale * (1 + wobble * ripples);
+    points.push([CX + r * Math.cos(th), CY + r * Math.sin(th)]);
+  }
+  const mid = (p, q) => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];  // a smooth outline through the points
+  let d = `M ${fmt(mid(points[POINTS - 1], points[0]))}`;
+  for (let k = 0; k < POINTS; k++) d += ` Q ${fmt(points[k])} ${fmt(mid(points[k], points[(k + 1) % POINTS]))}`;
+  const core = $('core');
+  core.setAttribute('d', d + ' Z');
+  core.setAttribute('fill-opacity', glow.toFixed(3));
+
+  // Bars follow her voice while she speaks (other states use their CSS wave)
+  if (speaking) {
     const phase = now / 160;
     bars.forEach((bar, i) => {
       const env = Math.sin((i / 31) * Math.PI);
@@ -439,9 +561,11 @@ events.onmessage = (e) => {
   if (m.config) { config = { ...config, ...m.config }; applyTheme(config.theme); renderToggles(); }
   if ('server' in m) server = m.server;
   if ('error' in m) error = m.error;
-  if ('you' in m) { you = m.you; tool = null; partial = ''; nia = ''; }
+  if ('you' in m) { you = m.you; tool = null; partial = ''; nia = ''; plan = []; }
+  if (m.plan) plan = m.plan;
   if ('tool' in m) tool = m.tool;
   if ('nia' in m) nia = m.nia;
+  if ('mic' in m) micInUse = m.mic;
   if (m.partial) {
     partial = m.partial;
     ripple = true;
@@ -459,6 +583,7 @@ events.onmessage = (e) => {
     if (m.envelope) { envelopeFps = m.fps; envelopeStart = performance.now(); }
   }
   render();
+  showMic();
 };
 events.onerror = () => { mode = 'offline'; error = null; render(); };
 
@@ -486,6 +611,47 @@ mic.addEventListener('pointerdown', pttDown);
 ['pointerup', 'pointerleave', 'pointercancel'].forEach((ev) => mic.addEventListener(ev, pttUp));
 mic.addEventListener('keydown', (e) => { if (e.key === ' ' && !e.repeat) { e.preventDefault(); pttDown(); } });
 mic.addEventListener('keyup', (e) => { if (e.key === ' ') pttUp(); });
+
+// ---- Microphone picker: the mic in use, switched at once from the menu
+let micInUse = null;  // what the assistant reports it's listening through; null until it says
+const micLabel = (name) => !name ? 'Default mic'
+  : name.replace(/^Microphone( Array)? \((.*)\)$/, (all, array, inner) => (array ? 'Array · ' : '') + inner);
+const micPick = $('micPick'), micMenu = $('micMenu');
+function showMic() {
+  const name = micInUse ?? config.mic_device;
+  $('micName').textContent = micLabel(name);
+  micPick.title = `Microphone: ${name || 'Windows default'}`;
+}
+async function openMicMenu(open) {
+  micMenu.hidden = !open;
+  micPick.setAttribute('aria-expanded', String(open));
+  if (!open) return;
+  const { mics, current } = await (await fetch('/mics')).json();
+  micMenu.innerHTML = '<span class="caption">MICROPHONE</span>' + [['', 'Windows default'], ...mics.map((m) => [m, m])]
+    .map(([value, label]) => `<button type="button" class="mic-option" role="menuitemradio" data-mic="${esc(value)}"
+        aria-checked="${value === current}"><span class="dot"></span>${esc(label)}</button>`).join('');
+  (micMenu.querySelector('[aria-checked="true"]') || micMenu.querySelector('.mic-option')).focus();
+}
+micPick.addEventListener('click', () => openMicMenu(micMenu.hidden));
+micMenu.addEventListener('click', (e) => {
+  const option = e.target.closest('.mic-option');
+  if (!option) return;
+  config.mic_device = option.dataset.mic;
+  micInUse = option.dataset.mic;  // shown at once; the assistant confirms (or falls back) right after
+  post('/settings', { mic_device: option.dataset.mic });
+  showMic();
+  openMicMenu(false);
+  micPick.focus();
+});
+micMenu.addEventListener('keydown', (e) => {  // arrow keys move through the list
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+  e.preventDefault();
+  const options = [...micMenu.querySelectorAll('.mic-option')];
+  const i = options.indexOf(document.activeElement) + (e.key === 'ArrowDown' ? 1 : -1);
+  options[(i + options.length) % options.length].focus();
+});
+document.addEventListener('click', (e) => { if (!micMenu.hidden && !e.target.closest('.mic-picker')) openMicMenu(false); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !micMenu.hidden) { openMicMenu(false); micPick.focus(); } });
 
 // ---- Settings
 const panel = $('settings'), gear = $('gear');
@@ -530,9 +696,8 @@ $('toggles').addEventListener('click', (e) => {
 });
 
 // Every other setting, as a form; saving restarts whatever needs it
-const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
 async function loadForm() {
-  const { values, fields, voices, stt_models } = await (await fetch('/settings')).json();
+  const { values, fields, voices, stt_models, mics } = await (await fetch('/settings')).json();
   const form = $('form');
   const options = (list, value) => list.map((v) => `<option${v === value ? ' selected' : ''}>${esc(v)}</option>`).join('');
   form.innerHTML = fields.map(([section, items]) => `<div class="group fields">
@@ -542,6 +707,9 @@ async function loadForm() {
         if (kind === 'check') return switchHtml(key, esc(label), '', !!v).replace('class="switch"', 'class="switch field-switch"');
         const input = kind === 'voice' ? `<select id="${id}" name="${key}">${options(voices, v)}</select>`
           : kind === 'stt' ? `<select id="${id}" name="${key}">${options(stt_models, v)}</select>`
+          : kind === 'mic' ? `<select id="${id}" name="${key}"><option value="">Windows default</option>${
+              (mics.includes(v) || !v ? mics : [...mics, v]).map((m) =>
+                `<option value="${esc(m)}"${m === v ? ' selected' : ''}>${esc(m)}</option>`).join('')}</select>`
           : `<input id="${id}" name="${key}" type="text" inputmode="${kind === 'number' ? 'decimal' : 'text'}" value="${esc(v)}" autocomplete="off">`;
         return `<div class="field"><label for="${id}">${esc(label)}</label>${input}</div>`;
       }).join('')}

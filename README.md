@@ -2,8 +2,8 @@
 
 A Jarvis-style voice assistant that runs entirely on your own machine. Wake phrase,
 speech recognition, reasoning, and speech synthesis are all local — nothing is sent
-to a cloud AI API. The only network calls are to Spotify and YouTube, and only when
-you ask for them, plus the window's two fonts from Google Fonts (it falls back to Windows'
+to a cloud AI API. The only network calls are to Spotify, YouTube and web search (DuckDuckGo, and the
+pages it finds), and only when you ask for them, plus the window's two fonts from Google Fonts (it falls back to Windows'
 own fonts offline); the only account needed is a Spotify developer app.
 
 Say **"Hey Nia"**, then talk — or say it all at once: "Hey Nia, play some lofi".
@@ -136,7 +136,8 @@ another window onto her.
   thinks (Spotify, YouTube, shell, files, memory…) and the LLM server's state.
 - **Right:** the conversation — what you said and her reply, shown even when spoken replies are off.
 - **Bottom:** her state, the mic button — tap to wake her or put her to sleep (or to restart her when
-  offline); hold it in push-to-talk mode — and a command line for typing instead of talking.
+  offline); hold it in push-to-talk mode — the microphone she listens through (pick another from the
+  menu beside the mic button; it switches at once), and a command line for typing instead of talking.
 - **⚙ Settings:** the theme (six colour sets), the wake word / push-to-talk / spoken-replies switches,
   and every other setting: the LLM server, voice, listening, memory and approvals, music. Saving
   restarts only what needs it — voice speed or greetings apply at once; a new voice restarts the
@@ -210,13 +211,53 @@ run anything, and at most one tab every 15 seconds.
 YouTube returns no results at all for some searches (age-restricted artists, for one);
 NIA says so. Long transcripts are cut to the first few minutes to fit Bonsai's context.
 
+### The web, and jobs with several steps
+
+| | |
+|---|---|
+| **Look it up** | "why does an octopus's heart stop when it swims?" — she searches, reads the best one to three pages and answers in her own words |
+| **Several steps** | "check the weather in Mumbai tonight, play a playlist that suits it at 30 percent, and save a note about it" |
+
+Search goes through DuckDuckGo's lite page and pages are read with the standard library
+([agent/web.py](agent/web.py)) — no API key; each page is trimmed to fit Bonsai's context. Neither tool needs a
+yes: they only read. For a job of three or more steps she writes a plan (LangChain's `write_todos`) and ticks it
+off as she goes; the window shows it beside the conversation ("PLAN · 2/4", the current step under the orb). A
+job that changes something asks once before the change ("I'll save evening.txt. Should I go ahead?"), then carries
+on. Measured on Bonsai: a look-up ~10 s, a four-step job with research ~40 s. Plans of three to six steps work
+well; much longer ones outgrow a 1-bit model's 16K context. Shell commands that reach the internet (`curl`,
+`Invoke-WebRequest`...) always ask first — the web tools are the way online.
+
+### Ask Claude
+
+When she isn't sure of something, or it could have changed — news, weather, scores, prices, anything recent — NIA
+hands the question to [Claude Code](https://claude.com/claude-code), which always browses — searches, then opens and
+reads the most recent relevant page — and answers from what it found today, with the date; she says
+"One moment, sir" while it works and passes the answer on without changing names, dates or numbers. Settled facts
+("what's the capital of France?") she still answers herself, instantly. Measured: ~15–30 s per question at low
+effort (twice that at Claude Code's default). The log shows how many searches and pages each answer took.
+
+It runs Claude Code headless with fixed, locked-down settings ([agent/claude.py](agent/claude.py)): web search and
+page fetching only (`--restricted` removes every tool that runs commands), anything else refused without a prompt
+(`--permission-mode dontAsk`), no MCP servers, no saved session, in an empty folder — so whoever talks to NIA can
+get answers through it but can't make it touch the PC. A shell command that starts `claude` itself always asks
+first. Each question uses the Claude plan Claude Code is logged in with (~$0.03–0.08 at list price); the model and
+effort are in the settings panel. Without Claude Code installed, or if a call fails, she falls back to `web_search`.
+Answers to "most recent…" questions can differ between runs as search results do — higher effort checks more
+sources, slower.
+
 ### Memory
 
 NIA remembers across restarts, and only what's relevant reaches the LLM ([agent/memory.py](agent/memory.py)):
 
 - **Facts** — "remember that Priya's birthday is June 3" (or anything lasting you mention) is saved
   with the `remember` tool; "forget …" deletes it.
-- **Past exchanges** — every finished turn is saved too.
+- **Skills** — after a multi-step job, "remember how to do that as my evening routine" saves its steps by name
+  (`save_skill`; saving under the same name updates it). Later — in any conversation — "do my evening routine"
+  recalls the skill and she follows its steps instead of working the job out again. "What routines do you know?"
+  lists them; "forget my evening routine" deletes one. The idea comes from [memU](https://github.com/NevaMind-AI/memU),
+  kept inside NIA's own memory: no extra model calls, no cloud.
+- **Past exchanges** — every finished turn worth keeping is saved too (not "I guess so", or a sentence cut off at
+  "..."), and a search returns one of each: the same question asked five times comes back once.
 - **Recall by meaning** — each message is embedded with [EmbeddingGemma](https://ollama.com/library/embeddinggemma)
   (on the CPU through Ollama, ~25 ms) and the few most similar memories — at most 4, only above the
   match threshold — are attached to it. An off-topic message gets none.

@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 
 import settings
 from agent.server import llm_server_command, llm_up
+from utils import mics
 from utils.logger import LOG_DIR, logging
 
 load_dotenv()
@@ -52,7 +53,8 @@ FIELDS = [
         ("greeting", "Greetings (| between them)", "text"),
         ("duck_level", "Other apps' volume while she speaks (0-1, 1 = off)", "number")]),
     ("Listening", [
-        ("stt_model", "Speech-to-text model", "stt"), ("wake_phrase", "Wake phrase", "text"),
+        ("mic_device", "Microphone", "mic"), ("stt_model", "Speech-to-text model", "stt"),
+        ("wake_phrase", "Wake phrase", "text"),
         ("wake_threshold", "Wake match threshold (0-1, lower wakes easier)", "number"),
         ("session_timeout", "Seconds awake with no command", "number")]),
     ("Memory and approvals", [
@@ -63,10 +65,12 @@ FIELDS = [
         ("approval_model", "Approval model (Ollama; empty = always ask)", "text"),
         ("approval_threshold", "Approval threshold (0-1, lower asks more)", "number")]),
     ("Music", [("music_moods", "Random music picks (comma-separated)", "text")]),
+    ("Ask Claude", [("claude_model", "Claude model for questions (sonnet, opus, haiku; empty = default)", "text"),
+                    ("claude_effort", "Effort: low is fastest (~20 s); medium or high checks more, slower", "text")]),
 ]
 SERVER_KEYS = {key for key, _, _ in FIELDS[0][1]}
 # Read by the running assistant each time they're used, so they change without a restart
-LIVE_KEYS = {"voice_speed", "voice_volume", "max_spoken_words", "greeting", "duck_level", "wake_threshold",
+LIVE_KEYS = {"claude_effort", "claude_model", "mic_device", "voice_speed", "voice_volume", "max_spoken_words", "greeting", "duck_level", "wake_threshold",
              "session_timeout", "wake_word", "push_to_talk", "spoken_replies", "hud_theme"}
 VOICES = ["kokoro_bm_fable", "kokoro_bm_george", "kokoro_af_heart"]
 STT_MODELS = ["tiny", "small", "medium"]
@@ -77,7 +81,7 @@ def config():
     s = settings.load()
     return {"author": os.getenv("AUTHOR", "you"), "wake_phrase": s["wake_phrase"], "voice": s["voice"],
             "voice_speed": s["voice_speed"], "theme": s["hud_theme"], "wake_word": s["wake_word"],
-            "push_to_talk": s["push_to_talk"], "spoken_replies": s["spoken_replies"]}
+            "push_to_talk": s["push_to_talk"], "spoken_replies": s["spoken_replies"], "mic_device": s["mic_device"]}
 
 
 class Hub:
@@ -186,7 +190,8 @@ class Assistant:
     def start(self):
         key = secrets.token_bytes(16)
         listener = Listener(("127.0.0.1", 0), authkey=key)
-        env = {**os.environ, "NIA_HUD": f"{listener.address[1]}:{key.hex()}"}
+        env = {**os.environ, "NIA_HUD": f"{listener.address[1]}:{key.hex()}",
+               "PYTHONIOENCODING": "utf-8"}  # its log file, not Windows' old code page ("—" came out as "�")
         console = open(LOG_DIR / "assistant.out.log", "ab")  # native crashes print here, not to nia.log
         self.stopping = False
         self.proc = subprocess.Popen([PYTHON, "main.py"], cwd=ROOT, env=env, creationflags=HIDDEN,
@@ -270,8 +275,11 @@ def handler(hub, assistant, server, done):
             elif self.path == "/settings":
                 s = settings.load()
                 voices = VOICES + ([s["voice"]] if s["voice"] not in VOICES else [])
-                self.reply(200, json.dumps({"values": s, "fields": FIELDS, "voices": voices,
-                                            "stt_models": STT_MODELS}).encode())
+                self.reply(200, json.dumps({"values": s, "fields": FIELDS, "voices": voices, "stt_models": STT_MODELS,
+                                            "mics": mics.names(refresh=True)}).encode())
+            elif self.path == "/mics":  # for the picker by the mic button
+                self.reply(200, json.dumps({"mics": mics.names(refresh=True),
+                                            "current": settings.load()["mic_device"]}).encode())
             elif self.path == "/events":
                 self.events()
             else:
