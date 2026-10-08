@@ -10,9 +10,9 @@ import numpy as np
 import settings
 from agent.chat import CANCEL
 from utils.hud import envelope, hud
-from voice_assistant.voice_assistant import (State, WakeWordDetector, drop_filler, first_part, fragment, name_only,
-                                             pick_greeting, plain, speakable, stop_request, voice_language,
-                                             wake_command)
+from voice_assistant.voice_assistant import (State, WakeWordDetector, cut_off, drop_filler, first_part, fragment,
+                                             hesitation, name_only, pick_greeting, plain, speakable, stop_request,
+                                             voice_language, wake_command)
 
 
 def wake(text, threshold=0.8):
@@ -30,7 +30,7 @@ assert wake("Yeah. Hey Nia what time is it?") == "what time is it?"  # stray lea
 assert wake("I just can't stop loving you Hey Nia, pause the music.") == "pause the music."
 
 # How Moonshine really heard "Hey Nia" in one evening's session (0.62 and 0.77 by score alone)
-assert wake("Heinear,") == "" and wake("Heineia,") == ""
+assert wake("Heinear,") == "" and wake("Heineia,") == "" and wake("He near.") == ""
 assert wake("Heineia, play some Post Malone") == "play some Post Malone"
 
 # Not woken
@@ -74,9 +74,22 @@ tools_reply = """Here's a rundown of what I've got on deck, sir:
 assert plain(tools_reply) == ("Here's a rundown of what I've got on deck, sir: Music (Spotify). Play a specific track, "
                               "album, or playlist by name. Pause / resume playback. Your PC (Windows). List files and "
                               "folders. Run shell commands via cmd.exe.")
-now, rest = first_part(tools_reply, 12)
+now, rest = first_part(tools_reply, 12, short_rest=10)
 assert now == "Here's a rundown of what I've got on deck, sir: Music (Spotify)." and rest.startswith("Play a specific")
 assert first_part("Done, sir.", 40) == ("Done, sir.", "")  # short replies are untouched
+# Replies from a real evening: a sentence or two over the limit is said in full - "Shall I go on, sir?" cut
+# them in half and swallowed her own closing question
+evening = ("The latest confirmed result is from a round on 4 October: Verstappen took first, with Antonelli second "
+           "and Hamilton third. I'm afraid the race name came through garbled in my sources, so I can only speak to "
+           "the standings with confidence. Shall I look for a clearer confirmation?")
+assert first_part(evening, 40) == (evening, ""), "55 words: said in full, her question included"
+anywhere = ("In essence, yes, sir - you can reach me and have work done on this machine from wherever you are. The one "
+            "caveat: anything that changes files or runs commands still asks for your spoken approval first, so it's "
+            "control with a safety latch rather than free rein.")
+assert first_part(anywhere, 40)[1] == ""
+monologue = " ".join(f"Point {n} is that the system does one more useful thing for you." for n in range(1, 13))
+now, rest = first_part(monologue, 40)
+assert len(now.split()) <= 40 and len(rest.split()) > 35, "a real monologue is still offered, not read out"
 long_sentence = "word " * 60 + "end."
 assert first_part(long_sentence, 40)[0] == long_sentence.strip(), "always at least one whole sentence"
 
@@ -100,6 +113,14 @@ for text in ["Jo.", "Uh.", "Hm"]:
     assert fragment(text), text
 for text in ["Pause.", "Next", "Yes.", "Skip", "Thunderstruck", "Play lofi"]:
     assert not fragment(text), text
+# ...but a hesitation on its own gets silence ("Uh," got "Sorry sir, I only caught 'Uh'")
+for text in ["Uh,", "Um.", "Hmm...", "uh um"]:
+    assert hesitation(text), text
+for text in ["Uh, play lofi", "Hm, what time is it?", "Jo."]:
+    assert not hesitation(text), text
+# Moonshine marks a line it ended at a pause mid-thought with "..."
+assert cut_off("I mean, could you...") and cut_off("Can you play something by…")
+assert not cut_off("Play lofi.") and not cut_off("Play lofi")
 
 # Greetings: the setting's lines plus ones for the hour, never the same twice running
 said = [None]
@@ -209,8 +230,18 @@ nia.settings = {**settings.DEFAULTS, "spoken_replies": False, "wake_word": False
 nia.lines, nia.interrupted = __import__("queue").Queue(), threading.Event()
 nia.state, nia.deadline, nia.busy, nia.busy_ended = State.LISTENING, 0.0, False, 0.0
 nia.rest, nia.greeted, nia.held, nia.quitting = "", None, False, False
-nia.mic, nia.tts, nia.assistant = SimpleNamespace(start=lambda: None, close=lambda: None), \
-    SimpleNamespace(close=lambda: None), StubAgent()
+class StubMic:
+    """Records how the microphone is opened"""
+    def __init__(self):
+        self.devices, self._sd_stream = [], None
+    def device(self, index):
+        self.devices.append(index)
+        return self
+    def start(self): return self
+    def stop(self): pass
+    def close(self): pass
+
+nia.mic, nia.tts, nia.assistant = StubMic(), SimpleNamespace(close=lambda: None), StubAgent()
 hud.connect(on_command=nia.command, address=f"{listener.address[1]}:{key.hex()}")
 while not accepted:
     time.sleep(0.01)
@@ -239,6 +270,15 @@ window.send({"type": "text", "text": "Hey Nia"})  # typed her name: the instant 
 seen = events_until(state="awake")
 said = [m["nia"] for m in seen if "nia" in m]
 assert said and "Done" not in said[0] and not any("you" in m for m in seen)
+time.sleep(0.5)  # well after she finished, so these aren't taken for the tail of her own voice
+nia.on_line(SimpleNamespace(text="Uh,", duration=0.3, last_transcription_latency_ms=90))
+assert not window.poll(0.4), "a hesitation gets no reply"
+# Cut off at a pause, then the rest: one request, the whole sentence
+nia.on_line(SimpleNamespace(text="I mean, could you...", duration=0.2, last_transcription_latency_ms=90))
+time.sleep(0.5)
+nia.on_line(SimpleNamespace(text="play some lofi?", duration=0.2, last_transcription_latency_ms=90))
+seen = events_until(state="awake")
+assert {"you": "I mean, could you play some lofi?"} in seen, seen
 window.send({"type": "sleep"})
 assert events_until(state="asleep")
 window.send({"type": "wake"})
@@ -247,6 +287,9 @@ window.send({"type": "settings", "values": {"push_to_talk": True}})  # applies a
 window.send({"type": "ptt_up"})  # released with nothing said: back to sleep once the last words are in
 started = time.time()
 assert events_until(state="asleep") and 2 < time.time() - started < 4
+# Picking a microphone in the window switches it live; one that's gone falls back to the default, and says so
+window.send({"type": "settings", "values": {"mic_device": "Microphone That Was Unplugged"}})
+assert {"mic": ""} in events_until(mic="") and nia.mic.devices == [None]
 window.send({"type": "quit"})
 loop.join(5)
 assert not loop.is_alive(), "quit from the window stops the loop"

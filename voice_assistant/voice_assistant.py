@@ -24,7 +24,9 @@ load_dotenv()
 
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import settings
+from agent import claude
 from agent.chat import CANCEL, AssistantModel, ensure_llm_server
+from utils import mics
 from utils.hud import hud
 
 # Set logging
@@ -58,7 +60,7 @@ def voice_language(voice):
 
 # How Moonshine has actually heard the wake phrase (spaces and punctuation dropped): taken as exact matches,
 # so "Heineia" (0.77) wakes her without lowering the threshold for everything - "Hey, nice..." also scores 0.77
-SOUNDALIKES = {"heynia": {"heineia", "heinear", "henia", "hania", "heania"}}  # only ones seen in the logs
+SOUNDALIKES = {"heynia": {"heineia", "heinear", "henear", "henia", "hania", "heania"}}  # only ones seen in the logs
 
 
 def wake_match(text, phrase):
@@ -129,9 +131,14 @@ def plain(text):
     return " ".join(line if line[-1] in ".!?:;," else line + "." for line in lines)
 
 
-def first_part(text, max_words):
+SHORT_REST = 35  # words: a leftover this short is said, not offered
+
+
+def first_part(text, max_words, short_rest=SHORT_REST):
     """(what to say now, the rest): whole sentences up to about max_words, at least one. A long answer
-    took 94 s to speak in one session; the rest is offered instead of read out"""
+    took 94 s to speak in one session; the rest is offered instead of read out - but only when there's
+    real length left. Offering "Shall I go on?" for one more sentence cut ordinary answers in half and
+    hid her own closing questions"""
     sentences = re.split(r"(?<=[.!?])\s+", plain(text))
     now, words = [], 0
     for sentence in sentences:
@@ -139,12 +146,15 @@ def first_part(text, max_words):
             break
         now.append(sentence)
         words += len(sentence.split())
-    return " ".join(now), " ".join(sentences[len(now):])
+    rest = " ".join(sentences[len(now):])
+    if len(rest.split()) <= short_rest:
+        return " ".join(sentences), ""
+    return " ".join(now), rest
 
 
 # The chirpy sign-offs the prompt forbids but the 1-bit model still adds now and then ("Anything else you'd like
 # to know?") - JARVIS doesn't ask
-SIGN_OFF = re.compile(r"\b(anything else|let me know if)\b", re.I)
+SIGN_OFF = re.compile(r"\b(anything else|let me know if|anything (specific|more|next))\b", re.I)
 
 
 def drop_filler(text):
@@ -175,6 +185,20 @@ def fragment(text):
     """A lone scrap like "Jo." - from a clipped recording, not a request worth guessing at"""
     words = re.findall(r"[a-z']+", text.lower())
     return len(words) == 1 and len(words[0]) <= 3 and words[0] not in SHORT_COMMANDS
+
+
+HESITATIONS = {"uh", "uhh", "um", "umm", "hm", "hmm", "mm", "er", "erm", "ah", "eh"}
+
+
+def hesitation(text):
+    """Only "uh", "um", "hmm"... - someone gathering their thoughts, which deserves silence, not a reply"""
+    words = re.findall(r"[a-z']+", text.lower())
+    return bool(words) and all(word in HESITATIONS for word in words)
+
+
+def cut_off(text):
+    """Moonshine ends a line at a pause and marks one that stopped mid-thought with "..." """
+    return text.rstrip().endswith(("...", "…"))
 
 
 def speakable(text):
@@ -242,7 +266,7 @@ class WakeWordDetector:
         # Speech to text (Moonshine streaming, CPU), always on: it hears the wake phrase, the
         # commands, and "stop" while she's busy. Its VAD ends each utterance; see on_line.
         logger.info(f"Loading Moonshine speech-to-text ({s['stt_model']})...")
-        self.mic = (MicTranscriber().model_arch(STT_MODELS[s["stt_model"]])
+        self.mic = (MicTranscriber().model_arch(STT_MODELS[s["stt_model"]]).device(self.mic_index())
                     .on_line(self.on_line).on_text(self.on_text).load())
         self.mic.set_keyterms([s["wake_phrase"].split()[-1].title()])  # bias towards the name, e.g. "Nia"
 
@@ -254,6 +278,7 @@ class WakeWordDetector:
         logger.info("Starting the LLM server if needed...")
         ensure_llm_server()
         self.assistant = AssistantModel(extra_tools=self._voice_tools())
+        claude.ANNOUNCE = lambda: self.speak("One moment, sir.")  # Claude takes 15-40 s: say so, don't go silent
         self.assistant.warm_up()
         logger.info("Assistant ready!")
 
@@ -320,6 +345,8 @@ class WakeWordDetector:
         kind = message["type"]
         if kind == "settings":
             self.settings.update(message["values"])  # the loop reads self.settings each time
+            if "mic_device" in message["values"]:  # switched on the loop's thread, like everything else
+                self.lines.put(SimpleNamespace(control="mic", text="", duration=0, last_transcription_latency_ms=0))
             return
         if kind in ("sleep", "quit") and self.busy:  # stop her now, not when she's done
             self.quitting = kind == "quit"
@@ -328,6 +355,40 @@ class WakeWordDetector:
         self.lines.put(None if kind == "quit" else
                        SimpleNamespace(control=kind, text=message.get("text", ""), duration=0,
                                        last_transcription_latency_ms=0))
+
+    def finish_sentence(self, text, wait=2.0):
+        """A line cut off at a pause ("I mean, could you...") waits up to `wait` seconds for the rest, and the
+        two are joined - so she answers the whole sentence instead of asking you to finish it"""
+        while cut_off(text):
+            try:
+                more = self.lines.get(timeout=wait)
+            except queue.Empty:
+                break  # nothing followed: take it as it is
+            if more is None or getattr(more, "control", None):  # quit, or a press in the window: not words
+                self.lines.put(more)
+                break
+            logger.info(f"Joined a line cut off at a pause: {text!r} + {more.text.strip()!r}")
+            text = text.rstrip(" .…") + " " + more.text.strip()
+        return text
+
+    def mic_index(self):
+        """The input device for the chosen microphone, telling the window which one is in use"""
+        name = self.settings["mic_device"]
+        index = mics.index(name)
+        if name and index is None:
+            logger.warning(f"Microphone {name!r} isn't connected - listening through Windows' default instead")
+        logger.info(f"Listening through {name if index is not None else 'the default microphone'}")
+        hud.send(mic=name if index is not None else mics.DEFAULT)
+        return index
+
+    def switch_mic(self):
+        """Reopen the microphone on the newly chosen device, without restarting anything else"""
+        self.mic.stop()
+        # ponytail: Moonshine has no public way to reopen its input stream; this relies on its _sd_stream
+        if self.mic._sd_stream is not None:
+            self.mic._sd_stream.close()
+            self.mic._sd_stream = None
+        self.mic.device(self.mic_index()).start()
 
     def idle(self):
         hud.show("awake" if self.state == State.COMMAND_MODE else "asleep")
@@ -373,6 +434,8 @@ class WakeWordDetector:
                     break
 
                 control = getattr(line, "control", None)  # from the window's mic button
+                if control and control != "text":
+                    logger.info(f"From the window: {control}")
                 if control in ("wake", "ptt_down"):
                     self.held = control == "ptt_down"
                     self.state = State.COMMAND_MODE
@@ -383,6 +446,9 @@ class WakeWordDetector:
                     self.held = False
                     self.stay_awake()
                     continue
+                if control == "mic":
+                    self.switch_mic()
+                    continue
                 if control == "sleep":
                     self.state, self.rest = State.LISTENING, ""
                     self.idle()
@@ -390,7 +456,12 @@ class WakeWordDetector:
                 typed = control == "text"
 
                 text = line.text.strip()
+                if not typed:
+                    text = self.finish_sentence(text)
                 if not text:
+                    continue
+                if not typed and hesitation(text):  # "Uh," - you're still thinking, not asking
+                    logger.info(f"Ignored hesitation: {text!r}")
                     continue
 
                 if typed:  # typed into the window: always a command, no wake phrase needed
