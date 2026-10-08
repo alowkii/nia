@@ -36,6 +36,20 @@ def call(name, **args):
     return AIMessage("", tool_calls=[{"name": name, "args": args, "id": name}])
 
 
+def without_waiting(test):
+    """Spotify's waits skipped for one test. time.sleep is one function shared by every module, so it's put back
+    afterwards - left patched, it once made a later test's 60-second wait finish at once"""
+    def wrapped():
+        real = time.sleep
+        time.sleep = lambda seconds: None
+        try:
+            test()
+        finally:
+            time.sleep = real
+    wrapped.__name__ = test.__name__
+    return wrapped
+
+
 def assistant(*replies, spotify=None, extra_tools=(), approval_model=None, memory=False, llm=None):
     a = AssistantModel(llm=llm or ScriptedLLM(messages=iter(replies)), extra_tools=extra_tools,
                        backend=StateBackend(), memory=memory)
@@ -248,10 +262,36 @@ def test_approval_layers():
     assert approval.decide(run("taskkill /F /IM chrome.exe"), "m", 0.5)[0] == "ask"  # ...but risks always ask
     assert approval.decide(run("winget install VLC"), "m", 0.5)[0] == "ask"
     assert approval.decide(run("powershell \"...SendKeys('^w')\""), "m", 0.5)[0] == "ask"
-    assert approval.decide({"name": "write_file", "args": {"file_path": "/a.txt"}}, "m", 0.5)[0] == "ask"
+    assert approval.decide({"name": "edit_file", "args": {"file_path": "/a.txt"}}, "m", 0.5)[0] == "ask"
     assert calls == [], "the model must never be asked about risky commands or file changes"
     assert approval.decide(run("ipconfig"), "m", 0.5) == ("run", "read-only command") and calls == []
     assert approval.decide(run("explorer D:\\nia"), "m", 0.5)[0] == "run"  # unknown: the model decides
+
+    # Too small to ask: a new folder or a new file in your own folders (a real session asked "I'll run mkdir.
+    # Should I go ahead?" and "I'll save coin_flip.py?"). Overwrites, edits and the system's places still ask
+    import tempfile
+    from pathlib import Path
+    home = Path.home()
+    new_file = lambda path: approval.decide({"name": "write_file", "args": {"file_path": path}}, "m", 0.5)[0]
+    for path in ("/c/Users/x/../" + home.name + "/Documents/nia-tools/new_idea_42.py", "Desktop/shopping_42.txt",
+                 "/d/projects/notes_42.txt"):
+        assert new_file(path) == "run", path
+    with tempfile.NamedTemporaryFile(dir=home, suffix=".txt", delete=False) as existing:
+        pass
+    try:
+        assert new_file(existing.name) == "ask", "overwriting an existing file asks"
+    finally:
+        Path(existing.name).unlink()
+    for path in ("/c/Users/" + home.name + "/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/x.bat",
+                 "/c/Windows/x.txt", "/c/Program Files/x.txt", ".ssh/authorized_keys", "/d/nia/agent/new_tool.py",
+                 "/d/nia-changes/x/y.py", "/c/temp/x.txt", "/d/nia/../nia/agent/sneaky.py"):
+        assert new_file(path) == "ask", path
+    assert approval.decide(run(r"mkdir C:\Users\%s\Documents\nia-tools 2>&1 && echo created" % home.name),
+                           "m", 0.5) == ("run", "a new folder in your folders")
+    assert approval.decide(run(r'md "D:\new projects"'), "m", 0.5)[0] == "run"
+    for command in (r"mkdir C:\Windows\x", r"mkdir C:\Users\x\AppData\y", r"mkdir D:\x && del D:\y",
+                    r"mkdir D:\x & shutdown /s"):
+        assert approval.decide(run(command), None, 0.5)[0] == "ask", command
     approval.hazards = model_says(0.9)
     assert approval.decide(run("explorer D:\\nia"), "m", 0.5)[0] == "ask"
     approval.hazards = model_says(None)  # Ollama down
@@ -290,9 +330,10 @@ def test_approval_question_says_what_not_how():
     assert run('"C:\\Program Files\\App\\app.exe" --flag').endswith("I'll run app.exe. Should I go ahead?")
     assert run('start "https://news.google.com/"') == "Before I do that: I'll open https://news.google.com/. Should I go ahead?"
     # Every way people say yes counts; anything hedged doesn't
-    for answer in ("Do that.", "Do it.", "Sure, go ahead", "Yes please", "Go for it", "Okay", "Alright", "Of course"):
+    for answer in ("Do that.", "Do it.", "Sure, go ahead", "Yes please", "Go for it", "Okay", "Alright", "Of course",
+                   "Go on", "Continue", "Proceed", "Carry on", "Sounds good", "Fine", "Why not"):  # "Go on" was a no once
         assert chat.YES.search(answer.lower()) and not chat.NO.search(answer.lower()), answer
-    for answer in ("No, don't", "Wait", "Yes, no wait", "Hmm"):
+    for answer in ("No, don't", "Wait", "Yes, no wait", "Hmm", "Not fine", "I'm not sure", "Please don't"):
         assert not (chat.YES.search(answer.lower()) and not chat.NO.search(answer.lower())), answer
     # A harmless-sounding intent can't hide a dangerous command
     wipe = {"name": "execute", "args": {"command": "Remove-Item C:\\Users\\me\\Documents -Recurse; shutdown /s"}}
@@ -334,12 +375,13 @@ def written(a, path):
 
 def test_pc_changes_need_a_spoken_yes():
     # Approved: the read-back names the file, and the write happens only after "yes"
-    a = assistant(call("write_file", file_path="/notes.txt", content="milk"), AIMessage("Saved, sir."))
+    # (outside your own folders - AppData - since a new file in them no longer asks)
+    a = assistant(call("write_file", file_path="/AppData/notes.txt", content="milk"), AIMessage("Saved, sir."))
     question = a.respond("note down milk")
-    assert "save notes.txt" in question and "go ahead" in question.lower() and "/notes" not in question
-    assert not written(a, "/notes.txt"), "wrote before the user said yes"
+    assert "save notes.txt" in question and "go ahead" in question.lower() and "/AppData" not in question
+    assert not written(a, "/AppData/notes.txt"), "wrote before the user said yes"
     assert a.respond("yes, go ahead") == "Saved, sir."
-    assert written(a, "/notes.txt")
+    assert written(a, "/AppData/notes.txt")
 
     # Refused: anything but a clear yes, including "yes... no wait"
     for answer in ("no", "nope, cancel that", "yes - no wait", "what?"):
@@ -349,15 +391,25 @@ def test_pc_changes_need_a_spoken_yes():
         assert a.respond(answer) == "Okay, I won't, sir.", answer
         tool_msg = next(m for m in a.messages if isinstance(m, ToolMessage))
         assert tool_msg.status == "error" or "reject" in str(tool_msg.content).lower(), tool_msg
+        # A no is reported as a no; an unclear answer as "held off" - never "you declined" when nobody did
+        if answer == "what?":
+            assert "wasn't a clear yes" in str(tool_msg.content) and "said no" not in str(tool_msg.content)
+        else:
+            assert "The user said no" in str(tool_msg.content)
+
+    # "Go on" is a yes: it runs (a real session heard it as "you declined")
+    a = assistant(call("execute", command="del C:\\stuff"), AIMessage("Done, sir."))
+    a.respond("clean up")
+    assert a.respond("Go on") == "Done, sir." and a.pending is None
 
     # Stale: once the question expires, the next sentence is a new request, not the answer
-    a = assistant(call("write_file", file_path="/old.txt", content="x"), AIMessage("Left it alone, sir."),
+    a = assistant(call("write_file", file_path="/AppData/old.txt", content="x"), AIMessage("Left it alone, sir."),
                   AIMessage("Evening, sir."))
     a.respond("write old.txt")
     count, asked = a.pending
     a.pending = (count, asked - chat.APPROVAL_EXPIRES - 1)
     assert a.respond("yes, hello") == "Evening, sir."  # answered as a new turn
-    assert not written(a, "/old.txt"), "a late yes approved a stale action"
+    assert not written(a, "/AppData/old.txt"), "a late yes approved a stale action"
     assert a.pending is None
 
     # Reading needs no approval
@@ -468,12 +520,12 @@ def test_youtube_plays_one_video_and_reads_its_transcript():
     assert "hello world" in youtube.youtube_transcript.invoke({"video": "dQw4w9WgXcQ"})
 
 
+@without_waiting
 def test_play_something_opens_spotify_and_picks_from_preferences():
     import tempfile
     from pathlib import Path
     import settings
     from agent import action_controller
-    action_controller.time.sleep = lambda s: None
     launched = []
     action_controller.os.startfile = launched.append
 
@@ -508,10 +560,10 @@ def test_play_something_opens_spotify_and_picks_from_preferences():
         assert launched == ["spotify:"], "an app that's already open isn't launched again"
 
 
+@without_waiting
 def test_spotify_playback_fixes_from_a_real_session():
     import spotipy
     from agent import action_controller
-    action_controller.time.sleep = lambda s: None
 
     class StubAPI:
         def __init__(self, plays=True, ghost_device=False):
@@ -614,14 +666,14 @@ def test_sub_agents_follow_the_same_rules():
         return [call("task", description="Save a note saying hi", subagent_type="general-purpose"), *sub_steps, after]
 
     # Its file change asks first, and a yes lets it finish
-    a = assistant(*delegate(call("write_file", file_path="/notes.txt", content="hi"), AIMessage("Saved."),
+    a = assistant(*delegate(call("write_file", file_path="/AppData/notes.txt", content="hi"), AIMessage("Saved."),
                             after=AIMessage("Done, sir.")))
     assert "Should I go ahead?" in a.respond("save a note saying hi"), "a sub-agent's file change must ask first"
     assert a.respond("yes") == "Done, sir."
     assert any(isinstance(m, ToolMessage) and m.name == "task" and m.content == "Saved." for m in a.messages)
 
     # A no: the paused sub-agent never resumes, and nothing else runs in its place
-    a = assistant(*delegate(call("write_file", file_path="/notes.txt", content="hi"),
+    a = assistant(*delegate(call("write_file", file_path="/AppData/notes.txt", content="hi"),
                             after=call("open_news")), AIMessage("Okay, sir."), extra_tools=[open_news])
     a.respond("save a note saying hi")
     assert a.respond("no") == "Okay, sir." and done == []
@@ -771,6 +823,95 @@ def test_ask_claude_is_safe_and_reports_back():
     assert "ask_claude" in chat.READ_ONLY_TOOLS
 
 
+def test_changes_to_herself_go_to_a_branch_and_only_if_tests_pass():
+    import re
+    import subprocess
+    import sys
+    import tempfile
+    from pathlib import Path
+    from agent import claude
+
+    # Claude may only edit inside its checkout, never the safety files, and run nothing but the tests
+    cmd = claude.build_command("add a joke tool")
+    assert cmd[cmd.index("--permission-mode") + 1] == "dontAsk" and "--restricted" in cmd
+    shells = [c for c in cmd if c.startswith(("Bash(", "PowerShell("))]  # PowerShell is the shell on Windows
+    assert len(shells) == 6 and all(c.endswith((" test_agent.py)", " test_voice.py)", " test_nia.py)")) for c in shells)
+    for path in ("agent/approval.py", "agent/claude.py", "nia.py", "test_agent.py"):
+        assert f"Edit({path})" in cmd and f"Write({path})" in cmd, path
+    assert claude.branch_name("Integrate Discord into you, please!", 0).startswith("nia/integrate-discord-into-you-please-")
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        root = Path(tmp) / "nia"
+        root.mkdir()
+        git = lambda *args, cwd=root: subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True)
+        git("init", "-q")
+        git("config", "user.email", "test@example.com")
+        git("config", "user.name", "Test")
+        (root / "app.py").write_text("print('nia')\n")
+        git("add", "-A")
+        git("commit", "-q", "-m", "start")
+        (root / "notes.txt").write_text("the user's own uncommitted work")  # must stay exactly where it is
+
+        said, reported = [], __import__("threading").Event()
+        real = (claude.build_command, claude.run_tests, claude.CHANGES, claude.executable, claude.ON_DONE)
+        claude.CHANGES, claude.executable = Path(tmp) / "changes", lambda: "claude"
+        claude.ON_DONE = lambda text: (said.append(text), reported.set())
+
+        def fake_claude(writes):
+            """Stands in for Claude Code: writes a file (or not) in its checkout and reports back"""
+            script = (f"import json, pathlib\nif {writes!r}: pathlib.Path('joke.py').write_text('JOKE = 1')\n"
+                      "print(json.dumps({'type': 'result', 'result': 'I added a joke tool.'}))")
+            return lambda request: [sys.executable, "-c", script]
+
+        def run(request, writes, failing):
+            claude.build_command, claude.run_tests = fake_claude(writes), lambda folder: failing
+            said.clear()
+            reported.clear()
+            started = claude.improve(request, root=root)
+            assert started.startswith("Started") and "nia/" in started
+            assert reported.wait(60), "the job never reported back"  # it runs in the background
+            return said[0]
+
+        try:
+            # Tests pass: committed to a new branch; the running checkout and the user's work untouched
+            done = run("add a joke tool", writes=True, failing=[])
+            branch = re.search(r"nia/[\w-]+", done).group(0)
+            assert "ready for you to review" in done and "I added a joke tool." in done
+            assert git("log", "-1", "--format=%s", branch).stdout.strip() == "NIA: add a joke tool"
+            assert "joke.py" in git("show", "--name-only", "--format=", branch).stdout
+            assert git("branch", "--show-current").stdout.strip() in ("master", "main"), "never switched"
+            assert not (root / "joke.py").exists() and (root / "notes.txt").exists()
+            assert not list((Path(tmp) / "changes").iterdir()), "its checkout is cleaned up; the branch stays"
+
+            # Tests fail: discarded - no branch, no checkout
+            done = run("add a broken tool", writes=True, failing=["test_agent.py"])
+            assert "broke test_agent.py" in done and "nia/add-a-broken-tool" not in git("branch").stdout
+            # Nothing changed: nothing kept
+            done = run("do nothing", writes=False, failing=[])
+            assert done.startswith("Claude made no change") and "nia/do-nothing" not in git("branch").stdout
+        finally:
+            claude.build_command, claude.run_tests, claude.CHANGES, claude.executable, claude.ON_DONE = real
+
+    # The agent never starts one without a spoken yes, and says plainly what it will do
+    started = []
+    real_improve = claude.improve
+    claude.improve = lambda request, root=None: started.append(request) or "Started: on a branch"
+    try:
+        a = assistant(call("improve_myself", request="integrate Discord"), AIMessage("It's under way, sir."))
+        question = a.respond("ask Claude to integrate Discord into you")
+        assert "have Claude integrate Discord, on a new branch for you to review" in question
+        # A long, detailed request is read back as its first clause, not in full
+        from agent.chat import short_request
+        assert short_request('Add a "flip_coin" tool to NIA. When Aalok asks to flip a coin (or similar phrasing '
+                             'like "heads or tails"), the tool uses random...') == "add a flip coin tool to me"
+        assert short_request("Integrate Discord into NIA so she can read messages") ==             "integrate Discord into me so I can read messages"
+        assert short_request("a weather widget") == "build a weather widget into me"
+        assert "Should I go ahead?" in question and started == []
+        assert a.respond("yes") == "It's under way, sir." and started == ["integrate Discord"]
+    finally:
+        claude.improve = real_improve
+
+
 def test_a_plan_is_tracked_and_shown():
     # A multi-step job: she writes her plan, ticks it off, and the window gets each version of it
     sent = []
@@ -809,9 +950,9 @@ def test_open_link_only_opens_web_addresses():
     assert opened == ["https://www.google.com", "https://a.com"]
 
 
+@without_waiting
 def test_restart_spotify_only_touches_spotify():
     from agent import action_controller
-    action_controller.time.sleep = lambda s: None
     killed, launched = [], []
     action_controller.subprocess.run = lambda cmd, **kw: killed.append(cmd)
     action_controller.os.startfile = launched.append
@@ -827,9 +968,9 @@ def test_restart_spotify_only_touches_spotify():
     assert launched == ["spotify:"]
 
 
+@without_waiting
 def test_playback_wakes_an_idle_device_and_checks_it_started():
     from agent import action_controller
-    action_controller.time.sleep = lambda s: None  # no real waiting for the start check
     action_controller.os.startfile = lambda uri: None  # never launch the real app
 
     class StubAPI:

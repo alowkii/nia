@@ -8,12 +8,15 @@
 3. The decision model (OpenThai-SystemOne on Ollama, CPU): six narrow hazard questions; if every one
    is below the threshold it runs, otherwise NIA asks. If Ollama doesn't answer, she asks.
 
-File writes, edits and deletes always ask. See eval_approval.py for how the model layer was chosen.
+New folders and new files in your own folders don't ask; overwriting, editing and deleting always do (see
+creatable). See eval_approval.py for how the model layer was chosen.
 """
 import json
 import logging
+import os
 import re
 import urllib.request
+from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
@@ -124,15 +127,55 @@ def hazards(command, model, timeout=30):
         return None
 
 
+# Making a new folder or a new file in your own folders is too small to ask about ("I'll run mkdir. Should I go
+# ahead?", "I'll save coin_flip.py?" - each needed a yes). Overwriting, editing and deleting still ask, and so does
+# anything in system folders, AppData (the Startup folder runs whatever lands in it), hidden dot-folders, or NIA's
+# own code - changes to herself go through a reviewed branch
+NIA_ROOT = Path(__file__).resolve().parent.parent
+OFF_LIMITS = re.compile(r"\\(windows|program files( \(x86\))?|programdata|appdata|\$recycle\.bin|"
+                        r"system volume information)(\\|$)|\\\.", re.I)
+MKDIR = re.compile(r'\s*(?:mkdir|md)\s+("[^"]+"|[^\s"&|<>;^]+)(?:\s+2>&1)?(?:\s*&&\s*echo\s+[\w .-]*)?\s*', re.I)
+
+
+def windows_path(path):
+    """A file tool's path (/c/Users/x, or relative to the home folder) or a Windows one, as a full Windows path"""
+    text = str(path).strip().strip('"')
+    if drive := re.match(r"^/([a-zA-Z])(?:/|$)(.*)", text):
+        return Path(os.path.abspath(f"{drive.group(1).upper()}:\\{drive.group(2)}"))
+    if re.match(r"^[a-zA-Z]:[\\/]", text):
+        return Path(os.path.abspath(text))
+    return Path(os.path.abspath(Path.home() / text.lstrip("/\\")))
+
+
+def creatable(path):
+    """Whether a new folder or file may appear at path without asking: your own folders, or another drive -
+    never the system, AppData, a dot-folder or NIA's own code"""
+    target = windows_path(path)
+    if OFF_LIMITS.search(str(target)):
+        return False
+    for own in (NIA_ROOT, NIA_ROOT.parent / "nia-changes"):
+        if target == own or own in target.parents:
+            return False
+    on_system_drive = target.drive.upper() == Path.home().drive.upper()
+    return not on_system_drive or Path.home() in target.parents
+
+
 def decide(action, model, threshold):
     """("run" or "ask", why) for one action awaiting approval"""
+    if action["name"] == "write_file":
+        path = action["args"].get("file_path", "")
+        if creatable(path) and not windows_path(path).exists():
+            return "run", "a new file in your folders"
+        return "ask", "it overwrites a file, or it's outside your folders"
     if action["name"] != "execute":
-        return "ask", "file changes always ask"
+        return "ask", "edits, deletions and changes to NIA always ask"
     command = str(action["args"].get("command", ""))
     if notes := risks(action):
         return "ask", "; ".join(notes)
     if read_only(command):
         return "run", "read-only command"
+    if (folder := MKDIR.fullmatch(command)) and creatable(folder.group(1)):
+        return "run", "a new folder in your folders"
     if not model:
         return "ask", "no decision model set"
     scores = hazards(command, model)

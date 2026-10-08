@@ -33,11 +33,12 @@ from .action_controller import SpotifyController
 logger = logging.getLogger(__name__)
 
 # Tools that change the PC: NIA reads each call back and only runs it after a spoken "yes"
-NEEDS_APPROVAL = ("write_file", "edit_file", "delete", "execute")
+NEEDS_APPROVAL = ("write_file", "edit_file", "delete", "execute", "improve_myself")
 APPROVAL_EXPIRES = 60  # seconds; a later "yes" must not approve a stale action
 YES = re.compile(r"\b(yes|yeah|yep|yup|sure|confirm(ed)?|approved?|go ahead|go for it|do (it|that|so)|please do|"
-                 r"of course|absolutely|ok(ay)?|alright|all right)\b")
-NO = re.compile(r"\b(no|nope|don'?t|do not|stop|cancel|wait|never)\b")
+                 r"of course|absolutely|ok(ay)?|alright|all right|go on|continue|proceed|carry on|sounds good|"
+                 r"fine|why not|please|definitely|certainly|affirmative)\b")
+NO = re.compile(r"\b(no|nope|don'?t|do not|stop|cancel|wait|never|(?<!why )not)\b")  # "not fine", but not "why not"
 
 def ensure_llm_server(timeout=180):
     """Start llama-server in its own window unless it is already up, then wait for it. Under nia.py the
@@ -84,6 +85,8 @@ READ_ONLY_TOOLS = {"now_playing", "search_youtube", "youtube_transcript", "web_s
                    "glob", "grep", "write_todos", "list_skills", "ask_claude"}
 REFUSAL = ("The user said no. Don't do this, and don't try another way to do it or anything else in its place - "
            "just acknowledge briefly and ask what they'd like instead.")
+UNCLEAR = ("Not done yet: the user's answer, \"{answer}\", wasn't a clear yes - they didn't say no either, so don't say "
+           "they declined. Say you've held off, and ask in a few words whether to go ahead.")
 
 
 class Cancelled(Exception):
@@ -148,9 +151,29 @@ COMMON_COMMANDS = [
 ]
 
 
+BUILD_VERBS = {"add", "build", "make", "create", "integrate", "fix", "teach", "give", "connect", "improve", "change"}
+
+
+def short_request(request):
+    """A change to herself in a few spoken words: its first clause, about NIA as "me" - the full request, with all
+    its detail, read out as an approval question ran on for half a minute"""
+    first = re.split(r"(?<=[.!?;:(])\s|\s\(", str(request).strip())[0]
+    first = re.sub(r"[\"'.:;!(]", "", first)
+    first = re.sub(r"\b(to|into|for|in) NIA\b", r"\1 me", first).replace("_", " ")
+    first = re.sub(r"\bshe\b", "I", first)
+    words = first.split()[:12]
+    if not words:
+        return "make a change to me"
+    words[0] = words[0].lower()
+    phrase = " ".join(words)
+    return phrase if words[0] in BUILD_VERBS else f"build {phrase} into me"
+
+
 def describe(action):
     """What NIA plans to do, in plain words - never the raw command (the log keeps that)"""
     args, name = action["args"], action["name"]
+    if name == "improve_myself":
+        return f"have Claude {short_request(args.get('request', ''))}, on a new branch for you to review"
     if name != "execute":
         file = Path(str(args.get("file_path") or args.get("path") or "")).name or "a file"
         return {"write_file": f"save {file}", "edit_file": f"edit {file}", "delete": f"delete {file}"}[name]
@@ -275,8 +298,12 @@ class AssistantModel:
         if self.pending:
             answer = user_msg.lower()
             approved = bool(YES.search(answer)) and not NO.search(answer)
-            logger.info(f"Approval {'given' if approved else 'refused'}: {user_msg!r}")
-            decision = {"type": "approve"} if approved else {"type": "reject", "message": REFUSAL}
+            refused = bool(NO.search(answer))
+            logger.info(f"Approval {'given' if approved else 'refused' if refused else 'not clear - held off'}: "
+                        f"{user_msg!r}")
+            # Only a clear yes runs it. Anything else holds off - but "Go on" once came back as "you declined"
+            reason = REFUSAL if refused else UNCLEAR.format(answer=user_msg.strip())
+            decision = {"type": "approve"} if approved else {"type": "reject", "message": reason}
             if not approved:
                 REFUSED.set()
             result = self.agent.invoke(Command(resume={"decisions": [decision] * self.pending[0]}), self.config)
