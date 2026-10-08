@@ -1,3 +1,4 @@
+import logging
 import os
 import random
 import subprocess
@@ -10,6 +11,7 @@ from spotipy.oauth2 import SpotifyOAuth
 import settings
 
 load_dotenv()
+logger = logging.getLogger(__name__)
 
 # Absolute, so the saved login is found whatever the working directory
 CACHE = Path(__file__).resolve().parent.parent / ".spotify_cache"
@@ -45,12 +47,15 @@ class SpotifyController:
         devices = self.sp.devices()["devices"]
         if any(d["type"] == "Computer" for d in devices):
             return devices
+        # Also wakes an app that's open but idle: Spotify drops those from the device list after a while
         os.startfile("spotify:")
-        for _ in range(timeout):
-            time.sleep(1)
+        started = time.time()
+        for _ in range(timeout * 2):
+            time.sleep(0.5)
             devices = self.sp.devices()["devices"]
             if any(d["type"] == "Computer" for d in devices):
-                time.sleep(2)  # just registered: give the app a moment before it's sent a command
+                logger.info(f"Spotify app came online after {time.time() - started:.1f}s")
+                time.sleep(1)  # just registered: give the app a moment before it's sent a command
                 return devices
         raise RuntimeError(f"Opened the Spotify app, but it didn't come online within {timeout} seconds")
 
@@ -70,7 +75,9 @@ class SpotifyController:
         but idle, and Spotify won't pick it on its own. Then checks something really started:
         Spotify accepts commands even when its app is stuck and loads nothing, and "Successfully
         playing" would be a lie."""
+        started = time.time()
         devices = self.sp.devices()["devices"]
+        logger.info(f"Spotify devices: {[(d.get('name'), d.get('type'), d.get('is_active')) for d in devices]}")
         if not any(d["is_active"] for d in devices) and not any(d["type"] == "Computer" for d in devices):
             devices = self.open_app()  # nothing playing anywhere and no app on this PC: open it here
         if devices and not any(d["is_active"] for d in devices):
@@ -91,6 +98,7 @@ class SpotifyController:
             time.sleep(0.5)
             playback = self.get_current_playback()
             if playback and playback.get("item") and playback.get("is_playing"):
+                logger.info(f"Spotify playing after {time.time() - started:.1f}s")
                 return
         where = playback["device"]["name"] if playback and playback.get("device") else "the device"
         if time.time() - getattr(self, "restarted", 0) < 600:

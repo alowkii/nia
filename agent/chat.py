@@ -213,6 +213,19 @@ class AssistantModel:
             checkpointer=InMemorySaver(),  # the conversation, kept between turns
         )
 
+    def warm_up(self):
+        """Have llama-server read the system prompt and tools (~6K tokens, ~10 s) once now, so the first real turn
+        reuses its cache instead of paying for it. A throwaway conversation, with every action blocked."""
+        started = time.time()
+        REFUSED.set()
+        try:
+            self.agent.invoke({"messages": [HumanMessage("Hello")]}, {"configurable": {"thread_id": "warm-up"}})
+            logger.info(f"Warmed up the LLM's prompt cache in {time.time() - started:.1f}s")
+        except Exception as e:  # only a speed-up: never stop NIA starting
+            logger.warning(f"Warm-up failed ({e!r}) - the first reply will be slower")
+        finally:
+            REFUSED.clear()
+
     @property
     def messages(self):
         state = self.agent.get_state(self.config)

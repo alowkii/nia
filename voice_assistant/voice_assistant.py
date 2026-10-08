@@ -56,6 +56,11 @@ def voice_language(voice):
     return "en_gb" if re.search(r"^kokoro_b[fm]_|en_GB", voice) else "en_us"
 
 
+# How Moonshine has actually heard the wake phrase (spaces and punctuation dropped): taken as exact matches,
+# so "Heineia" (0.77) wakes her without lowering the threshold for everything - "Hey, nice..." also scores 0.77
+SOUNDALIKES = {"heynia": {"heineia", "heinear", "henia", "hania", "heania"}}  # only ones seen in the logs
+
+
 def wake_match(text, phrase):
     """How closely the best spot in text matches the wake phrase (0-1), and what follows that spot.
 
@@ -70,7 +75,7 @@ def wake_match(text, phrase):
     for start in range(len(words)):
         for n in range(1, size + 2):  # the phrase may come out as fewer or more words
             window = "".join(w.group() for w in words[start:start + n])
-            score = SequenceMatcher(None, window, target).ratio()
+            score = 1.0 if window in SOUNDALIKES.get(target, ()) else SequenceMatcher(None, window, target).ratio()
             if score > best:
                 best, end = score, min(start + n, len(words))
     if not words:
@@ -135,6 +140,19 @@ def first_part(text, max_words):
         now.append(sentence)
         words += len(sentence.split())
     return " ".join(now), " ".join(sentences[len(now):])
+
+
+# The chirpy sign-offs the prompt forbids but the 1-bit model still adds now and then ("Anything else you'd like
+# to know?") - JARVIS doesn't ask
+SIGN_OFF = re.compile(r"\b(anything else|let me know if)\b", re.I)
+
+
+def drop_filler(text):
+    """text without a closing "anything else?"-type sentence - unless that's all there is"""
+    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+    if len(sentences) > 1 and SIGN_OFF.search(sentences[-1]):
+        sentences.pop()
+    return " ".join(sentences)
 
 
 MORE = re.compile(r"\b(yes|yeah|yep|sure|go on|continue|keep going|tell me more|more|please do|ok(ay)?)\b")
@@ -236,6 +254,7 @@ class WakeWordDetector:
         logger.info("Starting the LLM server if needed...")
         ensure_llm_server()
         self.assistant = AssistantModel(extra_tools=self._voice_tools())
+        self.assistant.warm_up()
         logger.info("Assistant ready!")
 
     def set_voice_volume(self, level):
@@ -448,7 +467,7 @@ class WakeWordDetector:
 
     def say(self, reply):
         """Speak a reply in plain sentences, at most about max_spoken_words of it; the rest waits for "go on" """
-        now, self.rest = first_part(reply, self.settings["max_spoken_words"])
+        now, self.rest = first_part(drop_filler(reply), self.settings["max_spoken_words"])
         self.speak(now + (" Shall I go on, sir?" if self.rest else ""))
 
     def greet(self):

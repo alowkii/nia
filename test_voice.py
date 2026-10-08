@@ -10,8 +10,9 @@ import numpy as np
 import settings
 from agent.chat import CANCEL
 from utils.hud import envelope, hud
-from voice_assistant.voice_assistant import (State, WakeWordDetector, first_part, fragment, name_only, pick_greeting,
-                                             plain, speakable, stop_request, voice_language, wake_command)
+from voice_assistant.voice_assistant import (State, WakeWordDetector, drop_filler, first_part, fragment, name_only,
+                                             pick_greeting, plain, speakable, stop_request, voice_language,
+                                             wake_command)
 
 
 def wake(text, threshold=0.8):
@@ -28,8 +29,13 @@ assert wake("Yeah. Hey Nia what time is it?") == "what time is it?"  # stray lea
 # Mid-line, as when music or talk runs into the phrase
 assert wake("I just can't stop loving you Hey Nia, pause the music.") == "pause the music."
 
+# How Moonshine really heard "Hey Nia" in one evening's session (0.62 and 0.77 by score alone)
+assert wake("Heinear,") == "" and wake("Heineia,") == ""
+assert wake("Heineia, play some Post Malone") == "play some Post Malone"
+
 # Not woken
 assert wake("Hey nice to meet you.") is None  # 0.77, just under the default
+assert wake("Heinz ketchup, please.") is None and wake("Hey, near the station.") is None
 assert wake("Here is the news.") is None
 assert wake("Hey, man.") is None
 assert wake("") is None
@@ -73,6 +79,16 @@ assert now == "Here's a rundown of what I've got on deck, sir: Music (Spotify)."
 assert first_part("Done, sir.", 40) == ("Done, sir.", "")  # short replies are untouched
 long_sentence = "word " * 60 + "end."
 assert first_part(long_sentence, 40)[0] == long_sentence.strip(), "always at least one whole sentence"
+
+# Sign-offs the prompt forbids but the model still adds sometimes: the closing question goes, the answer stays
+assert drop_filler("\"Psycho\" by Post Malone is still on, sir. Anything else you'd like to know?") == \
+    "\"Psycho\" by Post Malone is still on, sir."
+assert drop_filler("Done, sir. Would you like anything else?") == "Done, sir."
+assert drop_filler("Got it, sir. Just let me know if you need anything!") == "Got it, sir."
+assert drop_filler("Anything else, sir?") == "Anything else, sir?"  # nothing would be left
+assert drop_filler("I found nothing else in the folder, sir.") == "I found nothing else in the folder, sir."
+assert drop_filler("Anything else in there was empty. Two files remain, sir.") == \
+    "Anything else in there was empty. Two files remain, sir."  # only a closing sign-off goes
 
 # Her name on its own, as Moonshine hears it: an attention call, not "play a song called Near"
 for text in ["Near.", "Nia", "Henia.", "Hey Nia.", "So near.", "Mia?"]:

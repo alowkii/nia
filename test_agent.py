@@ -252,6 +252,24 @@ def test_conversation_carries_over_turns():
     assert "[" in humans[0].content, "the user turn carries the current time"
 
 
+def test_warm_up_leaves_no_trace():
+    # At startup, so the first real reply doesn't spend ~10 s reading the prompt: it may not act, or join the chat
+    from langchain_core.tools import tool
+    done = []
+
+    @tool
+    def open_news() -> str:
+        """Open a news video"""
+        done.append(1)
+        return "opened"
+
+    a = assistant(call("open_news"), AIMessage("Hello, sir."), AIMessage("Evening, sir."), extra_tools=[open_news])
+    a.warm_up()
+    assert done == [], "the warm-up must not do anything"
+    assert a.messages == [] and not chat.REFUSED.is_set()
+    assert a.respond("hello") == "Evening, sir." and done == []
+
+
 def written(a, path):
     return path in (a.agent.get_state(a.config).values.get("files") or {})
 
