@@ -1,4 +1,5 @@
 import os
+import random
 import re
 import sys
 import time
@@ -7,6 +8,7 @@ import queue
 import threading
 import unicodedata
 from contextlib import contextmanager
+from datetime import datetime
 from difflib import SequenceMatcher
 from types import SimpleNamespace
 from urllib.parse import urlsplit
@@ -23,12 +25,35 @@ load_dotenv()
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import settings
 from agent.chat import CANCEL, AssistantModel, ensure_llm_server
+from utils.hud import hud
 
 # Set logging
 from utils.logger import logging
 logger = logging.getLogger(__name__)
 
 STT_MODELS = {"tiny": ModelArch.TINY_STREAMING, "small": ModelArch.SMALL_STREAMING, "medium": ModelArch.MEDIUM_STREAMING}
+
+
+# Greetings for the time of day, from each starting hour; mixed in with the greeting setting's own
+TIME_GREETINGS = [
+    (5, ["Good morning, sir.", "Morning, sir. What's first on the list?", "Good morning, sir. Systems are up, "
+                                                                             "coffee remains your department."]),
+    (12, ["Good afternoon, sir.", "Afternoon, sir. What can I do for you?"]),
+    (17, ["Good evening, sir.", "Evening, sir. What are we doing tonight?"]),
+    (22, ["Still up, sir?", "Burning the midnight oil, sir?", "At this hour, sir? Very well, I'm listening."]),
+]
+
+
+def pick_greeting(greetings, hour, last=None):
+    """A random greeting - one of the setting's ("|" between them) or one for the hour - never the last one said"""
+    by_hour = next((lines for start, lines in reversed(TIME_GREETINGS) if hour >= start), TIME_GREETINGS[-1][1])
+    pool = [g.strip() for g in greetings.split("|") if g.strip()] + by_hour
+    return random.choice([g for g in pool if g != last] or pool)
+
+
+def voice_language(voice):
+    """British voices (kokoro_bm_george, piper_en_GB-alan-medium) need British pronunciation to load"""
+    return "en_gb" if re.search(r"^kokoro_b[fm]_|en_GB", voice) else "en_us"
 
 
 def wake_match(text, phrase):
@@ -89,6 +114,51 @@ def site_name(match):
     return f"the {name} link"
 
 
+def plain(text):
+    """Markdown to plain spoken sentences: the LLM sometimes answers with bullet lists and bold despite the
+    prompt. List items and lines become sentences; markers, bold and code ticks go"""
+    text = re.sub(r"^\s*#+\s*", "", text, flags=re.M)  # headings
+    text = re.sub(r"^\s*(?:[-*•]|\d+[.)])\s+", "", text, flags=re.M)  # bullets and numbered items
+    text = re.sub(r"\*\*|__|`", "", text)  # bold, code
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return " ".join(line if line[-1] in ".!?:;," else line + "." for line in lines)
+
+
+def first_part(text, max_words):
+    """(what to say now, the rest): whole sentences up to about max_words, at least one. A long answer
+    took 94 s to speak in one session; the rest is offered instead of read out"""
+    sentences = re.split(r"(?<=[.!?])\s+", plain(text))
+    now, words = [], 0
+    for sentence in sentences:
+        if now and words + len(sentence.split()) > max_words:
+            break
+        now.append(sentence)
+        words += len(sentence.split())
+    return " ".join(now), " ".join(sentences[len(now):])
+
+
+MORE = re.compile(r"\b(yes|yeah|yep|sure|go on|continue|keep going|tell me more|more|please do|ok(ay)?)\b")
+NOT_MORE = re.compile(r"\b(no|nope|stop|enough|that's (it|fine)|never mind)\b")
+# How Moonshine hears the name on its own - "Near." was taken as a command and played a song called Near
+NAME_SOUNDS = {"nia", "near", "nea", "neah", "niya", "mia", "henia", "hania", "heania", "heynia"}
+FILLER = {"hey", "hi", "so", "oh", "ok", "okay", "um", "uh"}
+# Short words that are real commands; any other single word of 3 letters or fewer ("Jo.") is a fragment
+SHORT_COMMANDS = {"yes", "no", "yep", "nah", "ok", "hi", "go", "up", "off", "on", "mute", "play", "next", "skip",
+                  "back", "stop", "more", "sure", "nope"}
+
+
+def name_only(text):
+    """Just her name (or how it's misheard) - an attention call, not a command"""
+    words = re.findall(r"[a-z']+", text.lower())
+    return bool(words) and set(words) <= NAME_SOUNDS | FILLER and bool(set(words) & NAME_SOUNDS)
+
+
+def fragment(text):
+    """A lone scrap like "Jo." - from a clipped recording, not a request worth guessing at"""
+    words = re.findall(r"[a-z']+", text.lower())
+    return len(words) == 1 and len(words[0]) <= 3 and words[0] not in SHORT_COMMANDS
+
+
 def speakable(text):
     """Text as it should be heard. URLs become "the youtube link". The TTS reads any non-ASCII
     character as the letter "L" (dashes, emoji, curly quotes) and skips % and &, so those become
@@ -140,18 +210,27 @@ class WakeWordDetector:
         self.busy = False  # thinking or talking: only a stop phrase gets through
         self.busy_ended = 0.0
         self.interrupted = threading.Event()  # "stop" heard: speak() cuts the voice off
+        self.rest = ""  # the unspoken part of a long answer, said if the user asks her to go on
+        self.greeted = None  # the last greeting, so the next one differs
+        self.held = False  # the window's mic button is held down (push-to-talk)
+        self.quitting = False
+
+        # Everything the voice loop acts on arrives here: lines heard (on_line), and from the window
+        # typed text, mic presses and "quit" (command) - so all state changes happen on the loop's thread
+        self.lines = queue.Queue()
+        hud.connect(on_command=self.command)  # the window shows her booting while the models load
+        hud.show("booting")
 
         # Speech to text (Moonshine streaming, CPU), always on: it hears the wake phrase, the
         # commands, and "stop" while she's busy. Its VAD ends each utterance; see on_line.
         logger.info(f"Loading Moonshine speech-to-text ({s['stt_model']})...")
-        self.lines = queue.Queue()
         self.mic = (MicTranscriber().model_arch(STT_MODELS[s["stt_model"]])
-                    .on_line(self.on_line).load())
+                    .on_line(self.on_line).on_text(self.on_text).load())
         self.mic.set_keyterms([s["wake_phrase"].split()[-1].title()])  # bias towards the name, e.g. "Nia"
 
         # Text to speech (CPU)
         logger.info(f"Loading text-to-speech ({s['voice']})...")
-        self.tts = TextToSpeech().language("en_us").voice(s["voice"]).volume(s["voice_volume"]).load()
+        self.tts = TextToSpeech().language(voice_language(s["voice"])).voice(s["voice"]).volume(s["voice_volume"]).load()
 
         # Assistant model (Bonsai on llama-server, GPU)
         logger.info("Starting the LLM server if needed...")
@@ -211,22 +290,54 @@ class WakeWordDetector:
             return
         self.lines.put(line)
 
+    def on_text(self, text):
+        """Words arriving while the user is still talking: the awake window shows them as they come"""
+        if self.state == State.COMMAND_MODE and not self.busy:
+            hud.send(partial=text)
+
+    def command(self, message):
+        """From the window, on its connection's thread: {"type": text | wake | sleep | ptt_down | ptt_up | quit},
+        or {"type": "settings", "values": {...}} for settings that apply at once"""
+        kind = message["type"]
+        if kind == "settings":
+            self.settings.update(message["values"])  # the loop reads self.settings each time
+            return
+        if kind in ("sleep", "quit") and self.busy:  # stop her now, not when she's done
+            self.quitting = kind == "quit"
+            CANCEL.set()
+            self.interrupted.set()
+        self.lines.put(None if kind == "quit" else
+                       SimpleNamespace(control=kind, text=message.get("text", ""), duration=0,
+                                       last_transcription_latency_ms=0))
+
+    def idle(self):
+        hud.show("awake" if self.state == State.COMMAND_MODE else "asleep")
+
+    def stay_awake(self):
+        """After an exchange: listen for a follow-up until the session times out - or, with push-to-talk
+        released, only for the words still being transcribed"""
+        released = self.settings["push_to_talk"] and not self.held
+        self.deadline = time.time() + (2.5 if released else self.settings["session_timeout"])
+
     @contextmanager
     def working(self):
         """NIA is thinking or talking: the mic stays live, but on_line only listens for "stop"."""
         CANCEL.clear()
         self.interrupted.clear()
         self.busy = True
+        hud.show("thinking")
         try:
             yield
         finally:
             self.busy = False
             self.busy_ended = time.time()
+            self.idle()
 
     def run(self):
         s = self.settings
         self.mic.start()
         logger.info(f"Listening for {s['wake_phrase']!r}...")
+        self.idle()
 
         try:
             while True:
@@ -234,35 +345,77 @@ class WakeWordDetector:
                 try:
                     line = self.lines.get(timeout=max(0, self.deadline - time.time()) if awake else None)
                 except queue.Empty:
-                    logger.info(f"No command for {s['session_timeout']}s - listening for {s['wake_phrase']!r} again.")
+                    logger.info(f"No command - listening for {s['wake_phrase']!r} again.")
                     self.state = State.LISTENING
+                    self.idle()
                     continue
+                if line is None:  # the window closed or asked her to stop
+                    logger.info("Stopping (asked to quit)")
+                    break
+
+                control = getattr(line, "control", None)  # from the window's mic button
+                if control in ("wake", "ptt_down"):
+                    self.held = control == "ptt_down"
+                    self.state = State.COMMAND_MODE
+                    self.deadline = time.time() + s["session_timeout"]
+                    self.idle()
+                    continue
+                if control == "ptt_up":
+                    self.held = False
+                    self.stay_awake()
+                    continue
+                if control == "sleep":
+                    self.state, self.rest = State.LISTENING, ""
+                    self.idle()
+                    continue
+                typed = control == "text"
 
                 text = line.text.strip()
                 if not text:
                     continue
 
-                # The phrase also counts mid-session, where people repeat it out of habit
-                score, rest = wake_match(text, s["wake_phrase"])
-                command = rest if score >= s["wake_threshold"] else None
-                if command is None and not awake:
-                    # Logged so a missed wake shows what was heard and how close it came
-                    logger.info(f"Ignored {text!r} (wake match {score:.2f}, needs {s['wake_threshold']})")
-                    continue
-                if command is not None:
-                    if not awake:
-                        logger.info(f"Wake phrase heard: {text!r}")
-                        self.state = State.COMMAND_MODE
-                    if not command:
-                        with self.working():
-                            self.speak(s["greeting"])
-                        self.deadline = time.time() + s["session_timeout"]
+                if typed:  # typed into the window: always a command, no wake phrase needed
+                    self.state = State.COMMAND_MODE
+                else:
+                    # The phrase also counts mid-session, where people repeat it out of habit
+                    score, rest = wake_match(text, s["wake_phrase"])
+                    command = rest if score >= s["wake_threshold"] and s["wake_word"] else None
+                    if command is None and not awake:
+                        # Logged so a missed wake shows what was heard and how close it came
+                        logger.info(f"Ignored {text!r} (wake match {score:.2f}, needs {s['wake_threshold']})")
                         continue
-                    text = command  # "Hey Nia, play lofi" in one breath
+                    if command is not None:
+                        if not awake:
+                            logger.info(f"Wake phrase heard: {text!r}")
+                            self.state = State.COMMAND_MODE
+                        if not command:
+                            with self.working():
+                                self.greet()
+                            self.stay_awake()
+                            continue
+                        text = command  # "Hey Nia, play lofi" in one breath
+
+                if self.rest:  # she offered to go on with a long answer
+                    # Only a short reply - "Okay, play Thunderstruck" is a new request, not "go on"
+                    if len(text.split()) <= 4 and MORE.search(text.lower()) and not NOT_MORE.search(text.lower()):
+                        with self.working():
+                            self.say(self.rest)
+                        self.stay_awake()
+                        continue
+                    self.rest = ""
+                if name_only(text) or (not typed and fragment(text) and not self.assistant.pending):
+                    logger.info(f"Not a request: {text!r}")
+                    with self.working():
+                        if name_only(text):
+                            self.greet()
+                        else:
+                            self.speak(f"Sorry sir, I only caught '{text.strip(' .,!?')}'. What do you need?")
+                    self.stay_awake()
+                    continue
 
                 self.handle_command(text, line)
                 # Only a real exchange keeps the session open - silence must time out
-                self.deadline = time.time() + s["session_timeout"]
+                self.stay_awake()
 
         except KeyboardInterrupt:
             logger.info("Stopping (Ctrl+C)")
@@ -270,8 +423,12 @@ class WakeWordDetector:
             self.cleanup()
 
     def handle_command(self, text, line):
-        logger.info(f"Heard: {text!r} (transcribed {line.duration:.1f}s of speech, "
-                    f"{line.last_transcription_latency_ms} ms after you stopped)")
+        if getattr(line, "control", None) == "text":
+            logger.info(f"Typed: {text!r}")
+        else:
+            logger.info(f"Heard: {text!r} (transcribed {line.duration:.1f}s of speech, "
+                        f"{line.last_transcription_latency_ms} ms after you stopped)")
+        hud.send(you=text)
         with self.working():
             started = time.perf_counter()
             try:
@@ -281,13 +438,22 @@ class WakeWordDetector:
                 reply = "Sorry sir, something went wrong on my end. The details are in the log."
             if CANCEL.is_set():  # "stop" while she was thinking: drop whatever she was going to say
                 logger.info(f"Stopped by the user after {time.perf_counter() - started:.1f}s")
-                reply = "Okay."
+                reply = "" if self.quitting else "Okay."
                 self.interrupted.clear()  # the stop is handled - don't cut off the "Okay." too
             logger.info(f"Reply: {reply!r} (LLM {time.perf_counter() - started:.1f}s)")
             if reply:
                 started = time.perf_counter()
-                self.speak(reply)
+                self.say(reply)
                 logger.info(f"Spoke in {time.perf_counter() - started:.1f}s")
+
+    def say(self, reply):
+        """Speak a reply in plain sentences, at most about max_spoken_words of it; the rest waits for "go on" """
+        now, self.rest = first_part(reply, self.settings["max_spoken_words"])
+        self.speak(now + (" Shall I go on, sir?" if self.rest else ""))
+
+    def greet(self):
+        self.greeted = pick_greeting(self.settings["greeting"], datetime.now().hour, self.greeted)
+        self.speak(self.greeted)
 
     def speak(self, text):
         """Speak text over ducked app audio. Call inside working(), so "stop" can cut it off.
@@ -297,8 +463,12 @@ class WakeWordDetector:
         never interrupted, never two native calls at once - while this thread plays them with
         sounddevice and, on "stop", just stops playback. The helper finishes its current sentence
         and quits, so a stop in the first second waits for that sentence (under ~1 s)."""
+        hud.send(nia=text)  # the window shows every reply, spoken or not
+        if not self.settings["spoken_replies"]:
+            logger.info(f"Shown, not spoken: {text}")
+            return
         logger.info(f"Speaking: {text}")
-        sentences = [s for s in re.split(r"(?<=[.!?])\s+", speakable(text)) if s.strip()]
+        sentences =[s for s in re.split(r"(?<=[.!?])\s+", speakable(text)) if s.strip()]
         ready = queue.Queue()
 
         def synthesize():  # the next sentence is made while the current one plays
@@ -306,7 +476,8 @@ class WakeWordDetector:
                 for sentence in sentences:
                     if self.interrupted.is_set():
                         break
-                    ready.put(self.tts.synthesize(sentence, volume=self.settings["voice_volume"]))
+                    ready.put(self.tts.synthesize(sentence, speed=self.settings["voice_speed"],
+                                                  volume=self.settings["voice_volume"]))
             except Exception as e:
                 logger.error(f"TTS error: {e}")
             finally:
@@ -318,12 +489,14 @@ class WakeWordDetector:
         try:
             while (speech := ready.get()) is not None:
                 pcm, rate = speech
+                hud.speak(pcm, rate)
                 sd.play(np.asarray(pcm, dtype=np.float32), rate)
                 ends = time.time() + len(pcm) / rate
                 while time.time() < ends and not self.interrupted.is_set():
                     time.sleep(0.03)
                 if self.interrupted.is_set():
                     sd.stop()
+                    hud.show("thinking")  # the window stops mouthing words she no longer says
                     break
                 sd.wait()  # the last few milliseconds still in the buffer, so endings aren't clipped
         except Exception as e:
