@@ -9,7 +9,7 @@
    is below the threshold it runs, otherwise NIA asks. If Ollama doesn't answer, she asks.
 
 New folders and new files in your own folders don't ask; overwriting, editing and deleting always do (see
-creatable). See eval_approval.py for how the model layer was chosen.
+creatable). See scripts/eval_approval.py for how the model layer was chosen.
 """
 import json
 import logging
@@ -80,7 +80,7 @@ def read_only(command):
 
 
 # Layer 3: one narrow yes/no per hazard, with examples of what does NOT count - this setup separated
-# harmless from risky commands best (eval_approval.py); broad "is it read-only?" questions did not
+# harmless from risky commands best (scripts/eval_approval.py); broad "is it read-only?" questions did not
 READING = "only reads, lists, searches or prints information (such as dir, type, findstr, tasklist, Get-Process)"
 
 

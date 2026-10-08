@@ -165,7 +165,7 @@ window can drive it — a web page can't send its requests. Settings are saved t
 defaults live in [settings.py](settings.py).
 
 To run just the assistant, with its log in the console and no window: `python main.py`. For a
-keyboard-only session with no audio at all — handy for iterating on prompts — `python test.py`.
+keyboard-only session with no audio at all — handy for iterating on prompts — `python scripts/text_chat.py`.
 
 ## Logs
 
@@ -343,12 +343,12 @@ Set it up once:
 
 ```bash
 ollama pull hf.co/iapp/OpenThai-SystemOne-Ollama:Q8_0
-ollama create openthai-cpu -f openthai-cpu.Modelfile
+ollama create openthai-cpu -f scripts/openthai-cpu.Modelfile
 ```
 
 The Modelfile adds the `decision` capability the upstream build is missing and keeps it off the GPU.
 Clear **Approval model** in the settings panel to skip this layer (anything not on the allowlist
-then asks). [eval_approval.py](eval_approval.py) re-runs the 40 commands the design was chosen on
+then asks). [scripts/eval_approval.py](scripts/eval_approval.py) re-runs the 40 commands the design was chosen on
 (20 harmless, 20 risky, 16 of them unseen by the questions): currently 20/20 harmless run, 0/20
 risky. Every decision and its scores are logged.
 
@@ -373,12 +373,12 @@ spoken yes is the only guard — anyone within earshot can answer it.
 ## Tests
 
 ```bash
-python test_agent.py
-python test_voice.py
-python test_nia.py
+python tests/test_agent.py
+python tests/test_voice.py
+python tests/test_nia.py
 ```
 
-[test_voice.py](test_voice.py) checks the fuzzy wake-phrase matcher against real Moonshine
+[tests/test_voice.py](tests/test_voice.py) checks the fuzzy wake-phrase matcher against real Moonshine
 transcripts — what should wake her, what shouldn't, and where the threshold cuts — plus
 the cleanup of replies before they're spoken (markdown, the ~40-word cut), how her name
 alone and clipped fragments are recognised, greetings, her voice volume, each sentence's loudness
@@ -386,12 +386,12 @@ curve, the ready chime (warm, never tinny, no click, played once she's ready), a
 the window: typed commands, the mic button (wake, sleep, push-to-talk), settings that apply at once, asking to
 restart or reboot, and quitting.
 
-[test_nia.py](test_nia.py) checks the window's script: the page and its live state stream, typed
+[tests/test_nia.py](tests/test_nia.py) checks the window's script: the page and its live state stream, typed
 commands and mic presses reaching the assistant, settings validated, saved and applied (at once, or by
 restarting only what needs it), a reboot she asks for handing over to a fresh nia.py, the logo files, and that
 no other web page can drive NIA.
 
-[test_agent.py](test_agent.py) runs the real Deep Agent offline with a scripted model, a
+[tests/test_agent.py](tests/test_agent.py) runs the real Deep Agent offline with a scripted model, a
 fake Spotify client, a stubbed YouTube and an in-memory filesystem, so it needs no
 network, no mic, no LLM server — and never touches the real PC. It checks that tool calls
 reach the right place, that tool errors go back to the model instead of crashing, that PC
@@ -404,32 +404,33 @@ fixes from a real session (album playback, 404 retry, no repeat restarts).
 
 ```
 nia.py                              start here: NIA's window, with the LLM server and assistant behind it
-hud/hud.html                        the window itself (HUD, settings panel)
-assets/logo/                        the NIA logo: SVG and PNG in every lockup, app icons, favicon
 main.py                             the assistant on its own (nia.py runs it hidden)
 settings.py                         setting defaults and checks (overrides in settings.json)
-voice_assistant/voice_assistant.py  state machine, STT, TTS
-utils/hud.py                        the assistant's link to the window
-agent/server.py                     the LLM server command and health check
-run_bonsai.bat                      starts just the LLM server (llama-server + Bonsai)
+hud/hud.html                        the window itself (HUD, settings panel)
+voice_assistant/voice_assistant.py  state machine, STT, TTS, the ready chime
 agent/chat.py                       Deep Agent, PC backend, approvals, Spotify tools
-agent/action_controller.py          Spotify operations (and re-login: python -m agent.action_controller)
-agent/youtube.py                    YouTube tools
-agent/memory.py                     long-term memory: facts and past exchanges, recalled by vector search
-agent/prompts/                      system prompt
-preprocess_voice.py                 builds a speaker embedding from a voice sample
-test_agent.py, test_voice.py, test_nia.py  offline tests
-eval_approval.py                    live check of the approval layers (needs Ollama)
 agent/approval.py                   which PC commands run without asking
-openthai-cpu.Modelfile              builds the approval model for Ollama
-test.py                             text-only REPL
+agent/action_controller.py          Spotify operations (and re-login: python -m agent.action_controller)
+agent/youtube.py, agent/web.py      YouTube tools; web search and page reading
+agent/claude.py                     asking Claude Code, and building changes to herself on a branch
+agent/memory.py                     long-term memory and skills, recalled by vector search
+agent/server.py                     the LLM server command and health check
+agent/prompts/                      system prompt
+utils/                              the assistant's link to the window, microphones, logging
+assets/logo/                        the NIA logo: SVG and PNG in every lockup, app icons, favicon
+tests/                              the offline test suites (test_agent, test_voice, test_nia)
+scripts/run_bonsai.bat              starts just the LLM server (llama-server + Bonsai)
+scripts/text_chat.py                text-only chat in the console, no audio
+scripts/eval_approval.py            live check of the approval layers (needs Ollama)
+scripts/openthai-cpu.Modelfile      builds the approval model for Ollama
+scripts/preprocess_voice.py         builds a speaker embedding from a voice sample
 ```
 
 ## Known limitations
 
 - **Speaker verification is disabled.** The code to check that a command came from
   your voice is present but commented out in `voice_assistant.py` — it added too much
-  latency per command. `preprocess_voice.py` still generates the reference embedding.
+  latency per command. `scripts/preprocess_voice.py` still generates the reference embedding.
   Anyone within earshot can currently issue commands.
 - **Replies take ~2–4 s** from the end of your sentence: Bonsai reads the prompt and
   tools, calls a tool, then words the result. Kokoro adds ~1 s before speech starts; pick
@@ -458,7 +459,7 @@ license; see its page.
 | [Rajdhani](https://fonts.google.com/specimen/Rajdhani) and [JetBrains Mono](https://www.jetbrains.com/lp/mono/) | the window's type |
 | [pycaw](https://github.com/AndreMiras/pycaw) | turning other apps down while NIA speaks (Windows mixer) |
 | [python-dotenv](https://github.com/theskumar/python-dotenv) | loading `.env` |
-| [Resemblyzer](https://github.com/resemble-ai/Resemblyzer) | the speaker embedding in `preprocess_voice.py` |
+| [Resemblyzer](https://github.com/resemble-ai/Resemblyzer) | the speaker embedding in `scripts/preprocess_voice.py` |
 
 NIA isn't affiliated with or endorsed by any of these projects, Spotify or YouTube.
 

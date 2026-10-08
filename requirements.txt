@@ -1,5 +1,5 @@
 # Tested on Python 3.11. Speech runs on the CPU, so no CUDA wheels are needed here;
-# the LLM runs on the GPU in a separate llama-server process (see run_bonsai.bat).
+# the LLM runs on the GPU in a separate llama-server process (see scripts/run_bonsai.bat).
 
 # Wake phrase + speech to text (Moonshine, with its own mic capture and VAD) and
 # text to speech (Kokoro / Piper voices). Models download on first run.
@@ -30,6 +30,6 @@ youtube-transcript-api==1.2.4
 # Config
 python-dotenv==1.2.1
 
-# Speaker verification - only used by preprocess_voice.py; the runtime check is
+# Speaker verification - only used by scripts/preprocess_voice.py; the runtime check is
 # currently disabled in voice_assistant.py for latency reasons. Pulls in torch.
 Resemblyzer==0.1.4

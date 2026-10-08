@@ -1,8 +1,12 @@
 """Checks the voice helpers: the fuzzy wake-phrase matcher on real Moonshine transcripts,
-the cleanup of replies before they're spoken, and NIA's own voice volume. Run: python test_voice.py"""
+the cleanup of replies before they're spoken, and NIA's own voice volume. Run: python tests/test_voice.py"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # NIA's code, one folder up
+
 import tempfile
 import time
-from pathlib import Path
 from types import SimpleNamespace
 
 import numpy as np

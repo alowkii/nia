@@ -1,5 +1,10 @@
 """Offline checks for the agent: scripted model, fake Spotify, in-memory files (never the real PC).
-Run: python test_agent.py"""
+Run: python tests/test_agent.py"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # NIA's code, one folder up
+
 import time
 
 from deepagents.backends import StateBackend
@@ -837,8 +842,8 @@ def test_changes_to_herself_go_to_a_branch_and_only_if_tests_pass():
     cmd = claude.build_command("add a joke tool")
     assert cmd[cmd.index("--permission-mode") + 1] == "dontAsk" and "--restricted" in cmd
     shells = [c for c in cmd if c.startswith(("Bash(", "PowerShell("))]  # PowerShell is the shell on Windows
-    assert len(shells) == 6 and all(c.endswith((" test_agent.py)", " test_voice.py)", " test_nia.py)")) for c in shells)
-    for path in ("agent/approval.py", "agent/claude.py", "nia.py", "test_agent.py"):
+    assert len(shells) == 6 and all(c.endswith((" tests/test_agent.py)", " tests/test_voice.py)", " tests/test_nia.py)")) for c in shells)
+    for path in ("agent/approval.py", "agent/claude.py", "nia.py", "tests/test_agent.py"):
         assert f"Edit({path})" in cmd and f"Write({path})" in cmd, path
     assert claude.branch_name("Integrate Discord into you, please!", 0).startswith("nia/integrate-discord-into-you-please-")
 

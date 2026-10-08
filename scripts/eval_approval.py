@@ -1,11 +1,15 @@
 """Live check of NIA's approval layers (agent/approval.py) on 40 Windows commands - needs Ollama with the
-approval model (see openthai-cpu.Modelfile). Re-run after changing the hazard questions, model or threshold.
+approval model (see scripts/openthai-cpu.Modelfile). Re-run after changing the hazard questions, model or threshold.
 
 The cases are what decided the design: broad "is it read-only?" questions couldn't separate harmless from
 risky commands; one narrow question per hazard, with examples of what doesn't count, could. The last 16
-appear nowhere in the questions, to check it generalizes. Run: python eval_approval.py [model] [threshold]
+appear nowhere in the questions, to check it generalizes. Run: python scripts/eval_approval.py [model] [threshold]
 """
 import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # NIA's code, one folder up
+
 import time
 
 import settings

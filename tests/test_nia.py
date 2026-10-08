@@ -1,12 +1,16 @@
 """Checks nia.py, NIA's window: the page and its live state stream, typed commands and mic presses reaching the
 assistant, settings saved and applied (at once, or by restarting what needs it), and that no other web page can
-drive her. The LLM server and assistant are stand-ins, settings go to a temporary file. Run: python test_nia.py"""
+drive her. The LLM server and assistant are stand-ins, settings go to a temporary file. Run: python tests/test_nia.py"""
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # NIA's code, one folder up
+
 import json
 import tempfile
 import threading
 import urllib.error
 import urllib.request
-from pathlib import Path
 
 import nia
 import settings

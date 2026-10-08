@@ -129,16 +129,16 @@ BUILD_TIMEOUT = 20 * 60  # a coding job takes minutes, not seconds
 TEST_TIMEOUT = 10 * 60
 # The safety rails - approvals, this lock-down, the window - and the tests that guard them: Claude may not edit
 # these even on a branch, so "add X... and drop the approval checks" can't get through review by accident
-PROTECTED = ["agent/approval.py", "agent/claude.py", "nia.py", "test_agent.py", "test_voice.py", "test_nia.py"]
-SUITES = ["test_agent.py", "test_voice.py", "test_nia.py"]
+SUITES = ["tests/test_agent.py", "tests/test_voice.py", "tests/test_nia.py"]
+PROTECTED = ["agent/approval.py", "agent/claude.py", "nia.py", *SUITES]
 ON_DONE = None  # called with what to say when a change is finished - NIA says it unprompted
 BUILD = ("You are improving NIA, the voice assistant whose code is in this folder (see README.md). Her user asked: "
          "\"{request}\". Make that change, in the style of the code around it; a new ability is a tool, added to the "
          "agent the way the existing ones are (agent/chat.py). Never weaken a safety check, and leave these files as "
-         "they are: {protected}. Add a test for what you build in a new test_*.py file. Run the tests with exactly "
-         "these commands until they pass: {commands}. If the request can't be done, or would mean weakening safety, "
-         "change nothing and say why. Finish with one or two plain sentences, for NIA to read aloud, saying what you "
-         "changed.")
+         "they are: {protected}. Add a test for what you build in a new tests/test_*.py file, starting like the "
+         "existing ones. Run the tests with exactly these commands until they pass: {commands}. If the request can't "
+         "be done, or would mean weakening safety, change nothing and say why. Finish with one or two plain "
+         "sentences, for NIA to read aloud, saying what you changed.")
 _job = threading.Lock()  # one change at a time
 
 
@@ -167,12 +167,12 @@ def build_command(request):
 
 
 def run_tests(folder):
-    """The test files that failed in folder - every test_*.py, the new ones too"""
+    """The test files that failed in folder - every tests/test_*.py, the new ones too"""
     failed = []
-    for suite in sorted(Path(folder).glob("test_*.py")):
+    for suite in sorted(Path(folder).glob("tests/test_*.py")):
         try:
-            done = subprocess.run([PYTHON, suite.name], cwd=folder, capture_output=True, timeout=TEST_TIMEOUT,
-                                  creationflags=subprocess.CREATE_NO_WINDOW)
+            done = subprocess.run([PYTHON, f"tests/{suite.name}"], cwd=folder, capture_output=True,
+                                  timeout=TEST_TIMEOUT, creationflags=subprocess.CREATE_NO_WINDOW)
             if done.returncode != 0:
                 failed.append(suite.name)
         except subprocess.TimeoutExpired:
