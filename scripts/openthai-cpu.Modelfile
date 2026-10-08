@@ -1,0 +1,8 @@
+# NIA's approval model: OpenThai-SystemOne (0.8B decision model), CPU-only so it never competes with
+# Bonsai for VRAM. Build it with:
+#   ollama pull hf.co/iapp/OpenThai-SystemOne-Ollama:Q8_0
+#   ollama create openthai-cpu -f scripts/openthai-cpu.Modelfile
+# The upstream Ollama build lacks the decision capability, so /v1/systemone refuses it without this line.
+FROM hf.co/iapp/OpenThai-SystemOne-Ollama:Q8_0
+CAPABILITY decision
+PARAMETER num_gpu 0

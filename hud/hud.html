@@ -1,0 +1,781 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NIA</title>
+<link rel="icon" href="/logo/svg/nia-favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="apple-touch-icon" href="/logo/png/apple-touch-icon-180.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* Colours are set per theme from THEMES below; --c is the current state's colour */
+  :root { --bg: #03070A; --main: #5FE3FF; --text: #D7F6FF; --sub: #9CC2D1; --sub2: #7FA6B6; --muted: #6F95A6;
+          --off: #3E5966; --done: #7CF5C4; --c: #6B8CFF;
+          --display: Rajdhani, Bahnschrift, "Segoe UI", sans-serif;
+          --mono: "JetBrains Mono", "Cascadia Mono", Consolas, ui-monospace, monospace; }
+  /* Registered, so every colour change - a new state, a new theme - fades instead of snapping */
+  @property --c { syntax: '<color>'; inherits: true; initial-value: #6B8CFF; }
+  @property --bg { syntax: '<color>'; inherits: true; initial-value: #03070A; }
+  @property --main { syntax: '<color>'; inherits: true; initial-value: #5FE3FF; }
+  @property --text { syntax: '<color>'; inherits: true; initial-value: #D7F6FF; }
+  @property --sub { syntax: '<color>'; inherits: true; initial-value: #9CC2D1; }
+  @property --sub2 { syntax: '<color>'; inherits: true; initial-value: #7FA6B6; }
+  @property --muted { syntax: '<color>'; inherits: true; initial-value: #6F95A6; }
+  @property --off { syntax: '<color>'; inherits: true; initial-value: #3E5966; }
+  @property --done { syntax: '<color>'; inherits: true; initial-value: #7CF5C4; }
+  :root { transition: --c .9s ease, --bg .9s ease, --main .9s ease, --text .9s ease, --sub .9s ease, --sub2 .9s ease, --muted .9s ease, --off .9s ease, --done .9s ease; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  a { color: var(--main); }
+  @keyframes wave { 0%, 100% { transform: scaleY(.3); } 50% { transform: scaleY(1); } }
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+  @keyframes flutter { 0% { transform: scale(1); } 20% { transform: scale(1.05); } 40% { transform: scale(.98); }
+                       60% { transform: scale(1.03); } 100% { transform: scale(1); } }
+  .bar { transform-origin: center; animation: wave .9s ease-in-out infinite; }
+  .blink { animation: blink 1.6s ease-in-out infinite; }
+  .flutter { animation: flutter .7s ease-out 1; }
+  @media (prefers-reduced-motion: reduce) {
+    .bar, .blink, .flutter { animation: none !important; }
+  }
+  button { font: inherit; cursor: pointer; }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--main); outline-offset: 3px; }
+  input::placeholder { color: var(--muted); }
+  [hidden] { display: none !important; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+  /* The 1440x900 artboard, scaled to fit the window */
+  #stage { position: absolute; left: 50%; top: 50%; width: 1440px; height: 900px; }
+  .hud { position: relative; width: 1440px; height: 900px; box-sizing: border-box; padding: 44px 64px 40px;
+         display: grid; grid-template-columns: 260px minmax(0, 1fr) 300px; grid-template-rows: auto minmax(0, 1fr) auto;
+         column-gap: 48px; row-gap: 24px; background: var(--bg); color: var(--text); font-family: var(--mono);
+         font-size: 12px; overflow: hidden; }
+  header { grid-column: 1 / 4; display: flex; align-items: center; justify-content: space-between; }
+  .brand { display: flex; align-items: center; height: 28px; }
+  .brand svg { height: 28px; width: auto; overflow: visible; }
+  .brand .mark { color: var(--main); }   /* the apex mark in the theme's accent... */
+  .brand .word { color: var(--text); }   /* ...and NIA in its text colour */
+  .chip { display: flex; align-items: center; gap: 10px; color: var(--c); letter-spacing: 3px; font-size: 11px;
+          min-width: 120px; justify-content: center; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+  .right { display: flex; align-items: center; gap: 16px; }
+  #clock { color: var(--sub2); letter-spacing: 3px; font-size: 11px; }
+  .icon-btn { width: 44px; height: 44px; background: transparent; border: none; display: flex; align-items: center;
+              justify-content: center; padding: 0; }
+  #gear { margin-right: -12px; color: var(--sub2); }
+  #gear[aria-expanded="true"] { color: var(--main); }
+
+  #modules { align-self: center; display: flex; flex-direction: column; gap: 18px; }
+  .module { display: flex; align-items: center; gap: 12px; }
+  .module .name { flex: 1; font-size: 12px; }
+  .module .status { font-size: 10px; letter-spacing: 2px; }
+
+  .center { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28px; min-height: 0; }
+  #orb { position: relative; width: 460px; height: 460px; transition: opacity .6s; color: var(--c); }
+  .head { filter: drop-shadow(0 0 5px currentColor); transition: opacity .6s; }
+  .module .dot, .module .name, .module .status, .mode, .mode .dot {
+    transition: color .9s ease, background-color .9s ease, border-color .9s ease; }
+  #orb svg { position: absolute; inset: 0; }
+  .orb-text { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+              justify-content: center; gap: 12px; text-align: center; }
+  #label { font-family: var(--display); font-weight: 500; font-size: 40px; letter-spacing: 10px; color: var(--c); line-height: 1; }
+  #sub { font-size: 11px; color: var(--sub); max-width: 220px; line-height: 1.6; }
+  #bars { display: flex; align-items: center; gap: 5px; height: 48px; }
+  #bars span { display: block; width: 2px; border-radius: 1px; background: var(--c); }
+
+  #conversation { align-self: center; display: flex; flex-direction: column; gap: 28px; }
+  .turn { display: flex; flex-direction: column; gap: 8px; }
+  .who { font-size: 10px; letter-spacing: 3px; color: var(--muted); }
+  .turn p { margin: 0; font-size: 14px; line-height: 1.6; color: var(--text); overflow-wrap: anywhere;
+            display: -webkit-box; -webkit-line-clamp: 9; -webkit-box-orient: vertical; overflow: hidden; }
+  #liveWho { color: var(--c); }
+  /* Her plan for a multi-step job */
+  #plan { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 8px; }
+  #plan li { display: flex; gap: 10px; font-size: 12px; line-height: 1.5; color: var(--sub2); transition: color .6s; }
+  #plan li .mark { flex-shrink: 0; width: 14px; text-align: center; color: var(--off); transition: color .6s; }
+  #plan li.in_progress { color: var(--text); }
+  #plan li.in_progress .mark { color: var(--c); animation: blink 1.6s ease-in-out infinite; }
+  #plan li.completed { color: var(--muted); text-decoration: line-through; text-decoration-color: var(--off); }
+  #plan li.completed .mark { color: var(--done); }
+  #liveText { color: var(--sub); }
+
+  footer { grid-column: 1 / 4; display: flex; align-items: center; justify-content: space-between; gap: 32px; }
+  #modes { display: flex; gap: 2px; flex-wrap: wrap; }
+  .mode { min-height: 44px; padding: 0 10px; border-bottom: 1px solid transparent; color: var(--muted);
+          letter-spacing: 2px; font-size: 10px; display: flex; align-items: center; gap: 8px; box-sizing: border-box; }
+  .footer-right { display: flex; align-items: center; gap: 20px; }
+  /* The microphone picker beside the mic button */
+  .mic-picker { position: relative; }
+  #micPick { min-height: 44px; max-width: 220px; padding: 0 4px; background: transparent; border: none; color: var(--muted);
+             font-size: 10px; letter-spacing: 2px; text-transform: uppercase; display: flex; align-items: center; gap: 8px;
+             transition: color .3s; }
+  #micPick:hover, #micPick[aria-expanded="true"] { color: var(--text); }
+  #micName { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #micMenu { position: absolute; bottom: calc(100% + 12px); right: -8px; width: 340px; padding: 8px 0; box-sizing: border-box;
+             background: var(--bg); border: 1px solid color-mix(in srgb, var(--main) 20%, transparent); z-index: 10;
+             display: flex; flex-direction: column; }
+  #micMenu .caption { padding: 8px 16px 6px; }
+  .mic-option { min-height: 44px; padding: 0 16px; background: transparent; border: none; color: var(--sub); text-align: left;
+                display: flex; align-items: center; gap: 12px; font-size: 12px; }
+  .mic-option:hover, .mic-option:focus-visible { color: var(--text); background: color-mix(in srgb, var(--main) 6%, transparent); }
+  .mic-option[aria-checked="true"] { color: var(--text); }
+  .mic-option .dot { background: transparent; border: 1px solid var(--off); box-sizing: border-box; }
+  .mic-option[aria-checked="true"] .dot { background: var(--c); border-color: var(--c); }
+  #mic { width: 56px; height: 56px; border-radius: 50%; border: 1px solid var(--c); background: transparent;
+         display: flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--c); touch-action: none; }
+  #mic.active { background: color-mix(in srgb, var(--main) 8%, transparent); }
+  #cmd { width: 380px; height: 44px; box-sizing: border-box; padding: 0 4px; background: transparent; border: none;
+         border-bottom: 1px solid color-mix(in srgb, var(--main) 25%, transparent); color: var(--text); font-family: var(--mono); font-size: 13px; }
+
+  /* Settings */
+  #settings { position: absolute; top: 96px; right: 52px; width: 340px; max-height: 764px; overflow-y: auto;
+              box-sizing: border-box; padding: 24px; display: flex; flex-direction: column; gap: 22px;
+              background: var(--bg); border: 1px solid color-mix(in srgb, var(--main) 20%, transparent); z-index: 10;
+              scrollbar-width: thin; scrollbar-color: color-mix(in srgb, var(--main) 30%, transparent) transparent; }
+  #settings[hidden] { display: none; }
+  .panel-head { display: flex; align-items: center; justify-content: space-between; }
+  .heading { font-size: 10px; letter-spacing: 3px; color: var(--sub2); }
+  .group { display: flex; flex-direction: column; gap: 6px; }
+  .caption { font-size: 10px; letter-spacing: 2px; color: var(--muted); }
+  .swatches { display: flex; margin-left: -12px; }
+  .swatch span { width: 18px; height: 18px; border-radius: 50%; box-shadow: 0 0 0 3px var(--bg), 0 0 0 4px transparent; }
+  .swatch[aria-pressed="true"] span { box-shadow: 0 0 0 3px var(--bg), 0 0 0 4px var(--text); }
+  .switch { min-height: 56px; padding: 0; background: transparent; border: none; border-top: 1px solid color-mix(in srgb, var(--main) 10%, transparent);
+            display: flex; align-items: center; justify-content: space-between; gap: 12px; text-align: left; color: var(--text); width: 100%; }
+  .switch .txt { display: flex; flex-direction: column; gap: 4px; }
+  .switch .txt span:first-child { font-size: 12px; }
+  .switch .hint { font-size: 10px; color: var(--muted); }
+  .track { position: relative; width: 36px; height: 20px; border-radius: 10px; background: color-mix(in srgb, var(--main) 18%, transparent); flex-shrink: 0; }
+  .knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted);
+          transition: left .15s; }
+  .switch[aria-checked="true"] .track { background: var(--main); }
+  .switch[aria-checked="true"] .knob { left: 18px; background: var(--bg); }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 11px; color: var(--sub); }
+  .field input, .field select, .paste { height: 32px; box-sizing: border-box; padding: 0 4px; background: transparent; border: none;
+            border-bottom: 1px solid color-mix(in srgb, var(--main) 25%, transparent); color: var(--text); font-family: var(--mono); font-size: 12px; width: 100%; }
+  .field select option { background: var(--bg); color: var(--text); }
+  .fields { display: flex; flex-direction: column; gap: 12px; }
+  .fields .switch { min-height: 44px; }
+  .text-btn { min-height: 44px; padding: 0 14px; background: transparent; border: 1px solid color-mix(in srgb, var(--main) 35%, transparent);
+              color: var(--main); letter-spacing: 2px; font-size: 10px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .note { font-size: 11px; color: var(--sub); line-height: 1.6; min-height: 1em; }
+  .note.error { color: #FF6B5E; }
+</style>
+</head>
+<body>
+<div id="stage">
+<div class="hud" id="hud">
+  <header>
+    <span class="brand" role="img" aria-label="NIA">
+      <svg viewBox="12 4 206 92" aria-hidden="true">
+        <g class="mark" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 86L50 34l28 52" stroke-width="7"></path>
+          <path d="M38 86l12-22 12 22" stroke-opacity=".45" stroke-width="5"></path>
+          <circle cx="50" cy="18" r="6.5" fill="currentColor" stroke="none"></circle>
+        </g>
+        <path class="word" transform="translate(112 0)" d="M0 70V30l30 40V30M48 70V30M66 70l18-40 18 40"
+              fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"></path>
+      </svg>
+    </span>
+    <div class="chip" role="status" aria-live="polite"><span class="dot blink"></span><span id="chip">BOOTING</span></div>
+    <div class="right">
+      <span id="clock"></span>
+      <button type="button" class="icon-btn" id="gear" aria-label="Settings" aria-expanded="false" aria-controls="settings">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+      </button>
+    </div>
+  </header>
+
+  <section id="modules" aria-label="Voice pipeline"></section>
+
+  <section class="center">
+    <div id="orb">
+      <svg width="460" height="460" viewBox="0 0 460 460" fill="none" aria-hidden="true">
+        <defs>
+          <!-- Lit from the upper left, so the core reads as a sphere -->
+          <radialGradient id="sphere" cx="38%" cy="34%" r="70%">
+            <stop offset="0" stop-color="currentColor" stop-opacity="1"></stop>
+            <stop offset=".55" stop-color="currentColor" stop-opacity=".7"></stop>
+            <stop offset="1" stop-color="currentColor" stop-opacity=".3"></stop>
+          </radialGradient>
+        </defs>
+        <circle cx="230" cy="230" r="226" stroke="currentColor" stroke-opacity=".12" stroke-width="1"></circle>
+        <circle cx="230" cy="230" r="164" stroke="currentColor" stroke-opacity=".1" stroke-width="1"></circle>
+        <path id="core" fill="url(#sphere)"></path>
+        <path id="arc1" stroke="currentColor" stroke-opacity=".55" stroke-width="1.5" stroke-linecap="round"></path>
+        <path id="arc2" stroke="currentColor" stroke-width="2" stroke-linecap="round"></path>
+        <circle id="head1" class="head" r="2.5" fill="currentColor"></circle>
+        <circle id="head2" class="head" r="3" fill="currentColor"></circle>
+      </svg>
+      <div class="orb-text">
+        <span id="label"></span>
+        <span id="sub"></span>
+      </div>
+    </div>
+    <div id="bars" aria-hidden="true"></div>
+  </section>
+
+  <section id="conversation" aria-label="Conversation" aria-live="polite">
+    <div class="turn" id="youTurn" hidden>
+      <span class="who">YOU</span>
+      <p id="you"></p>
+    </div>
+    <div class="turn" id="liveTurn" hidden>
+      <span class="who" id="liveWho"></span>
+      <p id="liveText"></p>
+    </div>
+    <div class="turn" id="planTurn" hidden>
+      <span class="who" id="planWho">PLAN</span>
+      <ol id="plan"></ol>
+    </div>
+  </section>
+
+  <footer>
+    <div id="modes" aria-label="Assistant state"></div>
+    <div class="footer-right">
+      <div class="mic-picker">
+        <button type="button" id="micPick" aria-haspopup="true" aria-expanded="false" aria-controls="micMenu"
+                aria-label="Microphone" title="Choose the microphone">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3"></path></svg>
+          <span id="micName">DEFAULT MIC</span>
+          <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6 15l6-6 6 6"></path></svg>
+        </button>
+        <div id="micMenu" role="menu" aria-label="Microphone" hidden></div>
+      </div>
+      <button type="button" id="mic" aria-label="Start listening">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3"></path></svg>
+      </button>
+      <label class="sr" for="cmd">Command</label>
+      <input id="cmd" type="text" autocomplete="off" placeholder="Type, or say “Hey Nia”">
+    </div>
+  </footer>
+
+  <div id="settings" role="dialog" aria-label="Settings" hidden>
+    <div class="panel-head">
+      <span class="heading">SETTINGS</span>
+      <button type="button" class="icon-btn" id="closeSettings" aria-label="Close settings" style="margin: -12px -12px -12px 0">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true" style="color: var(--sub)"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+      </button>
+    </div>
+    <div class="group">
+      <span class="caption">THEME</span>
+      <div class="swatches" id="swatches"></div>
+    </div>
+    <div id="toggles"></div>
+    <form id="form" class="group" style="gap: 22px" novalidate></form>
+    <div class="group">
+      <span class="caption">SPOTIFY</span>
+      <div class="actions"><button type="button" class="text-btn" id="spotifyLogin">LOG IN TO SPOTIFY</button></div>
+      <div id="spotifyPaste" hidden class="group" style="gap: 8px">
+        <label class="note" for="pasteUrl">Approve NIA in the browser tab that opened, then paste the address it lands on here.</label>
+        <input class="paste" id="pasteUrl" type="text" autocomplete="off" placeholder="https://…?code=…">
+        <div class="actions"><button type="button" class="text-btn" id="spotifyConnect">CONNECT</button></div>
+      </div>
+      <span class="note" id="spotifyNote" role="status"></span>
+    </div>
+    <div class="group">
+      <span class="caption">LLM SERVER</span>
+      <div class="actions"><button type="button" class="text-btn" id="serverRestart">RESTART SERVER</button></div>
+      <span class="note">Logs: logs/nia.log · logs/llama-server.log</span>
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+const THEMES = {
+  cyan:   { main: '#5FE3FF', done: '#7CF5C4', text: '#D7F6FF', sub: '#9CC2D1', sub2: '#7FA6B6', muted: '#6F95A6', off: '#3E5966', rgb: '95,227,255',  bg: '#03070A',
+            s: { booting: '#94A3B8', asleep: '#6B8CFF', awake: '#5FE3FF', ripple: '#B8F3FF', thinking: '#FFB547', speaking: '#7CF5C4', offline: '#FF5A4E' } },
+  gold:   { main: '#FFC857', done: '#A8E07A', text: '#FFF3DC', sub: '#D6C29C', sub2: '#B8A57F', muted: '#9F8C6C', off: '#5A4D36', rgb: '255,200,87',  bg: '#070503',
+            s: { booting: '#A8A29E', asleep: '#8C93FF', awake: '#FFC857', ripple: '#FFE3A3', thinking: '#5FE3FF', speaking: '#A8E07A', offline: '#FF5A4E' } },
+  ice:    { main: '#DDEBF2', done: '#8FE3B0', text: '#F2F8FB', sub: '#AEBEC7', sub2: '#93A3AC', muted: '#7F8F99', off: '#3F4B52', rgb: '221,235,242', bg: '#050607',
+            s: { booting: '#8E9AA6', asleep: '#7E9BFF', awake: '#DDEBF2', ripple: '#FFFFFF', thinking: '#FFB547', speaking: '#7CF5C4', offline: '#FF6B5E' } },
+  mint:   { main: '#7CF5C4', done: '#E6FFF5', text: '#DFFBEF', sub: '#A3CFBC', sub2: '#86B3A0', muted: '#6F9D8A', off: '#3A5A4D', rgb: '124,245,196', bg: '#030806',
+            s: { booting: '#94A3B8', asleep: '#6B8CFF', awake: '#7CF5C4', ripple: '#C4FBE4', thinking: '#FF8A5B', speaking: '#5FE3FF', offline: '#FF5A6E' } },
+  violet: { main: '#B9A3FF', done: '#7CF5C4', text: '#EEE8FF', sub: '#BDB3DB', sub2: '#A398C4', muted: '#9087B0', off: '#4A4466', rgb: '185,163,255', bg: '#06040B',
+            s: { booting: '#A3A3B8', asleep: '#5FA8FF', awake: '#B9A3FF', ripple: '#DCD1FF', thinking: '#FFD166', speaking: '#7CF5C4', offline: '#FF5A4E' } },
+  red:    { main: '#FF5A4E', done: '#F3E6E4', text: '#FFE7E4', sub: '#D6AEA9', sub2: '#BC9690', muted: '#A9837E', off: '#5C3A36', rgb: '255,90,78',   bg: '#080303',
+            s: { booting: '#A8A29E', asleep: '#6B8CFF', awake: '#FF5A4E', ripple: '#FFA79F', thinking: '#FFD166', speaking: '#7CF5C4', offline: '#8C8C94' } }
+};
+const THEME_NAMES = { cyan: 'Cyan', gold: 'Arc gold', ice: 'Ice white', mint: 'Mint', violet: 'Violet', red: 'Red alert' };
+// How each state looks: its label and the core's glow
+const LOOK = {
+  booting:  { label: 'BOOTING',     glow: 0.05 },
+  asleep:   { label: 'STANDING BY', glow: 0.04 },
+  awake:    { label: 'LISTENING',   glow: 0.08 },
+  thinking: { label: 'THINKING',    glow: 0.08 },
+  speaking: { label: '',            glow: 0.12 },
+  offline:  { label: 'OFFLINE',     glow: 0 }
+};
+// How the two arcs move: spin (degrees a second, outer and inner), length (share of their ring), and how far they
+// chase - growing and shrinking in turn, like a spinner - while she's busy
+const MOTION = {
+  booting:  { spin: [60, 120], len: [0.10, 0.08],   chase: 0.30 },
+  asleep:   { spin: [3, 4],    len: [0.14, 0.08],   chase: 0 },
+  awake:    { spin: [13, 30],  len: [0.21, 0.12],   chase: 0 },
+  thinking: { spin: [36, 90],  len: [0.10, 0.08],   chase: 0.34 },
+  speaking: { spin: [18, 45],  len: [0.21, 0.12],   chase: 0 },
+  offline:  { spin: [0, 0],    len: [0.015, 0.015], chase: 0 }
+};
+// The voice pipeline column: [status, kind] per state - a = active, d = done, o = idle
+const PIPELINE = {
+  booting:  [['LOADING', 'a'], ['LOADING', 'a'], ['LOADING', 'a'], ['CONNECTING', 'a'], ['LOADING', 'a'], ['LOADING', 'a']],
+  asleep:   [['LISTENING', 'a'], ['READY', 'd'], ['READY', 'd'], ['READY', 'd'], ['READY', 'd'], ['READY', 'd']],
+  awake:    [['HEARD', 'd'], ['LIVE', 'a'], ['YOU', 'd'], ['READY', 'o'], ['READY', 'o'], ['READY', 'o']],
+  thinking: [['HEARD', 'd'], ['DONE', 'd'], ['YOU', 'd'], ['BONSAI', 'a'], ['READY', 'o'], ['READY', 'o']],
+  speaking: [['ARMED', 'd'], ['DONE', 'd'], ['YOU', 'd'], ['DONE', 'd'], ['DONE', 'd'], ['LIVE', 'a']],
+  offline:  [['OFF', 'o'], ['OFF', 'o'], ['OFF', 'o'], ['OFF', 'o'], ['OFF', 'o'], ['OFF', 'o']]
+};
+const MODULES = ['Wake word', 'Speech to text', 'Speaker', 'Reasoning', 'Tools', 'Voice'];
+const SPOTIFY = /^(now_playing|play|play_something|restart_spotify|add_to_queue|pause|resume|skip|set_volume|change_volume|shuffle|repeat)$/;
+const toolLabel = (name) => SPOTIFY.test(name) ? 'SPOTIFY' : /youtube/.test(name) ? 'YOUTUBE'
+  : name === 'open_link' ? 'BROWSER' : name === 'execute' ? 'SHELL' : /file|^ls$|glob|grep|delete/.test(name) ? 'FILES'
+  : /^(web_search|read_page)$/.test(name) ? 'WEB' : name === 'write_todos' ? 'PLAN' : name === 'ask_claude' ? 'CLAUDE'
+  : /remember|forget/.test(name) ? 'MEMORY' : name === 'task' ? 'AGENT' : /voice_volume/.test(name) ? 'VOICE'
+  : name.replace(/_/g, ' ').toUpperCase().slice(0, 10);
+
+const $ = (id) => document.getElementById(id);
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const post = (path, data) => fetch(path, { method: 'POST', headers: { 'X-NIA': '1', 'Content-Type': 'application/json' },
+                                             body: JSON.stringify(data || {}) });
+let config = { author: 'you', wake_phrase: 'hey nia', theme: 'cyan', wake_word: true, push_to_talk: false, spoken_replies: true, voice: '', voice_speed: 1 };
+let t = THEMES.cyan;
+let mode = 'booting', ripple = false, rippleTimer = null, tool = null, server = 'loading', error = null;
+let you = '', nia = '', partial = '', plan = [];
+let envelope = null, envelopeFps = 60, envelopeStart = 0, level = 0;
+
+// ---- Fit the 1440x900 artboard to the window
+function fit() {
+  const scale = Math.min(innerWidth / 1440, innerHeight / 900);
+  $('stage').style.transform = `translate(-50%, -50%) scale(${scale})`;
+}
+addEventListener('resize', fit);
+fit();
+
+// ---- Clock
+function tick() {
+  const now = new Date();
+  const time = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const day = now.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' }).replace(',', '');
+  $('clock').textContent = `${time} · ${day}`.toUpperCase();
+}
+setInterval(tick, 10000);
+tick();
+
+// ---- Static parts built once
+const modulesEl = $('modules');
+MODULES.forEach((name) => {
+  modulesEl.insertAdjacentHTML('beforeend',
+    `<div class="module"><span class="dot"></span><span class="name">${name}</span><span class="status"></span></div>`);
+});
+const bars = [];
+for (let i = 0; i < 32; i++) {
+  const span = document.createElement('span');
+  span.className = 'bar';
+  span.style.animationDelay = ((i % 12) * 0.07).toFixed(2) + 's';
+  $('bars').appendChild(span);
+  bars.push(span);
+}
+const MODES = [['booting', 'BOOT'], ['asleep', 'SLEEP'], ['awake', 'LISTEN'], ['ripple', 'RIPPLE'], ['thinking', 'THINK'],
+               ['speaking', 'SPEAK'], ['offline', 'OFF']];
+MODES.forEach(([key, short]) => {
+  $('modes').insertAdjacentHTML('beforeend', `<span class="mode" data-mode="${key}"><span class="dot"></span>${short}</span>`);
+});
+
+function applyTheme(name) {
+  t = THEMES[name] || THEMES.cyan;
+  const root = document.documentElement.style;
+  for (const k of ['bg', 'main', 'text', 'sub', 'sub2', 'muted', 'off', 'done']) root.setProperty('--' + k, t[k]);
+  document.querySelectorAll('.swatch').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.theme === name)));
+}
+
+// The step she's on, numbered from 1, if she's working through a plan
+const current = () => {
+  const i = plan.findIndex((s) => s.status === 'in_progress');
+  return i < 0 ? null : { n: i + 1, step: plan[i].step };
+};
+const wakeWords = () => config.wake_phrase.replace(/\b\w/g, (c) => c.toUpperCase());
+
+// ---- Everything that changes with NIA's state (per event, not per frame)
+function render() {
+  const rip = ripple && mode === 'awake';
+  const look = LOOK[mode];
+  const color = rip ? t.s.ripple : t.s[mode];
+  document.documentElement.style.setProperty('--c', color);
+  $('chip').textContent = look.label || 'SPEAKING';
+  $('label').textContent = look.label;
+
+  const subs = {
+    booting: server === 'loading' ? 'Loading speech models · connecting to Bonsai' : 'Loading speech models',
+    asleep: config.wake_word ? `Waiting for “${wakeWords()}”` : config.push_to_talk ? 'Hold the mic to talk' : 'Tap the mic to talk',
+    awake: rip ? '' : 'Waiting for your command',
+    thinking: current() ? `Step ${current().n}/${plan.length} · ${current().step}`
+      : tool ? `Bonsai · ${toolLabel(tool).toLowerCase()}` : 'Asking Bonsai',
+    speaking: '',
+    offline: error ? 'Stopped unexpectedly · tap the mic to restart' : 'Stopped · tap the mic to restart'
+  };
+  $('sub').textContent = server === 'down' && mode !== 'offline' ? 'The LLM server stopped · see logs/llama-server.log' : subs[mode];
+
+  // Orb (drawn per frame)
+  $('orb').style.opacity = mode === 'offline' ? 0.45 : 1;
+
+  // Bars (speaking ones are driven per frame by the voice)
+  const play = mode === 'asleep' || mode === 'offline' ? 'paused' : 'running';
+  bars.forEach((bar, i) => {
+    const env = Math.sin((i / 31) * Math.PI);
+    let h = 2;
+    if (mode === 'awake') h = rip ? 8 + Math.round(40 * env * Math.abs(Math.sin(i * 0.9) * 0.7 + Math.cos(i * 0.37) * 0.3))
+                                  : 3 + Math.round(8 * env * Math.abs(Math.sin(i * 0.9)));
+    if (mode === 'thinking' || mode === 'booting') h = 3 + Math.round(6 * env);
+    if (mode !== 'speaking') bar.style.height = h + 'px';
+    bar.style.opacity = (0.3 + 0.7 * env).toFixed(2);
+    bar.style.animationPlayState = play;
+  });
+
+  // Pipeline column
+  const rows = PIPELINE[mode].map((row) => row.slice());
+  rows[2][0] = mode === 'booting' || mode === 'offline' || mode === 'asleep' ? rows[2][0] : config.author.toUpperCase().slice(0, 10);
+  if (!config.wake_word && mode !== 'offline') rows[0] = config.push_to_talk ? ['HOLD MIC', 'o'] : ['OFF', 'o'];
+  if (mode === 'thinking' && tool) rows[4] = [toolLabel(tool), 'a'];
+  if (mode === 'speaking' && !tool) rows[4] = ['READY', 'o'];
+  if (mode === 'speaking' && !config.spoken_replies) rows[5] = ['MUTED', 'o'];
+  if (server === 'loading' && mode !== 'offline') rows[3] = ['LOADING', 'a'];
+  if (server === 'down') rows[3] = ['DOWN', 'o'];
+  modulesEl.querySelectorAll('.module').forEach((el, i) => {
+    const [status, kind] = rows[i];
+    const dot = kind === 'a' ? 'var(--c)' : kind === 'd' ? 'var(--done)' : 'var(--off)';  // fade with the state
+    el.querySelector('.dot').style.background = dot;
+    el.querySelector('.name').style.color = kind === 'a' ? 'var(--text)' : 'var(--sub2)';
+    const st = el.querySelector('.status');
+    st.textContent = status;
+    st.style.color = dot;
+  });
+
+  // Footer: which state she's in
+  document.querySelectorAll('.mode').forEach((el) => {
+    const key = el.dataset.mode;
+    const on = key === 'ripple' ? rip : key === mode && !(key === 'awake' && rip);
+    const c = key === 'ripple' ? t.s.ripple : t.s[key];
+    el.querySelector('.dot').style.background = c;
+    el.style.color = on ? c : 'var(--muted)';
+    el.style.borderBottomColor = on ? c : 'transparent';
+    el.setAttribute('aria-current', on ? 'true' : 'false');
+  });
+
+  // Mic
+  const idle = mode === 'asleep' || mode === 'offline';
+  const mic = $('mic');
+  mic.classList.toggle('active', !idle);
+  mic.setAttribute('aria-label', mode === 'offline' ? 'Restart Nia' : config.push_to_talk ? 'Hold to talk'
+                                 : idle ? 'Start listening' : 'Stop listening');
+  $('cmd').placeholder = config.wake_word ? `Type, or say “${wakeWords()}”` : 'Type a command';
+
+  // Conversation
+  $('youTurn').hidden = !you;
+  $('you').textContent = you;
+  let live = null;
+  if (rip && partial) live = ['NIA · HEARING', `“…${partial}”`];
+  else if (mode === 'thinking') live = ['NIA · THINKING', current() ? `On step ${current().n}: ${current().step}`
+    : tool ? `Using ${toolLabel(tool).toLowerCase()}…` : 'Asking Bonsai…'];
+  else if (nia) live = ['NIA', nia];
+  $('liveTurn').hidden = !live;
+  if (live) { $('liveWho').textContent = live[0]; $('liveText').textContent = live[1]; }
+
+  // Her plan, while there is one
+  $('planTurn').hidden = !plan.length;
+  if (plan.length) {
+    const done = plan.filter((s) => s.status === 'completed').length;
+    $('planWho').textContent = `PLAN · ${done}/${plan.length}`;
+    $('plan').innerHTML = plan.map((s) => `<li class="${esc(s.status)}"><span class="mark" aria-hidden="true">${
+      s.status === 'completed' ? '✓' : s.status === 'in_progress' ? '●' : '○'}</span><span>${esc(s.step)}</span></li>`).join('');
+  }
+}
+
+// ---- Per frame: everything that moves. Each value eases toward its target, so no state change ever jumps
+const still = matchMedia('(prefers-reduced-motion: reduce)').matches;
+const CX = 230, CY = 230, R1 = 196, R2 = 164, CORE = 128, POINTS = 48;
+const ease = (from, to, rate, dt) => from + (to - from) * (1 - Math.exp(-rate * dt));
+const at = (r, deg) => [CX + r * Math.cos(deg * Math.PI / 180), CY + r * Math.sin(deg * Math.PI / 180)];
+const fmt = ([x, y]) => `${x.toFixed(1)} ${y.toFixed(1)}`;
+function arc(r, from, share) {
+  const to = from + Math.max(share, 0.001) * 360;
+  return `M ${fmt(at(r, from))} A ${r} ${r} 0 ${share > 0.5 ? 1 : 0} 1 ${fmt(at(r, to))}`;
+}
+const orbit = { angle: [-90, 90], spin: [3, 4], len: [0.14, 0.08] };
+let wobble = 0, coreScale = 0.97, glow = 0.04, last = performance.now();
+
+function frame(now) {
+  const dt = Math.min((now - last) / 1000, 0.05);
+  last = now;
+  const sec = now / 1000;
+  let target = 0;
+  if (envelope) {
+    const i = Math.floor((now - envelopeStart) / 1000 * envelopeFps);
+    if (i >= 0 && i < envelope.length) target = envelope[i];  // a frame can be stamped just before the sentence arrived
+  }
+  level += (target - level) * (target > level ? 0.55 : 0.14);  // quick to rise with a syllable, slower to fall
+  const speaking = mode === 'speaking', rip = ripple && mode === 'awake';
+
+  // The arcs: spin, and a length that stretches with her voice or yours, or chases in turn while she works
+  const m = MOTION[mode];
+  for (const i of [0, 1]) {
+    orbit.spin[i] = ease(orbit.spin[i], still ? 0 : m.spin[i] * (rip ? 1.6 : 1), 2.5, dt);
+    orbit.angle[i] += orbit.spin[i] * dt * (i ? -1 : 1);  // outer clockwise, inner against it
+    const chase = still ? 0 : m.chase * (0.5 + 0.5 * Math.sin(sec * 4.2 + i * Math.PI));
+    const lenTarget = m.len[i] + chase + (speaking ? [0.26, 0.2][i] * level : 0) + (rip ? 0.08 : 0);
+    orbit.len[i] = ease(orbit.len[i], lenTarget, 7, dt);
+  }
+  const [a1, a2] = orbit.angle, [l1, l2] = orbit.len;
+  $('arc1').setAttribute('d', arc(R1, a1, l1));
+  $('arc2').setAttribute('d', arc(R2, a2, l2));
+  const h1 = at(R1, a1 + l1 * 360), h2 = at(R2, a2);  // each head leads its arc
+  $('head1').setAttribute('cx', h1[0].toFixed(1)); $('head1').setAttribute('cy', h1[1].toFixed(1));
+  $('head2').setAttribute('cx', h2[0].toFixed(1)); $('head2').setAttribute('cy', h2[1].toFixed(1));
+  $('head1').style.opacity = $('head2').style.opacity = mode === 'offline' ? 0 : 1;
+
+  // The sphere: a calm circle at rest - breathing on standby, pulsing while she thinks - that becomes a
+  // rippling blob, swelling with each word, while she speaks
+  const rest = mode === 'asleep' || mode === 'booting' ? 0.97 + 0.03 * Math.sin(sec * Math.PI / 2)
+    : mode === 'thinking' ? 0.98 + 0.02 * Math.sin(sec * 5) : mode === 'offline' ? 0.9 : 1;
+  coreScale = ease(coreScale, still ? 1 : speaking ? 0.95 + 0.09 * level : rest, 6, dt);
+  wobble = ease(wobble, still ? 0 : speaking ? 0.035 + 0.11 * level : rip ? 0.02 : 0, speaking ? 10 : 3, dt);
+  glow = ease(glow, rip ? 0.18 : speaking ? 0.12 + 0.16 * level : LOOK[mode].glow, 5, dt);
+  const points = [];
+  for (let k = 0; k < POINTS; k++) {
+    const th = k / POINTS * Math.PI * 2;
+    const ripples = 0.55 * Math.sin(3 * th + sec * 1.7) + 0.3 * Math.sin(5 * th - sec * 2.3 + 1)
+                  + 0.15 * Math.sin(7 * th + sec * 3.1 + 2);
+    const r = CORE * coreScale * (1 + wobble * ripples);
+    points.push([CX + r * Math.cos(th), CY + r * Math.sin(th)]);
+  }
+  const mid = (p, q) => [(p[0] + q[0]) / 2, (p[1] + q[1]) / 2];  // a smooth outline through the points
+  let d = `M ${fmt(mid(points[POINTS - 1], points[0]))}`;
+  for (let k = 0; k < POINTS; k++) d += ` Q ${fmt(points[k])} ${fmt(mid(points[k], points[(k + 1) % POINTS]))}`;
+  const core = $('core');
+  core.setAttribute('d', d + ' Z');
+  core.setAttribute('fill-opacity', glow.toFixed(3));
+
+  // Bars follow her voice while she speaks (other states use their CSS wave)
+  if (speaking) {
+    const phase = now / 160;
+    bars.forEach((bar, i) => {
+      const env = Math.sin((i / 31) * Math.PI);
+      const shape = Math.abs(Math.sin(i * 0.55 + phase) * 0.6 + Math.cos(i * 1.3 - phase * 0.7) * 0.4);
+      bar.style.height = (4 + Math.round(42 * env * shape * (0.2 + 0.8 * level))) + 'px';
+    });
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ---- NIA's state, streamed by nia.py
+const events = new EventSource('/events');
+events.onmessage = (e) => {
+  const m = JSON.parse(e.data);
+  if (m.config) { config = { ...config, ...m.config }; applyTheme(config.theme); renderToggles(); }
+  if ('server' in m) server = m.server;
+  if ('error' in m) error = m.error;
+  if ('you' in m) { you = m.you; tool = null; partial = ''; nia = ''; plan = []; }
+  if (m.plan) plan = m.plan;
+  if ('tool' in m) tool = m.tool;
+  if ('nia' in m) nia = m.nia;
+  if ('mic' in m) micInUse = m.mic;
+  if (m.partial) {
+    partial = m.partial;
+    ripple = true;
+    const orb = $('orb');
+    orb.classList.remove('flutter');
+    void orb.offsetWidth;  // restart the flutter for each new word
+    orb.classList.add('flutter');
+    clearTimeout(rippleTimer);
+    rippleTimer = setTimeout(() => { ripple = false; render(); }, 700);
+  }
+  if (m.state) {
+    if (m.state !== mode && m.state === 'awake') tool = null;
+    mode = m.state;
+    envelope = m.envelope || null;
+    if (m.envelope) { envelopeFps = m.fps; envelopeStart = performance.now(); }
+  }
+  render();
+  showMic();
+};
+// Lost nia.py: offline - or booting, if she said she's rebooting. When it answers again, reload the page, so
+// it's the page the (possibly changed) nia.py serves now
+let rebooting = false, lost = false;
+events.addEventListener('message', (e) => { if (JSON.parse(e.data).rebooting) rebooting = true; });
+events.onerror = () => { lost = true; mode = rebooting ? 'booting' : 'offline'; error = null; render(); };
+events.onopen = () => { if (lost) location.reload(); };
+
+// ---- Typing
+$('cmd').addEventListener('keydown', (e) => {
+  const text = $('cmd').value.trim();
+  if (e.key !== 'Enter' || !text) return;
+  post('/command', { text });
+  you = text; nia = ''; tool = null;
+  $('cmd').value = '';
+  render();
+});
+
+// ---- Mic: tap to wake or sleep, hold for push-to-talk, tap to restart when offline
+const mic = $('mic');
+let holding = false;
+mic.addEventListener('click', () => {
+  if (config.push_to_talk && mode !== 'offline') return;
+  if (mode === 'offline') post('/mic', { action: 'restart' });
+  else post('/mic', { action: mode === 'asleep' ? 'wake' : 'sleep' });
+});
+const pttDown = () => { if (config.push_to_talk && mode !== 'offline' && !holding) { holding = true; post('/mic', { action: 'ptt_down' }); } };
+const pttUp = () => { if (holding) { holding = false; post('/mic', { action: 'ptt_up' }); } };
+mic.addEventListener('pointerdown', pttDown);
+['pointerup', 'pointerleave', 'pointercancel'].forEach((ev) => mic.addEventListener(ev, pttUp));
+mic.addEventListener('keydown', (e) => { if (e.key === ' ' && !e.repeat) { e.preventDefault(); pttDown(); } });
+mic.addEventListener('keyup', (e) => { if (e.key === ' ') pttUp(); });
+
+// ---- Microphone picker: the mic in use, switched at once from the menu
+let micInUse = null;  // what the assistant reports it's listening through; null until it says
+const micLabel = (name) => !name ? 'Default mic'
+  : name.replace(/^Microphone( Array)? \((.*)\)$/, (all, array, inner) => (array ? 'Array · ' : '') + inner);
+const micPick = $('micPick'), micMenu = $('micMenu');
+function showMic() {
+  const name = micInUse ?? config.mic_device;
+  $('micName').textContent = micLabel(name);
+  micPick.title = `Microphone: ${name || 'Windows default'}`;
+}
+async function openMicMenu(open) {
+  micMenu.hidden = !open;
+  micPick.setAttribute('aria-expanded', String(open));
+  if (!open) return;
+  const { mics, current } = await (await fetch('/mics')).json();
+  micMenu.innerHTML = '<span class="caption">MICROPHONE</span>' + [['', 'Windows default'], ...mics.map((m) => [m, m])]
+    .map(([value, label]) => `<button type="button" class="mic-option" role="menuitemradio" data-mic="${esc(value)}"
+        aria-checked="${value === current}"><span class="dot"></span>${esc(label)}</button>`).join('');
+  (micMenu.querySelector('[aria-checked="true"]') || micMenu.querySelector('.mic-option')).focus();
+}
+micPick.addEventListener('click', () => openMicMenu(micMenu.hidden));
+micMenu.addEventListener('click', (e) => {
+  const option = e.target.closest('.mic-option');
+  if (!option) return;
+  config.mic_device = option.dataset.mic;
+  micInUse = option.dataset.mic;  // shown at once; the assistant confirms (or falls back) right after
+  post('/settings', { mic_device: option.dataset.mic });
+  showMic();
+  openMicMenu(false);
+  micPick.focus();
+});
+micMenu.addEventListener('keydown', (e) => {  // arrow keys move through the list
+  if (e.key !== 'ArrowDown' && e.key !== 'ArrowUp') return;
+  e.preventDefault();
+  const options = [...micMenu.querySelectorAll('.mic-option')];
+  const i = options.indexOf(document.activeElement) + (e.key === 'ArrowDown' ? 1 : -1);
+  options[(i + options.length) % options.length].focus();
+});
+document.addEventListener('click', (e) => { if (!micMenu.hidden && !e.target.closest('.mic-picker')) openMicMenu(false); });
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !micMenu.hidden) { openMicMenu(false); micPick.focus(); } });
+
+// ---- Settings
+const panel = $('settings'), gear = $('gear');
+function openSettings(open) {
+  panel.hidden = !open;
+  gear.setAttribute('aria-expanded', String(open));
+  if (open) { loadForm(); $('closeSettings').focus(); } else gear.focus();
+}
+gear.addEventListener('click', () => openSettings(panel.hidden));
+$('closeSettings').addEventListener('click', () => openSettings(false));
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !panel.hidden) openSettings(false); });
+
+Object.keys(THEMES).forEach((key) => {
+  $('swatches').insertAdjacentHTML('beforeend',
+    `<button type="button" class="icon-btn swatch" data-theme="${key}" aria-label="${THEME_NAMES[key]} theme" aria-pressed="false">
+       <span style="background:${THEMES[key].main}"></span></button>`);
+});
+$('swatches').addEventListener('click', (e) => {
+  const b = e.target.closest('.swatch');
+  if (b) { applyTheme(b.dataset.theme); post('/settings', { hud_theme: b.dataset.theme }); }
+});
+
+// The three switches from the design; they apply at once
+const TOGGLES = [['wake_word', 'Wake word', () => `“${wakeWords()}”`], ['push_to_talk', 'Push to talk', () => 'Hold the mic to speak'],
+                 ['spoken_replies', 'Spoken replies', () => `${config.voice.replace(/^kokoro_|^piper_/, '')} · ${config.voice_speed}×`]];
+function switchHtml(key, name, hint, on) {
+  return `<button type="button" class="switch" role="switch" data-key="${key}" aria-checked="${on}">
+    <span class="txt"><span>${name}</span><span class="hint">${hint}</span></span>
+    <span class="track"><span class="knob"></span></span></button>`;
+}
+function renderToggles() {
+  $('toggles').innerHTML = TOGGLES.map(([key, name, hint]) => switchHtml(key, name, hint(), !!config[key])).join('');
+}
+$('toggles').addEventListener('click', (e) => {
+  const b = e.target.closest('.switch');
+  if (!b) return;
+  const on = b.getAttribute('aria-checked') !== 'true';
+  b.setAttribute('aria-checked', String(on));
+  config[b.dataset.key] = on;
+  post('/settings', { [b.dataset.key]: on });
+  render();
+});
+
+// Every other setting, as a form; saving restarts whatever needs it
+async function loadForm() {
+  const { values, fields, voices, stt_models, mics } = await (await fetch('/settings')).json();
+  const form = $('form');
+  const options = (list, value) => list.map((v) => `<option${v === value ? ' selected' : ''}>${esc(v)}</option>`).join('');
+  form.innerHTML = fields.map(([section, items]) => `<div class="group fields">
+      <span class="caption">${esc(section.toUpperCase())}</span>
+      ${items.map(([key, label, kind]) => {
+        const id = 'f_' + key, v = values[key];
+        if (kind === 'check') return switchHtml(key, esc(label), '', !!v).replace('class="switch"', 'class="switch field-switch"');
+        const input = kind === 'voice' ? `<select id="${id}" name="${key}">${options(voices, v)}</select>`
+          : kind === 'stt' ? `<select id="${id}" name="${key}">${options(stt_models, v)}</select>`
+          : kind === 'mic' ? `<select id="${id}" name="${key}"><option value="">Windows default</option>${
+              (mics.includes(v) || !v ? mics : [...mics, v]).map((m) =>
+                `<option value="${esc(m)}"${m === v ? ' selected' : ''}>${esc(m)}</option>`).join('')}</select>`
+          : `<input id="${id}" name="${key}" type="text" inputmode="${kind === 'number' ? 'decimal' : 'text'}" value="${esc(v)}" autocomplete="off">`;
+        return `<div class="field"><label for="${id}">${esc(label)}</label>${input}</div>`;
+      }).join('')}
+    </div>`).join('') +
+    `<div class="group"><div class="actions"><button type="submit" class="text-btn">SAVE</button></div>
+       <span class="note" id="formNote" role="status"></span></div>`;
+}
+$('form').addEventListener('click', (e) => {
+  const b = e.target.closest('.field-switch');
+  if (b) b.setAttribute('aria-checked', String(b.getAttribute('aria-checked') !== 'true'));
+});
+$('form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const data = {};
+  $('form').querySelectorAll('input[name], select[name]').forEach((el) => { data[el.name] = el.value; });
+  $('form').querySelectorAll('.field-switch').forEach((b) => { data[b.dataset.key] = b.getAttribute('aria-checked') === 'true'; });
+  const note = $('formNote');
+  const res = await post('/settings', data);
+  const body = await res.json();
+  note.classList.toggle('error', !res.ok);
+  if (!res.ok) { note.textContent = body.error; return; }
+  const r = body.restarting;
+  note.textContent = !r.length ? 'Saved.' : r.includes('server')
+    ? 'Saved. Restarting the LLM server and NIA to apply it (about 30 s).'
+    : 'Saved. Restarting NIA to apply it (a few seconds).';
+});
+
+$('serverRestart').addEventListener('click', () => post('/server/restart'));
+$('spotifyLogin').addEventListener('click', async () => {
+  await post('/spotify/login');
+  $('spotifyPaste').hidden = false;
+  $('spotifyNote').textContent = '';
+  $('pasteUrl').focus();
+});
+$('spotifyConnect').addEventListener('click', async () => {
+  const res = await post('/spotify/code', { url: $('pasteUrl').value });
+  const note = $('spotifyNote');
+  note.classList.toggle('error', !res.ok);
+  note.textContent = res.ok ? 'Logged in to Spotify.' : (await res.json()).error;
+  if (res.ok) { $('spotifyPaste').hidden = true; $('pasteUrl').value = ''; }
+});
+
+applyTheme('cyan');
+renderToggles();
+render();
+</script>
+</body>
+</html>

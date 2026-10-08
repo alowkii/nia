@@ -1,35 +1,35 @@
-# Python 3.11 required - Coqui TTS 0.22 does not support 3.12+
-#
-# torch is pinned to a CUDA 12.1 build. For that exact wheel, install with:
-#   pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu121
-# For CPU-only, drop the "+cu121" suffix below; the assistant falls back to CPU
-# automatically when torch.cuda.is_available() is False.
-torch==2.5.1+cu121
+# Tested on Python 3.11. Speech runs on the CPU, so no CUDA wheels are needed here;
+# the LLM runs on the GPU in a separate llama-server process (see scripts/run_bonsai.bat).
 
-# Wake word
-pvporcupine==3.0.5
-PyAudio==0.2.14
-
-# Audio capture and file IO
+# Wake phrase + speech to text (Moonshine, with its own mic capture and VAD) and
+# text to speech (Kokoro / Piper voices). Models download on first run.
+moonshine-voice==0.1.5
+# Playing NIA's voice ourselves, so "stop" can cut it off safely (Moonshine's own stop()
+# crashed when it landed mid-synthesis)
 sounddevice==0.5.3
-scipy==1.16.3
-numpy==1.26.4
+numpy==2.4.6
 
-# Speech to text
-openai-whisper==20250625
+# Turns other apps down while NIA speaks (Windows volume mixer)
+pycaw==20260927
+# Finding NIA's own llama-server among processes (nia.py); already pulled in by pycaw
+psutil==7.1.3
 
-# Text to speech
-TTS==0.22.0
-
-# LLM
-ollama==0.6.1
+# LLM agent - a Deep Agent (LangGraph harness: files, shell, sub-agents, approvals)
+# talking to llama-server's OpenAI-compatible API
+deepagents==0.7.23
+langgraph==1.2.12
+langchain-openai==1.6.7
 
 # Spotify control
 spotipy==2.25.2
 
+# YouTube: top-result search and transcripts, no API key
+yt-dlp==2026.8.19
+youtube-transcript-api==1.2.4
+
 # Config
 python-dotenv==1.2.1
 
-# Speaker verification - only used by preprocess_voice.py; the runtime check is
-# currently disabled in voice_assistant.py for latency reasons
+# Speaker verification - only used by scripts/preprocess_voice.py; the runtime check is
+# currently disabled in voice_assistant.py for latency reasons. Pulls in torch.
 Resemblyzer==0.1.4
