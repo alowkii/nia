@@ -1,12 +1,13 @@
-"""YouTube for NIA: search, play a video, and read transcripts. No API key or account.
+"""YouTube and web links for NIA: search, play a video, read transcripts, open a website. No API key or account.
 
-None of the tools need approval: search_youtube and youtube_transcript only read, and
-play_youtube can only open a youtube.com watch link - at most one every OPEN_COOLDOWN seconds,
-so a model that keeps "trying" can't fill the screen with tabs.
+None of the tools need approval: search_youtube and youtube_transcript only read, play_youtube can only
+open a youtube.com watch link, and open_link only http(s) web addresses - and together they open at most
+one tab every OPEN_COOLDOWN seconds, so a model that keeps "trying" can't fill the screen with tabs.
 """
 import re
 import time
 import webbrowser
+from urllib.parse import urlsplit
 
 from langchain_core.tools import tool
 from youtube_transcript_api import YouTubeTranscriptApi
@@ -40,6 +41,30 @@ def search_youtube(query: str) -> str:
                      enumerate(results, 1))
 
 
+def _too_soon():
+    """Why a new tab must wait, or "" if one may open now"""
+    wait = OPEN_COOLDOWN - (time.time() - last_opened)
+    if wait > 0:
+        return (f"Not opened: a tab was opened {OPEN_COOLDOWN - wait:.0f} seconds ago. Don't open another - "
+                "tell the user what's open and ask before trying again")
+    return ""
+
+
+@tool
+def open_link(url: str) -> str:
+    """Open a website in the browser: "open Google", "show me the news", "open Instagram reels".
+    url is a full http:// or https:// address. No approval needed - use this, never the shell, for websites"""
+    global last_opened
+    parts = urlsplit(url.strip())
+    if parts.scheme not in ("http", "https") or not parts.netloc:
+        return "Not opened: only http:// or https:// web addresses can be opened this way"
+    if why := _too_soon():
+        return why
+    webbrowser.open(url.strip())
+    last_opened = time.time()
+    return f"Opened {parts.netloc} in the browser"
+
+
 @tool
 def play_youtube(query: str) -> str:
     """Open ONE video on YouTube in the browser. query is a video id or link (e.g. from
@@ -48,10 +73,8 @@ def play_youtube(query: str) -> str:
     result isn't what was wanted, use search_youtube and ask the user, don't open more videos.
     Not for music on Spotify"""
     global last_video, last_opened
-    wait = OPEN_COOLDOWN - (time.time() - last_opened)
-    if wait > 0:
-        return (f"Not opened: a video was opened {OPEN_COOLDOWN - wait:.0f} seconds ago. Don't open "
-                "another - tell the user what's open and ask before trying again")
+    if why := _too_soon():
+        return why
     if match := VIDEO_ID.search(query.strip()):
         video_id, title, channel = match.group(1), "the requested video", "YouTube"
     else:
@@ -85,4 +108,4 @@ def youtube_transcript(video: str = "") -> str:
     return f"Transcript of '{title}':\n" + " ".join(snippet.text for snippet in transcript)
 
 
-TOOLS = [search_youtube, play_youtube, youtube_transcript]
+TOOLS = [search_youtube, play_youtube, youtube_transcript, open_link]

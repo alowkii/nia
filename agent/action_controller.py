@@ -20,19 +20,24 @@ def _describe(item):
     return f"{item['name']} by {', '.join(artist['name'] for artist in item['artists'])}"
 
 
+def oauth():
+    """NIA's Spotify login; the token is saved to CACHE and refreshed from there"""
+    return SpotifyOAuth(
+        client_id=os.getenv("SPOTIFY_ID"),
+        client_secret=os.getenv("SPOTIFY_SECRET"),
+        redirect_uri="https://aalokpandit.netlify.app/",
+        scope="user-modify-playback-state user-read-playback-state user-read-currently-playing",
+        cache_path=str(CACHE),
+        open_browser=True
+    )
+
+
 class SpotifyController:
     """Spotify API errors propagate; the agent's ToolNode hands them back to the model."""
 
     def __init__(self):
         """Initialize Spotify client with authentication"""
-        self.sp = spotipy.Spotify(auth_manager=SpotifyOAuth(
-            client_id=os.getenv("SPOTIFY_ID"),
-            client_secret=os.getenv("SPOTIFY_SECRET"),
-            redirect_uri="https://aalokpandit.netlify.app/",
-            scope="user-modify-playback-state user-read-playback-state user-read-currently-playing",
-            cache_path=str(CACHE),
-            open_browser=True
-        ))
+        self.sp = spotipy.Spotify(auth_manager=oauth())
 
     def open_app(self, timeout=20):
         """Launch Spotify on this PC unless it's already a device, and wait until it shows up as one.
@@ -56,6 +61,7 @@ class SpotifyController:
             subprocess.run(["taskkill", "/F", "/IM", image], capture_output=True)
         time.sleep(2)  # let Spotify drop off the device list before waiting for it to come back
         self.open_app()
+        self.restarted = time.time()
         return "Restarted the Spotify app on this PC; it's back online"
 
     def _start(self, **kwargs):
@@ -71,15 +77,28 @@ class SpotifyController:
             # Prefer a computer - NIA runs on one - over a phone that happens to be listed first
             device = min(devices, key=lambda d: d["type"] != "Computer")
             kwargs["device_id"] = device["id"]
-        self.sp.start_playback(**kwargs)
+        try:
+            self.sp.start_playback(**kwargs)
+        except spotipy.SpotifyException as e:
+            if e.http_status != 404 or "device_id" not in kwargs:
+                raise
+            # Just after a restart the old device id can linger: look the device up again, once
+            time.sleep(2)
+            fresh = [d for d in self.sp.devices()["devices"] if d["type"] == "Computer"]
+            kwargs["device_id"] = fresh[0]["id"] if fresh else kwargs.pop("device_id")
+            self.sp.start_playback(**kwargs)
         for _ in range(6):  # ~3 s for the app to load the track
             time.sleep(0.5)
             playback = self.get_current_playback()
             if playback and playback.get("item") and playback.get("is_playing"):
                 return
         where = playback["device"]["name"] if playback and playback.get("device") else "the device"
-        raise RuntimeError(f"Spotify accepted the command but nothing started playing on {where}. The Spotify app "
-                           "there is probably stuck: offer to restart it with restart_spotify, then try again")
+        if time.time() - getattr(self, "restarted", 0) < 600:
+            # Restarting again won't help - one session tried it five times in a row
+            raise RuntimeError(f"Spotify accepted the command but nothing started playing on {where}, even though "
+                               "Spotify was restarted recently. Don't restart it again: tell the user it isn't playing")
+        raise RuntimeError(f"Spotify accepted the command but nothing started playing on {where}. The app may be "
+                           "stuck: tell the user, and offer to restart it with restart_spotify")
 
     def _search(self, query, kind):
         """Top hit for kind 'track', 'playlist' or 'album', or None"""
@@ -111,20 +130,29 @@ class SpotifyController:
         track = self._search(track_name, "track")
         if not track:
             return f"Track '{track_name}' not found"
-        self._start(uris=[track['uri']])
+        # Inside its album, starting at the track: a lone track (uris=[...]) stopped starting on this PC's
+        # Spotify app while albums and playlists kept working - measured: nothing in 4 s vs playing in 0.5 s
+        self._start(context_uri=track["album"]["uri"], offset={"uri": track["uri"]})
         return f"Successfully playing: {_describe(track)}"
 
     def play_something(self, mood=""):
         """Play something when no song was named: a playlist for mood, or for a random pick from the
         music_moods setting, started at a random track with shuffle on"""
         # ponytail: picks from a fixed list in settings; replace with learned preferences later
-        pick = mood or random.choice([m.strip() for m in settings.load()["music_moods"].split(",") if m.strip()])
-        playlist = self._search(pick, "playlist")
+        moods = [m.strip() for m in settings.load()["music_moods"].split(",") if m.strip()]
+        random.shuffle(moods)
+        playlist = None
+        for pick in ([mood] if mood else []) + moods[:3]:  # a search can come back empty: try another mood
+            if playlist := self._search(pick, "playlist"):
+                break
         if not playlist:
-            return f"Found no playlist for '{pick}'"
+            return "Found no playlist to play"
         total = (playlist.get("tracks") or {}).get("total") or 1
         self._start(context_uri=playlist["uri"], offset={"position": random.randrange(min(total, 100))})
-        self.sp.shuffle(True)
+        try:
+            self.sp.shuffle(True)
+        except spotipy.SpotifyException:  # 404 when Spotify hasn't caught up with the device yet - it's playing anyway
+            return f"Playing the playlist {playlist['name']} (picked for '{pick}'), from a random track"
         return f"Playing the playlist {playlist['name']} (picked for '{pick}'), shuffled"
 
     def play_playlist(self, playlist_name):

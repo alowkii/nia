@@ -36,8 +36,9 @@ def call(name, **args):
     return AIMessage("", tool_calls=[{"name": name, "args": args, "id": name}])
 
 
-def assistant(*replies, spotify=None, extra_tools=(), approval_model=None):
-    a = AssistantModel(llm=ScriptedLLM(messages=iter(replies)), extra_tools=extra_tools, backend=StateBackend())
+def assistant(*replies, spotify=None, extra_tools=(), approval_model=None, memory=False, llm=None):
+    a = AssistantModel(llm=llm or ScriptedLLM(messages=iter(replies)), extra_tools=extra_tools,
+                       backend=StateBackend(), memory=memory)
     a._spotify = spotify
     a.approval_model = approval_model  # no decision model unless a test stubs one in - never real Ollama
     return a
@@ -75,6 +76,87 @@ def test_chat_does_not_build_spotify():
     a = assistant(AIMessage("Evening, sir."))
     assert a.respond("Hey Nia!") == "Evening, sir."
     assert a._spotify is None, "built a Spotify client for a plain chat turn"
+
+
+def word_embed(texts):
+    """Stand-in for EmbeddingGemma: one dimension per word, so similarity = shared words. Never Ollama."""
+    import re
+    import zlib
+    import numpy as np
+    vectors = np.zeros((len(texts), 512), dtype=np.float32)
+    for row, text in enumerate(texts):
+        text = text.split(": ", 2)[-1]  # drop the task prefix
+        for word in re.findall(r"[a-z]+", text.lower()):
+            vectors[row, zlib.crc32(word.encode()) % 512] += 1  # not hash(): that's randomized per run
+    return vectors / np.maximum(np.linalg.norm(vectors, axis=1, keepdims=True), 1e-9)
+
+
+def test_memory_finds_what_matters_and_persists():
+    import tempfile
+    from pathlib import Path
+    from agent.memory import Memory, note
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        db = Path(tmp) / "memory.sqlite"
+        m = Memory("stub", db, embed=word_embed)
+        m.add("Priya's birthday is on June 3", "fact")
+        m.add("Aalok's gym days are Tuesday and Saturday", "fact")
+        m.add("Aalok asked to play lofi | NIA played lofi beats", "exchange")
+        hits = m.search("when is priya's birthday", k=4, min_similarity=0.3)
+        assert [h[3] for h in hits] == ["Priya's birthday is on June 3"], hits
+        assert m.search("how far is the moon", min_similarity=0.3) == [], "off-topic turns get no memories"
+        assert "June 3" in note(hits) and note([]) == ""
+        m.db.close()
+
+        m = Memory("stub", db, embed=word_embed)  # a restart: memories are still there
+        assert m.search("priya birthday", min_similarity=0.3)
+        assert m.forget("lofi") == [], "forget only removes facts, never the conversation log"
+        assert m.forget("priya's birthday") == ["Priya's birthday is on June 3"]
+        assert not m.search("priya birthday", min_similarity=0.3) and len(m.rows) == 2
+        m.db.close()
+
+        tries = []
+        m = Memory("stub", db, embed=lambda texts: tries.append(1) or (_ for _ in ()).throw(OSError("ollama down")))
+        assert m.search("gym days") == [] and m.add("x", "fact") is None, "no embeddings: memory steps aside"
+        assert len(tries) == 1, "after one refusal it stops asking for a while - each try cost ~2 s per turn"
+        m.down_until = 0  # a minute later
+        m.search("gym days")
+        assert len(tries) == 2
+        m.db.close()
+
+
+def test_only_recent_turns_reach_the_model_and_memory_fills_in():
+    import tempfile
+    from pathlib import Path
+    import settings
+    from agent.memory import Memory
+    seen = []
+
+    class Recording(ScriptedLLM):
+        def _generate(self, messages, *args, **kwargs):
+            seen.append(messages)
+            return super()._generate(messages, *args, **kwargs)
+
+    turns = settings.load()["history_turns"]
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        m = Memory("stub", Path(tmp) / "memory.sqlite", embed=word_embed)
+        total = 2 * turns + 2  # enough for one step cut
+        replies = [AIMessage(f"reply {i}") for i in range(total)]
+        a = assistant(memory=m, llm=Recording(messages=iter(replies)))
+        a.memory_min = 0.3
+        a.respond("my favourite colour is teal")
+        for i in range(total - 2):
+            a.respond(f"filler question number {i}")
+        a.respond("what is my favourite colour")
+        sizes = [sum(isinstance(msg, HumanMessage) for msg in call) for call in seen]
+        assert max(sizes) <= 2 * turns, f"the model saw {max(sizes)} user turns; the cap is {2 * turns}"
+        humans = [msg for msg in seen[-1] if isinstance(msg, HumanMessage)]
+        assert turns <= len(humans) < 2 * turns, len(humans)
+        # Cut in steps, so the opening of the prompt (llama-server's cache) changes only every `turns` turns
+        firsts = [call[0].content for call in seen]
+        assert len(set(firsts)) <= 1 + (total - 2 * turns + turns - 1) // turns, "the cut point moves every turn"
+        assert not any("favourite colour is teal" in str(msg.content).split("[From memory")[0] for msg in humans)
+        assert "favourite colour is teal" in str(humans[-1].content), "the old turn should come back as a memory"
+        m.db.close()
 
 
 def test_read_only_allowlist():
@@ -146,6 +228,9 @@ def test_approval_question_says_what_not_how():
     assert run("taskkill /F /IM Spotify.exe; taskkill /F /IM SpotifyLauncher.exe") == \
         "Before I do that: I'll force-close Spotify and Spotifylauncher. Should I go ahead?"  # no repeated warning
     assert run("python backup.py") == "Before I do that: I'll run python. Should I go ahead?"
+    assert run("C:\\Users\\me\\Downloads\\jo.exe") == "Before I do that: I'll run jo.exe. Should I go ahead?"  # was "run C"
+    assert run('"C:\\Program Files\\App\\app.exe" --flag').endswith("I'll run app.exe. Should I go ahead?")
+    assert run('start "https://news.google.com/"') == "Before I do that: I'll open https://news.google.com/. Should I go ahead?"
     # Every way people say yes counts; anything hedged doesn't
     for answer in ("Do that.", "Do it.", "Sure, go ahead", "Yes please", "Go for it", "Okay", "Alright", "Of course"):
         assert chat.YES.search(answer.lower()) and not chat.NO.search(answer.lower()), answer
@@ -333,7 +418,7 @@ def test_play_something_opens_spotify_and_picks_from_preferences():
         def shuffle(self, state):
             self.shuffled = state
 
-    with tempfile.TemporaryDirectory() as tmp:
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         settings.PATH = Path(tmp) / "settings.json"  # never touch the real settings.json
         settings.save({**settings.DEFAULTS, "music_moods": "rainy day jazz, gym bangers"})
         c = object.__new__(SpotifyController)  # skip OAuth
@@ -345,6 +430,159 @@ def test_play_something_opens_spotify_and_picks_from_preferences():
         assert c.sp.shuffled is True and "shuffled" in reply
         assert c.play_something("chill") and c.sp.searched == "chill"  # a named mood wins
         assert launched == ["spotify:"], "an app that's already open isn't launched again"
+
+
+def test_spotify_playback_fixes_from_a_real_session():
+    import spotipy
+    from agent import action_controller
+    action_controller.time.sleep = lambda s: None
+
+    class StubAPI:
+        def __init__(self, plays=True, ghost_device=False):
+            self.calls, self.plays, self.ghost = [], plays, ghost_device
+        def devices(self):
+            return {"devices": [{"id": "fresh-laptop", "type": "Computer", "is_active": False}]}
+        def search(self, q, limit, type):
+            found = {"tracks": {"items": [{"name": "Thunderstruck", "uri": "spotify:track:t", "artists": [{"name": "AC/DC"}],
+                                           "album": {"uri": "spotify:album:a"}}]},
+                     "playlists": {"items": [None] if q == "empty mood" else [{"name": f"{q} mix", "uri": "spotify:playlist:p",
+                                                                                  "tracks": {"total": 10}}]}}
+            return found
+        def start_playback(self, **kwargs):
+            self.calls.append(kwargs)
+            if self.ghost and len(self.calls) == 1:
+                raise spotipy.SpotifyException(404, -1, "Device not found")
+        def current_playback(self):
+            return {"item": {"name": "x"} if self.plays else None, "is_playing": self.plays, "device": {"name": "ALOKLT"}}
+        def shuffle(self, state):
+            pass
+
+    def controller(api):
+        c = object.__new__(SpotifyController)  # skip OAuth
+        c.sp = api
+        return c
+
+    # A track plays inside its album, starting at that track - a lone track stopped starting on this PC
+    c = controller(StubAPI())
+    assert c.play_track("thunderstruck") == "Successfully playing: Thunderstruck by AC/DC"
+    assert c.sp.calls[0]["context_uri"] == "spotify:album:a" and c.sp.calls[0]["offset"] == {"uri": "spotify:track:t"}
+    assert "uris" not in c.sp.calls[0]
+
+    # Nothing starts: offer a restart once - but never again after one (the session restarted five times)
+    c = controller(StubAPI(plays=False))
+    for already_restarted, expect in ((False, "offer to restart"), (True, "Don't restart it again")):
+        if already_restarted:
+            c.restarted = action_controller.time.time()
+        try:
+            c.play_track("thunderstruck")
+            raise AssertionError("claimed success")
+        except RuntimeError as e:
+            assert expect in str(e), str(e)
+
+    # A device id that went stale with a restart (404) is looked up again, once
+    c = controller(StubAPI(ghost_device=True))
+    c.play_track("thunderstruck")
+    assert len(c.sp.calls) == 2 and c.sp.calls[1]["device_id"] == "fresh-laptop"
+
+    # play_something: an empty search for one mood falls back to another instead of giving up
+    import tempfile
+    from pathlib import Path
+    import settings
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        settings.PATH = Path(tmp) / "settings.json"
+        settings.save({**settings.DEFAULTS, "music_moods": "empty mood, rainy jazz"})
+        c = controller(StubAPI())
+        assert "rainy jazz mix" in c.play_something()
+
+        # Playing, but Spotify 404s the shuffle (a real session): still a success, not "Spotify isn't responding"
+        class NoShuffle(StubAPI):
+            def shuffle(self, state):
+                raise spotipy.SpotifyException(404, -1, "Not found.")
+        reply = controller(NoShuffle()).play_something()
+        assert reply.startswith("Playing the playlist") and "random track" in reply
+
+
+def test_a_no_stops_other_actions_that_turn():
+    from langchain_core.tools import tool
+    done = []
+
+    @tool
+    def open_news() -> str:
+        """Open a news video"""
+        done.append("news video")
+        return "opened"
+
+    a = assistant(call("execute", command="start https://news.google.com"), call("open_news"),
+                  AIMessage("Okay, sir. What would you like instead?"), call("open_news"), AIMessage("Here you go."),
+                  extra_tools=[open_news])
+    assert "Should I go ahead?" in a.respond("what's the news")
+    assert a.respond("no") == "Okay, sir. What would you like instead?"
+    assert done == [], "after a no, she opened something else instead"
+    blocked = [m for m in a.messages if isinstance(m, ToolMessage) and m.name == "open_news"]
+    assert blocked and "the user said no" in blocked[0].content.lower()
+    assert a.respond("ok, open the news video") == "Here you go." and done == ["news video"], "a new request is fine"
+
+
+def test_sub_agents_follow_the_same_rules():
+    # Live, Bonsai handed "close the browser" to a sub-agent: its steps need the same yes, and the same no
+    from langchain_core.tools import tool
+    done = []
+
+    @tool
+    def open_news() -> str:
+        """Open a news video"""
+        done.append("news video")
+        return "opened"
+
+    def delegate(*sub_steps, after):
+        return [call("task", description="Save a note saying hi", subagent_type="general-purpose"), *sub_steps, after]
+
+    # Its file change asks first, and a yes lets it finish
+    a = assistant(*delegate(call("write_file", file_path="/notes.txt", content="hi"), AIMessage("Saved."),
+                            after=AIMessage("Done, sir.")))
+    assert "Should I go ahead?" in a.respond("save a note saying hi"), "a sub-agent's file change must ask first"
+    assert a.respond("yes") == "Done, sir."
+    assert any(isinstance(m, ToolMessage) and m.name == "task" and m.content == "Saved." for m in a.messages)
+
+    # A no: the paused sub-agent never resumes, and nothing else runs in its place
+    a = assistant(*delegate(call("write_file", file_path="/notes.txt", content="hi"),
+                            after=call("open_news")), AIMessage("Okay, sir."), extra_tools=[open_news])
+    a.respond("save a note saying hi")
+    assert a.respond("no") == "Okay, sir." and done == []
+
+    # "Stop" halts it between its own steps too, not only between the main agent's
+    @tool
+    def slow_step() -> str:
+        """A step that's under way when the user says stop"""
+        chat.CANCEL.set()
+        return "halfway"
+
+    a = assistant(*delegate(call("slow_step"), call("open_news"), AIMessage("Finished."), after=AIMessage("Done.")),
+                  extra_tools=[slow_step, open_news])
+    try:
+        a.respond("save a note saying hi")
+    finally:
+        chat.CANCEL.clear()
+    assert done == [], "the sub-agent kept going after stop"
+
+
+def test_open_link_only_opens_web_addresses():
+    from agent import youtube
+    opened = []
+    youtube.webbrowser.open = opened.append
+    youtube.last_opened = 0.0
+    assert "Opened www.google.com" in youtube.open_link.invoke({"url": "https://www.google.com"})
+    assert opened == ["https://www.google.com"]
+    for bad in ["file:///C:/Windows/System32/cmd.exe", "C:\\evil.exe", "javascript:alert(1)", "notepad"]:
+        youtube.last_opened = 0.0
+        assert "only http" in youtube.open_link.invoke({"url": bad}) and len(opened) == 1, bad
+    # One tab per 15 s, shared with YouTube: a link and then another link or a video inside it are refused
+    youtube.last_opened = 0.0
+    assert "Opened a.com" in youtube.open_link.invoke({"url": "https://a.com"})
+    assert "Not opened" in youtube.open_link.invoke({"url": "https://b.com"})
+    youtube.search = lambda q, count=1: [("vid00000000", "A video", "A channel")]
+    assert "Not opened" in youtube.play_youtube.invoke({"query": "lofi"})
+    assert opened == ["https://www.google.com", "https://a.com"]
 
 
 def test_restart_spotify_only_touches_spotify():
@@ -413,6 +651,8 @@ if __name__ == "__main__":
     test_tools_reach_spotify()
     test_spotify_errors_go_back_to_the_model()
     test_chat_does_not_build_spotify()
+    test_memory_finds_what_matters_and_persists()
+    test_only_recent_turns_reach_the_model_and_memory_fills_in()
     test_read_only_allowlist()
     test_approval_layers()
     test_approval_question_says_what_not_how()
@@ -424,6 +664,9 @@ if __name__ == "__main__":
     test_context_overflow_starts_a_fresh_conversation()
     test_youtube_plays_one_video_and_reads_its_transcript()
     test_play_something_opens_spotify_and_picks_from_preferences()
+    test_spotify_playback_fixes_from_a_real_session()
+    test_a_no_stops_other_actions_that_turn()
+    test_open_link_only_opens_web_addresses()
     test_restart_spotify_only_touches_spotify()
     test_playback_wakes_an_idle_device_and_checks_it_started()
     print("ok")

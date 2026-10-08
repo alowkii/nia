@@ -1,16 +1,18 @@
 import logging
+import os
 import re
 import subprocess
 import threading
 import time
-import urllib.request
+from collections import deque
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Literal
 
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
-from langchain.agents.middleware import wrap_tool_call
+from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
+from langchain.agents.middleware import wrap_model_call, wrap_tool_call
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import tool
@@ -20,9 +22,12 @@ from langgraph.errors import GraphBubbleUp
 from langgraph.types import Command
 
 import settings
+from utils.hud import hud
 from . import approval, youtube
+from .server import SERVER_LOG, llm_server_command, llm_up
 from .approval import risks
-from .prompts.initial import initial_prompt, pc_prompt
+from .memory import Memory, note
+from .prompts.initial import author, initial_prompt, pc_prompt
 from .action_controller import SpotifyController
 
 logger = logging.getLogger(__name__)
@@ -34,40 +39,19 @@ YES = re.compile(r"\b(yes|yeah|yep|yup|sure|confirm(ed)?|approved?|go ahead|go f
                  r"of course|absolutely|ok(ay)?|alright|all right)\b")
 NO = re.compile(r"\b(no|nope|don'?t|do not|stop|cancel|wait|never)\b")
 
-# Server output also goes here, so it survives the server's console window closing
-SERVER_LOG = Path(__file__).resolve().parent.parent / "logs" / "llama-server.log"
-
-
-def llm_server_command(s=None):
-    """llama-server (PrismML's fork) running Bonsai 2 27B fully on the GPU, from settings"""
-    s = s or settings.load()
-    bonsai = Path(s["bonsai_dir"])
-    SERVER_LOG.parent.mkdir(exist_ok=True)
-    return [str(bonsai / "llama-prism" / "llama-server.exe"), "-m", str(bonsai / s["model_file"]),
-            "-ngl", "99", "-fa", "on", "-c", str(s["context"]), "-np", "1",
-            "--reasoning", "on" if s["thinking"] else "off",
-            "--temp", str(s["temperature"]), "--top-p", str(s["top_p"]), "--top-k", str(s["top_k"]),
-            "--presence-penalty", str(s["presence_penalty"]),
-            "--host", "127.0.0.1", "--port", str(s["port"]), "--log-file", str(SERVER_LOG), "--log-colors", "off"] + \
-        (["--cache-type-k", "q8_0", "--cache-type-v", "q8_0"] if s["cache_8bit"] else [])
-
-
-def llm_up(port):
-    try:
-        return urllib.request.urlopen(f"http://127.0.0.1:{port}/health", timeout=2).status == 200
-    except OSError:  # refused while starting, 503 while the model loads
-        return False
-
-
 def ensure_llm_server(timeout=180):
-    """Start llama-server in its own window unless it is already up, then wait for it"""
+    """Start llama-server in its own window unless it is already up, then wait for it. Under nia.py the
+    window's script owns the server (started hidden), so this only waits for it"""
     s = settings.load()
     if llm_up(s["port"]):
         logger.info(f"LLM server already running on port {s['port']}")
         return
-    logger.info(f"Starting LLM server: {' '.join(llm_server_command(s))}")
     started = time.time()
-    subprocess.Popen(llm_server_command(s), creationflags=subprocess.CREATE_NEW_CONSOLE)
+    if os.getenv("NIA_HUD"):
+        logger.info("Waiting for nia.py's LLM server...")
+    else:
+        logger.info(f"Starting LLM server: {' '.join(llm_server_command(s))}")
+        subprocess.Popen(llm_server_command(s), creationflags=subprocess.CREATE_NEW_CONSOLE)
     while not llm_up(s["port"]):
         if time.time() - started > timeout:
             raise RuntimeError(f"llama-server did not come up on port {s['port']} - see {SERVER_LOG}")
@@ -92,10 +76,31 @@ MAX_TOOL_CHARS = 3000  # ~750 tokens
 
 # Set by the voice layer when the user says "stop" mid-turn: the next tool call ends the turn
 CANCEL = threading.Event()
+# Set when the user refuses an action: for the rest of that turn only looking things up is allowed. After
+# "no" to Google News, one session opened a YouTube news video instead without asking
+REFUSED = threading.Event()
+READ_ONLY_TOOLS = {"now_playing", "search_youtube", "youtube_transcript", "ls", "read_file", "glob", "grep"}
+REFUSAL = ("The user said no. Don't do this, and don't try another way to do it or anything else in its place - "
+           "just acknowledge briefly and ask what they'd like instead.")
 
 
 class Cancelled(Exception):
     """The user said stop while NIA was working"""
+
+
+def recent_turns(turns):
+    """Middleware: only recent exchanges reach the model - between `turns` and 2 x `turns` of them. Older
+    ones stay in the saved conversation, and the memory search brings back whichever matter. Cuts in
+    steps (at 2x, back to 1x) rather than every turn, because each cut changes the prompt's opening and
+    costs llama-server its cache; and always at a user message, so a tool call never loses its result"""
+    @wrap_model_call
+    def keep_recent_turns(request, handler):
+        users = [i for i, m in enumerate(request.messages) if isinstance(m, HumanMessage)]
+        if len(users) > 2 * turns:
+            keep_from = users[-(turns + (len(users) - 1) % turns)]  # the step boundary, stable for `turns` turns
+            request = request.override(messages=request.messages[keep_from:])
+        return handler(request)
+    return keep_recent_turns
 
 
 @wrap_tool_call
@@ -107,7 +112,11 @@ def tool_guard(request, handler):
     if CANCEL.is_set():  # the one checkpoint every tool passes through - nothing more runs after "stop"
         logger.info(f"Cancelled before {call['name']}({call['args']}) - the user said stop")
         raise Cancelled
+    if REFUSED.is_set() and call["name"] not in READ_ONLY_TOOLS:
+        logger.info(f"Blocked {call['name']}({call['args']}) - the user just said no")
+        return ToolMessage(f"Not done: {REFUSAL}", tool_call_id=call["id"], name=call["name"], status="error")
     logger.info(f"Tool call: {call['name']}({call['args']})")
+    hud.send(tool=call["name"])
     try:
         result = handler(request)
     except GraphBubbleUp:  # interrupts and other LangGraph control flow must pass through
@@ -141,7 +150,7 @@ def describe(action):
         file = Path(str(args.get("file_path") or args.get("path") or "")).name or "a file"
         return {"write_file": f"save {file}", "edit_file": f"edit {file}", "delete": f"delete {file}"}[name]
     command = str(args.get("command", ""))
-    if url := re.search(r"https?://\S+|www\.\S+", command):
+    if url := re.search(r"https?://[^\s\"']+|www\.[^\s\"']+", command):  # no trailing quote
         return f"open {url.group(0)}"  # spoken as "the youtube link"
     if re.search(r"sendkeys", command, re.I):
         return "press keys in the active window"
@@ -151,8 +160,9 @@ def describe(action):
     for pattern, summary in COMMON_COMMANDS:
         if re.search(pattern, command, re.I):
             return summary
-    first = re.match(r"\s*(?:powershell\S*\s+(?:-\S+\s+)*\"?)?([\w.-]+)", command)
-    return f"run {first.group(1)}" if first else "run a command"
+    # The program's own name: C:\Users\me\Downloads\jo.exe is "jo.exe", not "C"
+    first = re.match(r'\s*(?:powershell\S*\s+(?:-\S+\s+)*)?(?:"([^"]+)"|([^"\s]+))', command)
+    return f"run {PureWindowsPath(first.group(1) or first.group(2)).name}" if first else "run a command"
 
 
 def approval_question(actions, intent):
@@ -172,25 +182,34 @@ class AssistantModel:
     """NIA's brain: a Deep Agent (LangGraph) on Bonsai with Spotify tools, the PC's files and shell,
     and sub-agents. Changes to the PC wait for a spoken yes - see NEEDS_APPROVAL."""
 
-    def __init__(self, model="bonsai", llm=None, extra_tools=(), backend=None):
+    def __init__(self, model="bonsai", llm=None, extra_tools=(), backend=None, memory=None):
         """extra_tools: tools from outside the agent, e.g. the voice layer's own volume control.
-        backend: where file and shell tools act; the real PC unless a test passes another."""
+        backend: where file and shell tools act; the real PC unless a test passes another.
+        memory: long-term memory; by default from settings (embedding_model), False for none."""
         s = settings.load()
         self._spotify = None  # built on first music tool call, not at startup
         self.pending = None  # (number of actions awaiting approval, when they were asked about)
         self.config = {"configurable": {"thread_id": "nia"}}
         self.approval_model, self.approval_threshold = s["approval_model"], s["approval_threshold"]
+        if memory is None:
+            memory = Memory(s["embedding_model"]) if s["embedding_model"] else False
+        self.memory, self.memory_results, self.memory_min = memory, s["memory_results"], s["memory_min_similarity"]
+        self.recent = deque(maxlen=2 * s["history_turns"])  # memory ids of exchanges possibly still in view
+        self.request = ""  # the user's request this turn - an approval answer like "yes" isn't worth remembering
         # llama-server ignores the model name and key, but the client requires both. The profile tells
         # Deep Agents the real context size, so it summarizes old turns before overflowing it
         llm = llm or ChatOpenAI(model=model, base_url=f"http://127.0.0.1:{s['port']}/v1", api_key="none",
                                 profile={"max_input_tokens": s["context"]})
         self.agent = create_deep_agent(
             model=llm,
-            tools=self._spotify_tools() + youtube.TOOLS + list(extra_tools),
+            tools=self._spotify_tools() + youtube.TOOLS + list(extra_tools) + (self.memory.tools() if self.memory else []),
             system_prompt=initial_prompt + pc_prompt,
             backend=backend or pc_backend(),
             interrupt_on={name: True for name in NEEDS_APPROVAL},
-            middleware=[tool_guard],
+            middleware=[tool_guard, recent_turns(s["history_turns"])],
+            # The stock sub-agent, plus tool_guard: Deep Agents doesn't pass custom middleware down, so its
+            # steps would ignore "stop", skip the result cap and go unlogged. It inherits the tools and approvals
+            subagents=[{**GENERAL_PURPOSE_SUBAGENT, "middleware": [tool_guard]}],
             checkpointer=InMemorySaver(),  # the conversation, kept between turns
         )
 
@@ -230,12 +249,20 @@ class AssistantModel:
             answer = user_msg.lower()
             approved = bool(YES.search(answer)) and not NO.search(answer)
             logger.info(f"Approval {'given' if approved else 'refused'}: {user_msg!r}")
-            decision = {"type": "approve"} if approved else {"type": "reject"}
+            decision = {"type": "approve"} if approved else {"type": "reject", "message": REFUSAL}
+            if not approved:
+                REFUSED.set()
             result = self.agent.invoke(Command(resume={"decisions": [decision] * self.pending[0]}), self.config)
         else:
-            # The clock rides on the user turn, not the system prompt, so the prompt prefix stays
-            # identical and llama-server can reuse its cache
-            message = HumanMessage(f"{user_msg}\n\n[{datetime.now():%A %d %B %Y, %H:%M}]")
+            REFUSED.clear()  # a new request: a "no" to the last one no longer applies
+            # The clock and any recalled memories ride on the user turn, not the system prompt, so the
+            # prompt prefix stays identical and llama-server can reuse its cache
+            self.request = user_msg
+            hits = self.memory.search(user_msg, self.memory_results, self.memory_min, exclude=set(self.recent)) \
+                if self.memory else []
+            for similarity, _, kind, text, _ in hits:
+                logger.info(f"Recalled ({kind}, {similarity:.2f}): {text[:120]}")
+            message = HumanMessage(f"{user_msg}\n\n[{datetime.now():%A %d %B %Y, %H:%M}]{note(hits)}")
             result = self.agent.invoke({"messages": [message]}, self.config)
 
         # Commands the approval layers clear run straight away; anything else waits for a spoken yes
@@ -256,7 +283,13 @@ class AssistantModel:
             intent = result["messages"][-1].content if result["messages"] else ""
             return approval_question(actions, intent if isinstance(intent, str) else "")
         self.pending = None
-        return result["messages"][-1].content
+        reply = result["messages"][-1].content
+        if self.memory and self.request and isinstance(reply, str) and reply:
+            # Every finished exchange is searchable later - this is what replaces sending the whole history
+            exchange = f"{author} asked: {self.request} | NIA answered: {reply[:300]}"
+            if (memory_id := self.memory.add(exchange, "exchange")) is not None:
+                self.recent.append(memory_id)
+        return reply
 
     def _spotify_tools(self):
         sp = self.spotify  # called inside each tool so the client stays lazy
