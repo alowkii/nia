@@ -12,7 +12,7 @@ from typing import Literal
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
-from langchain.agents.middleware import wrap_model_call, wrap_tool_call
+from langchain.agents.middleware import TodoListMiddleware, wrap_model_call, wrap_tool_call
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import HumanMessage, ToolMessage
 from langchain_core.tools import tool
@@ -23,7 +23,7 @@ from langgraph.types import Command
 
 import settings
 from utils.hud import hud
-from . import approval, youtube
+from . import approval, claude, web, youtube
 from .server import SERVER_LOG, llm_server_command, llm_up
 from .approval import risks
 from .memory import Memory, note
@@ -76,10 +76,12 @@ MAX_TOOL_CHARS = 3000  # ~750 tokens
 
 # Set by the voice layer when the user says "stop" mid-turn: the next tool call ends the turn
 CANCEL = threading.Event()
+claude.STOP = CANCEL  # a running ask_claude call is killed on "stop" too
 # Set when the user refuses an action: for the rest of that turn only looking things up is allowed. After
 # "no" to Google News, one session opened a YouTube news video instead without asking
 REFUSED = threading.Event()
-READ_ONLY_TOOLS = {"now_playing", "search_youtube", "youtube_transcript", "ls", "read_file", "glob", "grep"}
+READ_ONLY_TOOLS = {"now_playing", "search_youtube", "youtube_transcript", "web_search", "read_page", "ls", "read_file",
+                   "glob", "grep", "write_todos", "list_skills", "ask_claude"}
 REFUSAL = ("The user said no. Don't do this, and don't try another way to do it or anything else in its place - "
            "just acknowledge briefly and ask what they'd like instead.")
 
@@ -117,6 +119,9 @@ def tool_guard(request, handler):
         return ToolMessage(f"Not done: {REFUSAL}", tool_call_id=call["id"], name=call["name"], status="error")
     logger.info(f"Tool call: {call['name']}({call['args']})")
     hud.send(tool=call["name"])
+    if call["name"] == "write_todos":  # her plan for a multi-step job, shown in the window as she works through it
+        hud.send(plan=[{"step": todo.get("content", ""), "status": todo.get("status", "pending")}
+                       for todo in call["args"].get("todos", [])])
     try:
         result = handler(request)
     except GraphBubbleUp:  # interrupts and other LangGraph control flow must pass through
@@ -178,6 +183,13 @@ def approval_question(actions, intent):
     return f"Before I do that: {plan}.{warning} Should I go ahead?"
 
 
+def worth_remembering(request):
+    """Whether an exchange means anything on its own later. "I guess so" or a sentence cut off at "..." only
+    made sense in the moment - recalled weeks later they're noise"""
+    request = (request or "").strip()
+    return len(request.split()) > 3 and not request.endswith(("...", "…"))
+
+
 class AssistantModel:
     """NIA's brain: a Deep Agent (LangGraph) on Bonsai with Spotify tools, the PC's files and shell,
     and sub-agents. Changes to the PC wait for a spoken yes - see NEEDS_APPROVAL."""
@@ -202,11 +214,13 @@ class AssistantModel:
                                 profile={"max_input_tokens": s["context"]})
         self.agent = create_deep_agent(
             model=llm,
-            tools=self._spotify_tools() + youtube.TOOLS + list(extra_tools) + (self.memory.tools() if self.memory else []),
+            tools=self._spotify_tools() + youtube.TOOLS + web.TOOLS + claude.TOOLS + list(extra_tools)
+            + (self.memory.tools() if self.memory else []),
             system_prompt=initial_prompt + pc_prompt,
             backend=backend or pc_backend(),
             interrupt_on={name: True for name in NEEDS_APPROVAL},
-            middleware=[tool_guard, recent_turns(s["history_turns"])],
+            # write_todos: a plan for a multi-step job, worked through step by step (this Deep Agents has none)
+            middleware=[tool_guard, recent_turns(s["history_turns"]), TodoListMiddleware()],
             # The stock sub-agent, plus tool_guard: Deep Agents doesn't pass custom middleware down, so its
             # steps would ignore "stop", skip the result cap and go unlogged. It inherits the tools and approvals
             subagents=[{**GENERAL_PURPOSE_SUBAGENT, "middleware": [tool_guard]}],
@@ -297,7 +311,7 @@ class AssistantModel:
             return approval_question(actions, intent if isinstance(intent, str) else "")
         self.pending = None
         reply = result["messages"][-1].content
-        if self.memory and self.request and isinstance(reply, str) and reply:
+        if self.memory and worth_remembering(self.request) and isinstance(reply, str) and reply:
             # Every finished exchange is searchable later - this is what replaces sending the whole history
             exchange = f"{author} asked: {self.request} | NIA answered: {reply[:300]}"
             if (memory_id := self.memory.add(exchange, "exchange")) is not None:

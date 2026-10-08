@@ -22,6 +22,7 @@ DEFAULTS = {
     "voice": "kokoro_bm_george",  # British male, for the JARVIS manner; "kokoro_af_heart" was the American default
     "voice_speed": 1.2,  # 1 = the voice's natural pace; George at 1.2 says the same in ~17% less time
     "voice_volume": 1.0,  # NIA's own voice, 0.1-1 (1 = full; more would clip); also set by voice ("speak quieter")
+    "mic_device": "",  # the microphone NIA listens through, by name; "" = Windows' default (switchable live)
     "stt_model": "medium",  # Moonshine streaming: tiny / small / medium (tiny rarely hears "Nia")
     "wake_phrase": "hey nia",
     # How closely the start of what you say must match the wake phrase, 0-1. Lower wakes more easily:
@@ -46,6 +47,10 @@ DEFAULTS = {
     "approval_threshold": 0.5,
     # What "play some music" picks from, at random, when no song is named (comma-separated playlist searches)
     "music_moods": "lofi beats, chill hits, feel good pop, indie favourites, throwback hits",
+    # Ask Claude (agent/claude.py): the model Claude Code answers with; "" = its own default
+    "claude_model": "sonnet",
+    # How hard Claude works on each question: low answered in ~17-24 s, medium/high check more sources but are slower
+    "claude_effort": "low",
     # The window (nia.py) - these apply at once
     "wake_word": True,  # off: only the mic button (or typing) wakes her
     "push_to_talk": False,  # on: she listens while the mic button is held
@@ -83,6 +88,8 @@ def parse(raw):
         return None, "Wake phrase can't be empty"
     if not any(m.strip() for m in values["music_moods"].split(",")):
         return None, "Give at least one random music pick, e.g. lofi beats"
+    if values["claude_effort"] not in ("low", "medium", "high", "xhigh", "max"):
+        return None, "Claude effort must be low, medium, high, xhigh or max"
     if values["hud_theme"] not in THEMES:
         return None, f"Theme must be one of {', '.join(THEMES)}"
     return values, None

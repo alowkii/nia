@@ -114,6 +114,21 @@ def test_memory_finds_what_matters_and_persists():
         assert not m.search("priya birthday", min_similarity=0.3) and len(m.rows) == 2
         m.db.close()
 
+        # The same question asked five times is recalled once, leaving room for something else relevant
+        m = Memory("stub", Path(tmp) / "dupes.sqlite", embed=word_embed)
+        for answer in ("standing by sir", "standing by sir all quiet", "standing by sir nothing much",
+                       "standing by sir ready", "standing by sir as ever"):
+            m.add(f"Aalok asked what are you doing right now | NIA answered {answer}", "exchange")
+        m.add("Aalok asked what are you doing tonight | NIA answered your gym day is Tuesday", "exchange")
+        hits = m.search("what are you doing right now", k=4, min_similarity=0.2)
+        assert sum("right now" in h[3] for h in hits) == 1 and any("tonight" in h[3] for h in hits), hits
+        m.db.close()
+
+        # Exchanges that only made sense in the moment aren't kept
+        from agent.chat import worth_remembering
+        assert worth_remembering("What are you doing right now?")
+        assert not worth_remembering("I guess so.") and not worth_remembering("I mean, could you...")
+
         tries = []
         m = Memory("stub", db, embed=lambda texts: tries.append(1) or (_ for _ in ()).throw(OSError("ollama down")))
         assert m.search("gym days") == [] and m.add("x", "fact") is None, "no embeddings: memory steps aside"
@@ -121,6 +136,49 @@ def test_memory_finds_what_matters_and_persists():
         m.down_until = 0  # a minute later
         m.search("gym days")
         assert len(tries) == 2
+        m.db.close()
+
+
+def test_skills_are_saved_recalled_and_followed():
+    # "Save that as my evening routine": the steps of a multi-step job, by name, to repeat it later
+    import tempfile
+    from pathlib import Path
+    from agent.memory import Memory
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        m = Memory("stub", Path(tmp) / "memory.sqlite", embed=word_embed)
+        save_skill, list_skills, forget = (next(t for t in m.tools() if t.name == n)
+                                           for n in ("save_skill", "list_skills", "forget"))
+        steps = ["Look up tonight's weather in Mumbai", "Play a chill playlist that suits it",
+                 "Set the Spotify volume to 30 percent"]
+        assert save_skill.invoke({"name": "evening routine", "when": "Aalok asks for his evening routine",
+                                  "steps": steps}) == 'Saved the skill "evening routine" (3 steps).'
+        assert m.skills() == ['Skill "evening routine" - use when Aalok asks for his evening routine. Steps: '
+                              "1. Look up tonight's weather in Mumbai. 2. Play a chill playlist that suits it. "
+                              "3. Set the Spotify volume to 30 percent."]
+        # Saving under the same name updates it, not a second copy
+        save_skill.invoke({"name": "Evening Routine", "when": "Aalok asks for his evening routine",
+                           "steps": steps + ["Save a note evening.txt saying what was played"]})
+        assert len(m.skills()) == 1 and "4. Save a note" in m.skills()[0]
+        save_skill.invoke({"name": "morning news", "when": "Aalok asks for the morning news",
+                           "steps": ["Search the web for today's top headlines", "Read the top two"]})
+        assert list_skills.invoke({}) == "Saved skills: evening routine, morning news"
+        assert "needs its steps" in save_skill.invoke({"name": "empty", "when": "never", "steps": []})
+
+        # "Do my evening routine": the skill comes back with the request, for her to follow as her plan
+        seen = []
+
+        class Recording(ScriptedLLM):
+            def _generate(self, messages, *args, **kwargs):
+                seen.append(messages)
+                return super()._generate(messages, *args, **kwargs)
+        a = assistant(memory=m, llm=Recording(messages=iter([AIMessage("Right away, sir.")])))
+        a.memory_min = 0.2
+        a.respond("do my evening routine")
+        request = [msg for msg in seen[-1] if isinstance(msg, HumanMessage)][-1].content
+        assert "[From memory" in request and 'skill "evening routine"' in request.lower() and "morning news" not in request
+
+        assert forget.invoke({"about": "evening routine"}).lower().startswith('forgot: skill "evening routine"')
+        assert list_skills.invoke({}) == "Saved skills: morning news"
         m.db.close()
 
 
@@ -152,7 +210,7 @@ def test_only_recent_turns_reach_the_model_and_memory_fills_in():
         humans = [msg for msg in seen[-1] if isinstance(msg, HumanMessage)]
         assert turns <= len(humans) < 2 * turns, len(humans)
         # Cut in steps, so the opening of the prompt (llama-server's cache) changes only every `turns` turns
-        firsts = [call[0].content for call in seen]
+        firsts = [str(call[0].content) for call in seen]  # the planning middleware makes it a list of blocks
         assert len(set(firsts)) <= 1 + (total - 2 * turns + turns - 1) // turns, "the cut point moves every turn"
         assert not any("favourite colour is teal" in str(msg.content).split("[From memory")[0] for msg in humans)
         assert "favourite colour is teal" in str(humans[-1].content), "the old turn should come back as a memory"
@@ -584,6 +642,154 @@ def test_sub_agents_follow_the_same_rules():
     assert done == [], "the sub-agent kept going after stop"
 
 
+def test_web_search_and_reading():
+    from agent import web
+    # DuckDuckGo's lite page, as it answers (trimmed): an ad, then results behind its redirect links
+    lite = """
+      <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fduckduckgo.com%2Fy.js%3Fad%3D1&amp;rut=x" class='result-link'>Buy octopus plushies</a>
+      <td class='result-snippet'>Sponsored.</td>
+      <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fwww.scienceabc.com%2Foctopus&amp;rut=y" class='result-link'>Octopus Hearts &amp; Blood</a>
+      <td class='result-snippet'>Its systemic <b>heart</b> stops beating when it swims.</td>
+      <a rel="nofollow" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.org%2Fb&amp;rut=z" class='result-link'>Second</a>
+      <td class='result-snippet'>Two branchial hearts keep going.</td>"""
+    real_get = web._get
+    web._get = lambda url, **kw: ("text/html", lite)
+    try:
+        assert web.search("octopus hearts") == [
+            ("Octopus Hearts & Blood", "https://www.scienceabc.com/octopus", "Its systemic heart stops beating when it swims."),
+            ("Second", "https://example.org/b", "Two branchial hearts keep going.")], "ads skipped, real addresses decoded"
+        listing = web.web_search.invoke({"query": "octopus hearts"})
+        assert listing.startswith("1. Octopus Hearts & Blood - https://www.scienceabc.com/octopus")
+
+        # A page: its prose, without the menu, scripts and footer around it
+        page = """<html><head><title>Octopus hearts</title><script>var tracking = 1;</script></head><body>
+          <nav><a href="/">Home</a> <a href="/animals">Animals</a></nav>
+          <h1>Why one heart stops</h1>
+          <p>An octopus has three hearts, and its main heart stops beating when it swims by jet propulsion.</p>
+          <p>The two branchial hearts keep pumping blood through the gills the whole time.</p>
+          <footer>Copyright 2026 - all rights reserved - privacy policy - cookie settings</footer></body></html>"""
+        web._get = lambda url, **kw: ("text/html", page)
+        text = web.read_page.invoke({"url": "https://example.org/octopus"})
+        assert text.startswith("Octopus hearts") and "three hearts" in text and "branchial" in text
+        assert "tracking" not in text and "Animals" not in text and "Copyright" not in text
+        web._get = lambda url, **kw: ("application/pdf", "")
+        assert "not a page" in web.read_page.invoke({"url": "https://example.org/paper.pdf"})
+        for bad in ["file:///C:/secret.txt", "C:\\notes.txt", "javascript:alert(1)"]:
+            assert "Only http" in web.read_page.invoke({"url": bad}), bad
+        web._get = lambda url, **kw: (_ for _ in ()).throw(OSError("offline"))
+        assert "internet may be down" in web.web_search.invoke({"query": "x"})
+    finally:
+        web._get = real_get
+
+    # The shell is no longer the way to the web: fetching from it always asks first (curl once ran unasked)
+    from agent.approval import risks
+    for command in ['curl -s "https://www.ncbi.nlm.nih.gov/pubmed/?term=octopus"', "wget http://x.org/a",
+                    'powershell -NoProfile -Command "Invoke-WebRequest https://x.org"']:
+        assert "it reaches the internet" in risks({"name": "execute", "args": {"command": command}}), command
+
+
+def test_ask_claude_is_safe_and_reports_back():
+    import json
+    import time as clock
+    from agent import claude
+    from agent.approval import risks
+
+    # Always the same locked-down call: web search and fetch only, anything else refused, nothing carried over
+    cmd = claude.command("Who won the last Grand Prix?", "sonnet")
+    assert cmd[cmd.index("--effort") + 1] == "low", "low effort: 17 s instead of 46 s for the same answer"
+    assert "Always browse first" in cmd[2], "never an answer from memory alone"
+    assert cmd[cmd.index("--output-format") + 1] == "stream-json" and "--verbose" in cmd
+    for flag in ("-p", "--restricted", "--strict-mcp-config", "--no-session-persistence"):
+        assert flag in cmd, flag
+    assert cmd[cmd.index("--tools") + 1] == "WebSearch,WebFetch" and cmd[cmd.index("--permission-mode") + 1] == "dontAsk"
+    assert not any("dangerously" in part or "bypass" in part for part in cmd)
+    assert cmd[-2:] == ["--model", "sonnet"] and "--model" not in claude.command("q", "")
+    real_env = dict(claude.os.environ)
+    claude.os.environ.update({"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "parent"})
+    try:
+        assert not any(k == "CLAUDECODE" or k.startswith("CLAUDE_") for k in claude.clean_env()), \
+            "a call made from inside a Claude Code session must be a session of its own"
+    finally:
+        claude.os.environ.clear()
+        claude.os.environ.update(real_env)
+    # The shell can't start Claude Code on its own terms
+    for command in ["claude -p hi --dangerously-skip-permissions", r"C:\Users\x\.local\bin\claude.exe -p x"]:
+        assert "it runs Claude Code" in risks({"name": "execute", "args": {"command": command}}), command
+    assert not risks({"name": "execute", "args": {"command": "dir claudette"}})
+
+    class FakeClaude:
+        """Stands in for the claude process: answers with out after delay seconds, unless killed"""
+        def __init__(self, out, delay=0.0):
+            self.out, self.delay, self.killed, self.returncode = out, delay, False, 0
+        def __call__(self, *args, **kwargs):
+            return self
+        def communicate(self):
+            end = clock.time() + self.delay
+            while clock.time() < end and not self.killed:
+                clock.sleep(0.05)
+            return self.out, ""
+        def kill(self):
+            self.killed = True
+
+    real_popen, real_exe, real_timeout = claude.subprocess.Popen, claude.executable, claude.TIMEOUT
+    claude.executable = lambda: "claude.exe"
+    try:
+        # Claude Code's event stream: the tools it used, then the result
+        stream = [{"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "WebSearch"}]}},
+                  {"type": "assistant", "message": {"content": [{"type": "tool_use", "name": "WebFetch"}]}},
+                  {"type": "result", "result": "Verstappen won in Bahrain, sir.\nSources: formula1.com",
+                   "is_error": False, "total_cost_usd": 0.05}]
+        out = "\n".join(json.dumps(event) for event in stream)
+        assert [b["name"] for b in claude.tool_calls(out)] == ["WebSearch", "WebFetch"], "it really browsed"
+        claude.subprocess.Popen = FakeClaude(out)
+        announced = []
+        claude.ANNOUNCE = lambda: announced.append(1)
+        answer = claude.ask_claude.invoke({"question": "Who won?"})
+        assert "pass it on faithfully" in answer and "Verstappen won in Bahrain" in answer and announced == [1]
+        claude.ANNOUNCE = None
+        claude.subprocess.Popen = FakeClaude(json.dumps({"type": "result", "result": "Not logged in", "is_error": True}))
+        assert "couldn't answer" in claude.ask("Who won?") and "web_search" in claude.ask("Who won?")
+        claude.subprocess.Popen = FakeClaude("Error: please run /login")
+        assert "couldn't be reached" in claude.ask("Who won?")
+        # "Stop" mid-call kills it; so does running out of time
+        slow = FakeClaude("{}", delay=30)
+        claude.subprocess.Popen = slow
+        threading_timer = __import__("threading").Timer(0.3, claude.STOP.set)
+        threading_timer.start()
+        started = clock.time()
+        assert claude.ask("Who won?") == "Stopped - the user said stop" and slow.killed and clock.time() - started < 3
+        claude.STOP.clear()
+        claude.TIMEOUT = 0.3
+        claude.subprocess.Popen = FakeClaude("{}", delay=30)
+        assert "didn't answer within" in claude.ask("Who won?")
+        claude.executable = lambda: None
+        assert "isn't installed" in claude.ask("Who won?")
+    finally:
+        claude.subprocess.Popen, claude.executable, claude.TIMEOUT = real_popen, real_exe, real_timeout
+        claude.STOP.clear()
+    assert claude.STOP is chat.CANCEL, "NIA's stop is the same flag"
+    assert "ask_claude" in chat.READ_ONLY_TOOLS
+
+
+def test_a_plan_is_tracked_and_shown():
+    # A multi-step job: she writes her plan, ticks it off, and the window gets each version of it
+    sent = []
+    real_send = chat.hud.send
+    chat.hud.send = lambda **message: sent.append(message)
+    steps = [{"content": "Search the web", "status": "completed"}, {"content": "Read two articles", "status": "in_progress"},
+             {"content": "Save a summary", "status": "pending"}]
+    try:
+        a = assistant(call("write_todos", todos=steps), AIMessage("Done, sir. The summary is on your Desktop."))
+        assert a.respond("research octopus hearts and save a summary") == "Done, sir. The summary is on your Desktop."
+    finally:
+        chat.hud.send = real_send
+    plans = [m["plan"] for m in sent if "plan" in m]
+    assert plans == [[{"step": "Search the web", "status": "completed"},
+                      {"step": "Read two articles", "status": "in_progress"},
+                      {"step": "Save a summary", "status": "pending"}]], sent
+    assert "write_todos" in chat.READ_ONLY_TOOLS, "planning isn't an action: a no doesn't block it"
+
+
 def test_open_link_only_opens_web_addresses():
     from agent import youtube
     opened = []
@@ -666,25 +872,8 @@ def test_playback_wakes_an_idle_device_and_checks_it_started():
 
 
 if __name__ == "__main__":
-    test_tools_reach_spotify()
-    test_spotify_errors_go_back_to_the_model()
-    test_chat_does_not_build_spotify()
-    test_memory_finds_what_matters_and_persists()
-    test_only_recent_turns_reach_the_model_and_memory_fills_in()
-    test_read_only_allowlist()
-    test_approval_layers()
-    test_approval_question_says_what_not_how()
-    test_conversation_carries_over_turns()
-    test_pc_changes_need_a_spoken_yes()
-    test_extra_tools_reach_the_agent()
-    test_stop_ends_the_turn_before_the_next_tool()
-    test_long_tool_results_are_cut_to_fit()
-    test_context_overflow_starts_a_fresh_conversation()
-    test_youtube_plays_one_video_and_reads_its_transcript()
-    test_play_something_opens_spotify_and_picks_from_preferences()
-    test_spotify_playback_fixes_from_a_real_session()
-    test_a_no_stops_other_actions_that_turn()
-    test_open_link_only_opens_web_addresses()
-    test_restart_spotify_only_touches_spotify()
-    test_playback_wakes_an_idle_device_and_checks_it_started()
+    # Every test_ function, in the order defined - a list kept by hand once left six of them out
+    for name, test in list(globals().items()):
+        if name.startswith("test_") and callable(test):
+            test()
     print("ok")

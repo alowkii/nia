@@ -25,6 +25,11 @@ RISKS = [
     (r"\b(taskkill|stop-process|kill)\b", "it closes programs"),
     (r"\b(reg|regedit|set-itemproperty|new-itemproperty)\b|hk(lm|cu):", "it changes the registry"),
     (r"\b(invoke-webrequest|iwr|curl|wget|bitsadmin)\b.*\|\s*(iex|invoke-expression)", "it downloads and runs code"),
+    # She has web_search and read_page for the web; a shell command fetching from it ran unasked once (curl, 0.03)
+    (r"\b(invoke-webrequest|iwr|invoke-restmethod|irm|curl|wget|bitsadmin|certutil|start-bitstransfer)\b",
+     "it reaches the internet"),
+    # ask_claude runs Claude Code safely; from the shell it could be given any tools at all
+    (r"\bclaude(\.exe)?\b", "it runs Claude Code"),
     (r"\b(winget|choco|msiexec|scoop)\b|\b(pip|npm|pnpm|yarn)\s+(install|uninstall|add|remove)\b", "it installs or removes software"),
     (r"sendkeys|keybd_event|sendinput", "it presses keys in another window"),
     (r"-verb\s+runas|\brunas\b", "it runs something as administrator"),
