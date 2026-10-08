@@ -160,6 +160,8 @@ Everything lands in `logs/`:
 |---|---|
 | `nia.log` | Each turn — what was heard or typed (and transcription latency), tool calls with arguments and results, the reply, LLM and speech timings — plus startup, settings changes, and every crash with its full traceback. Rotates at 5 MB, keeping 3 old files. |
 | `assistant.out.log` | The hidden assistant's console output — mostly a copy of the above, plus anything a native library prints as it crashes. |
+| `window.log` | The window's script (nia.py): starting and stopping the server and assistant, settings changes. |
+| `test.log` | What the test suites log, kept out of NIA's real log. |
 | `llama-server.log` | The LLM server's own output: model loading, per-request token speeds, errors. Rewritten each time the server starts. |
 
 If she crashes, the window shows *Offline · stopped unexpectedly*; tap the mic to restart her.
