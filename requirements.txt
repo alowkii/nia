@@ -11,6 +11,8 @@ numpy==2.4.6
 
 # Turns other apps down while NIA speaks (Windows volume mixer)
 pycaw==20260927
+# Finding NIA's own llama-server among processes (nia.py); already pulled in by pycaw
+psutil==7.1.3
 
 # LLM agent - a Deep Agent (LangGraph harness: files, shell, sub-agents, approvals)
 # talking to llama-server's OpenAI-compatible API
