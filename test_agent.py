@@ -282,9 +282,11 @@ def test_approval_layers():
         assert new_file(existing.name) == "ask", "overwriting an existing file asks"
     finally:
         Path(existing.name).unlink()
+    own = approval.NIA_ROOT  # wherever NIA's code lives (D:\nia here, elsewhere in a test checkout)
     for path in ("/c/Users/" + home.name + "/AppData/Roaming/Microsoft/Windows/Start Menu/Programs/Startup/x.bat",
-                 "/c/Windows/x.txt", "/c/Program Files/x.txt", ".ssh/authorized_keys", "/d/nia/agent/new_tool.py",
-                 "/d/nia-changes/x/y.py", "/c/temp/x.txt", "/d/nia/../nia/agent/sneaky.py"):
+                 "/c/Windows/x.txt", "/c/Program Files/x.txt", ".ssh/authorized_keys", "/c/temp/x.txt",
+                 str(own / "agent" / "new_tool.py"), str(own.parent / "nia-changes" / "x" / "y.py"),
+                 str(own / ".." / own.name / "agent" / "sneaky.py")):
         assert new_file(path) == "ask", path
     assert approval.decide(run(r"mkdir C:\Users\%s\Documents\nia-tools 2>&1 && echo created" % home.name),
                            "m", 0.5) == ("run", "a new folder in your folders")
