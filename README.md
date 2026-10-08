@@ -445,15 +445,12 @@ scripts/run_bonsai.bat              starts just the LLM server (llama-server + B
 scripts/text_chat.py                text-only chat in the console, no audio
 scripts/eval_approval.py            live check of the approval layers (needs Ollama)
 scripts/openthai-cpu.Modelfile      builds the approval model for Ollama
-scripts/preprocess_voice.py         builds a speaker embedding from a voice sample
 ```
 
 ## Known limitations
 
-- **Speaker verification is disabled.** The code to check that a command came from
-  your voice is present but commented out in `voice_assistant.py` — it added too much
-  latency per command. `scripts/preprocess_voice.py` still generates the reference embedding.
-  Anyone within earshot can currently issue commands.
+- **No speaker verification.** A check that commands came from your voice (Resemblyzer)
+  added too much latency per command and was removed. Anyone within earshot can issue commands.
 - **Replies take ~2–4 s** from the end of your sentence: Bonsai reads the prompt and
   tools, calls a tool, then words the result. Kokoro adds ~1 s before speech starts; pick
   `piper_en_US-lessac-medium` as the voice in the settings panel for ~0.2 s, sounding
@@ -481,7 +478,6 @@ license; see its page.
 | [Rajdhani](https://fonts.google.com/specimen/Rajdhani) and [JetBrains Mono](https://www.jetbrains.com/lp/mono/) | the window's type |
 | [pycaw](https://github.com/AndreMiras/pycaw) | turning other apps down while NIA speaks (Windows mixer) |
 | [python-dotenv](https://github.com/theskumar/python-dotenv) | loading `.env` |
-| [Resemblyzer](https://github.com/resemble-ai/Resemblyzer) | the speaker embedding in `scripts/preprocess_voice.py` |
 
 NIA isn't affiliated with or endorsed by any of these projects, Spotify or YouTube.
 

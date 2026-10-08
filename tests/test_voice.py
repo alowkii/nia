@@ -14,7 +14,7 @@ import numpy as np
 import settings
 from agent.chat import CANCEL
 from utils.hud import envelope, hud
-from voice_assistant.voice_assistant import (State, WakeWordDetector, cut_off, drop_filler, first_part, fragment,
+from voice_assistant.voice_assistant import (WakeWordDetector, cut_off, drop_filler, first_part, fragment,
                                              hesitation, name_only, pick_greeting, plain, speakable, stop_request,
                                              voice_language, wake_command)
 
@@ -166,7 +166,7 @@ nia = WakeWordDetector.__new__(WakeWordDetector)  # skip mic, models and LLM
 nia.settings = {**settings.DEFAULTS}
 nia.lines, nia.tts = __import__("queue").Queue(), StubVoice()
 nia.interrupted = __import__("threading").Event()
-nia.state = State.LISTENING
+nia.awake = False
 
 with nia.working():
     heard(nia, "Sure, playing some lofi beats now")  # her own voice: ignored, nothing stopped
@@ -243,7 +243,7 @@ class StubAgent:
 nia = WakeWordDetector.__new__(WakeWordDetector)  # skip mic, models and LLM
 nia.settings = {**settings.DEFAULTS, "spoken_replies": False, "wake_word": False}  # shown, never played
 nia.lines, nia.interrupted = __import__("queue").Queue(), threading.Event()
-nia.state, nia.deadline, nia.busy, nia.busy_ended = State.LISTENING, 0.0, False, 0.0
+nia.awake, nia.deadline, nia.busy, nia.busy_ended = False, 0.0, False, 0.0
 nia.rest, nia.greeted, nia.held, nia.quitting, nia.restart_after = "", None, False, False, None
 class StubMic:
     """Records how the microphone is opened"""

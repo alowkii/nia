@@ -39,8 +39,8 @@ ASK = ("Answer this for a voice assistant to read aloud. Always browse first, ev
 
 def executable():
     """Claude Code's command line, if it's installed"""
-    return shutil.which("claude") or next((str(p) for p in (Path.home() / ".local" / "bin" / "claude.exe",)
-                                           if p.exists()), None)
+    local = Path.home() / ".local" / "bin" / "claude.exe"
+    return shutil.which("claude") or (str(local) if local.exists() else None)
 
 
 def command(question, model, effort="low"):

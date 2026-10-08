@@ -4,13 +4,11 @@ import random
 import subprocess
 import time
 from pathlib import Path
-from dotenv import load_dotenv
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
 import settings
 
-load_dotenv()
 logger = logging.getLogger(__name__)
 
 # Absolute, so the saved login is found whatever the working directory
@@ -205,13 +203,8 @@ class SpotifyController:
         return self._after_skip("Went back to previous track")
 
     def set_volume(self, volume_percent):
-        """Set volume (0-100)"""
-        try:
-            volume_percent = int(volume_percent)
-        except (ValueError, TypeError):
-            return f"Invalid volume value: {volume_percent}. Must be a number between 0-100"
-        if not 0 <= volume_percent <= 100:
-            return "Volume must be between 0 and 100"
+        """Set volume, clamped to 0-100"""
+        volume_percent = max(0, min(int(volume_percent), 100))
         self.sp.volume(volume_percent)
         return f"Volume set to {volume_percent}%"
 
@@ -232,21 +225,9 @@ class SpotifyController:
         return f"Shuffle {'enabled' if state else 'disabled'} successfully"
 
     def repeat(self, state='context'):
-        """
-        Set repeat mode
-        state: 'track', 'context', or 'off'
-        - 'track': repeat current track
-        - 'context': repeat current context (playlist/album)
-        - 'off': turn off repeat
-        """
-        if state not in ('track', 'context', 'off'):
-            return "Invalid repeat state. Use 'track', 'context', or 'off'"
+        """Repeat 'track', 'context' (the playlist or album) or 'off'"""
         self.sp.repeat(state)
-        if state == 'track':
-            return "Repeat mode set to: repeat current track"
-        if state == 'context':
-            return "Repeat mode set to: repeat playlist/album"
-        return "Repeat mode turned off"
+        return f"Repeat set to {state}"
 
     def add_to_queue(self, track_name):
         """Add a track to the queue"""

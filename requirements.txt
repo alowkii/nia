@@ -29,7 +29,3 @@ youtube-transcript-api==1.2.4
 
 # Config
 python-dotenv==1.2.1
-
-# Speaker verification - only used by scripts/preprocess_voice.py; the runtime check is
-# currently disabled in voice_assistant.py for latency reasons. Pulls in torch.
-Resemblyzer==0.1.4

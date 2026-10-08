@@ -1,7 +1,6 @@
 import os
-from dotenv import load_dotenv
 
-load_dotenv()
+import settings  # noqa: F401 - loads .env, for AUTHOR
 
 author = os.getenv('AUTHOR', 'the user')  # Default fallback
 

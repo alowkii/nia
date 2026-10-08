@@ -21,14 +21,12 @@ from multiprocessing.connection import Listener
 from pathlib import Path
 
 import psutil
-from dotenv import load_dotenv
 
 import settings
 from agent.server import llm_server_command, llm_up
 from utils import mics
 from utils.logger import LOG_DIR, logging
 
-load_dotenv()
 logger = logging.getLogger("nia")
 
 ROOT = Path(__file__).resolve().parent

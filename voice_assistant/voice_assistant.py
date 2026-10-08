@@ -4,7 +4,6 @@ import re
 import subprocess
 import sys
 import time
-import enum
 import queue
 import threading
 import unicodedata
@@ -15,15 +14,10 @@ from types import SimpleNamespace
 from urllib.parse import urlsplit
 import numpy as np
 import sounddevice as sd
-from dotenv import load_dotenv
 from langchain_core.tools import tool
 from moonshine_voice import MicTranscriber, ModelArch, TextToSpeech
 from pycaw.pycaw import AudioUtilities
 
-# Load environment variables
-load_dotenv()
-
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import settings
 from agent import claude
 from agent.chat import CANCEL, AssistantModel, ensure_llm_server
@@ -274,16 +268,11 @@ def duck(level):
     return restore
 
 
-class State(enum.Enum):
-    LISTENING = 1
-    COMMAND_MODE = 2
-
-
 class WakeWordDetector:
     def __init__(self):
-        self.state = State.LISTENING
+        self.awake = False  # after the wake phrase: listening for a command
         self.settings = s = settings.load()
-        self.deadline = 0.0  # when COMMAND_MODE times out
+        self.deadline = 0.0  # when being awake times out
         self.busy = False  # thinking or talking: only a stop phrase gets through
         self.busy_ended = 0.0
         self.interrupted = threading.Event()  # "stop" heard: speak() cuts the voice off
@@ -397,7 +386,7 @@ class WakeWordDetector:
 
     def on_text(self, text):
         """Words arriving while the user is still talking: the awake window shows them as they come"""
-        if self.state == State.COMMAND_MODE and not self.busy:
+        if self.awake and not self.busy:
             hud.send(partial=text)
 
     def command(self, message):
@@ -452,7 +441,7 @@ class WakeWordDetector:
         self.mic.device(self.mic_index()).start()
 
     def idle(self):
-        hud.show("awake" if self.state == State.COMMAND_MODE else "asleep")
+        hud.show("awake" if self.awake else "asleep")
 
     def stay_awake(self):
         """After an exchange: listen for a follow-up until the session times out - or, with push-to-talk
@@ -484,12 +473,12 @@ class WakeWordDetector:
 
         try:
             while True:
-                awake = self.state == State.COMMAND_MODE
+                awake = self.awake
                 try:
                     line = self.lines.get(timeout=max(0, self.deadline - time.time()) if awake else None)
                 except queue.Empty:
                     logger.info(f"No command - listening for {s['wake_phrase']!r} again.")
-                    self.state = State.LISTENING
+                    self.awake = False
                     self.idle()
                     continue
                 if line is None:  # the window closed or asked her to stop
@@ -505,7 +494,7 @@ class WakeWordDetector:
                     logger.info(f"From the window: {control}")
                 if control in ("wake", "ptt_down"):
                     self.held = control == "ptt_down"
-                    self.state = State.COMMAND_MODE
+                    self.awake = True
                     self.deadline = time.time() + s["session_timeout"]
                     self.idle()
                     continue
@@ -517,7 +506,7 @@ class WakeWordDetector:
                     self.switch_mic()
                     continue
                 if control == "sleep":
-                    self.state, self.rest = State.LISTENING, ""
+                    self.awake, self.rest = False, ""
                     self.idle()
                     continue
                 typed = control == "text"
@@ -532,7 +521,7 @@ class WakeWordDetector:
                     continue
 
                 if typed:  # typed into the window: always a command, no wake phrase needed
-                    self.state = State.COMMAND_MODE
+                    self.awake = True
                 else:
                     # The phrase also counts mid-session, where people repeat it out of habit
                     score, rest = wake_match(text, s["wake_phrase"])
@@ -544,7 +533,7 @@ class WakeWordDetector:
                     if command is not None:
                         if not awake:
                             logger.info(f"Wake phrase heard: {text!r}")
-                            self.state = State.COMMAND_MODE
+                            self.awake = True
                         if not command:
                             with self.working():
                                 self.greet()
@@ -663,20 +652,6 @@ class WakeWordDetector:
         finally:
             restore()  # even after an error or a "stop", so other apps aren't left quiet
             maker.join(timeout=5)  # never leave a synthesis running into the next one
-
-    # TODO: This is creating too much latency
-    # def valid_command_from_your_voice(self):
-    #     encoder = VoiceEncoder()
-    #     reference_embedding = np.load("voice_samples/my_voice_embedding.npy")
-
-    #     wav_new = preprocess_wav("temp/command.wav")
-    #     embedding_new = encoder.embed_utterance(wav_new)
-
-    #     similarity = 1 - cosine(reference_embedding, embedding_new)
-    #     if similarity > 0.75:
-    #         return True
-    #     else:
-    #         return False
 
     def cleanup(self):
         self.mic.close()
