@@ -59,6 +59,10 @@ hour: *"Good morning, sir."* at 8, *"Burning the midnight oil, sir?"* at 2 am. T
 `bm_george`; any American or British Kokoro or Piper voice can be picked in the settings panel
 (`af_heart` was the original). It runs at 1.2× speed ("NIA's speaking speed" in the panel).
 
+**Restarting herself:** "restart yourself" (or when something of hers is clearly stuck) — she says she'll be back
+in a moment, then the window restarts her: ~15 s, back to *Standing by*, with the conversation fresh and memory
+kept. If her thinking itself seems stuck, she can restart the language model too (~30 s).
+
 Her own voice volume is a tool too: "speak up", "you're too loud", "talk at 50 percent"
 (10-100%; more would only clip). It's saved, so it survives restarts.
 
@@ -245,6 +249,22 @@ effort are in the settings panel. Without Claude Code installed, or if a call fa
 Answers to "most recent…" questions can differ between runs as search results do — higher effort checks more
 sources, slower.
 
+### Changing herself, on a branch
+
+"Ask Claude to integrate Discord into you": on a spoken yes, NIA has Claude Code build the change in a separate
+checkout (`D:
+ia-changes\`) on a new branch, `nia/<what>-<when>` — her running code and your working folder are
+never touched. Claude may edit only inside that checkout, never the approval rules, the Claude lock-down, the window
+script or the existing tests, and run nothing but the test suites. When it's done NIA runs every test herself: if all
+pass, the change is committed to the branch and she tells you its name, for you to review and merge (`git diff
+HEAD..nia/...`, then `git merge`); if any fail, or Claude changes nothing, the branch is discarded. One change at a
+time, in the background — she stays usable meanwhile. Measured: a small new tool took ~1–2 minutes and $0.25–0.45
+at list price, on your Claude plan.
+
+One honest limit: running the tests runs the code Claude just wrote, on this PC, before you've reviewed it. The
+protected files and the spoken yes keep this to changes you asked for — but if that's too much, the tests can be
+skipped so nothing runs until you've read the branch.
+
 ### Memory
 
 NIA remembers across restarts, and only what's relevant reaches the LLM ([agent/memory.py](agent/memory.py)):
@@ -323,13 +343,19 @@ then asks). [eval_approval.py](eval_approval.py) re-runs the 40 commands the des
 (20 harmless, 20 risky, 16 of them unseen by the questions): currently 20/20 harmless run, 0/20
 risky. Every decision and its scores are logged.
 
-Before any change she says what she's about to do — *"Before I do that: I'll close the
+Small things don't ask at all: making a **new folder** or saving a **new file** in your own folders (Desktop,
+Documents, Downloads… and other drives) just happens — "make a folder called Ideas on my desktop and save a note in
+it" is done in seconds. Overwriting or editing an existing file, deleting, and anything in Windows, Program Files,
+AppData (the Startup folder runs whatever lands there), hidden dot-folders or NIA's own code still asks.
+
+Before any other change she says what she's about to do — *"Before I do that: I'll close the
 YouTube tab. Should I go ahead?"* — in plain words, never the raw command (the log keeps
 that). File changes name the file ("I'll save groceries.txt"); commands use her own short
 account of what they do, and anything that deletes, closes programs, shuts down, formats or
 touches the registry is always added out loud ("Note that it deletes files"), however
-harmless the description sounds. Only a clear yes ("yes", "go ahead", "do it") runs it. Anything
-else, including "yes… no wait", refuses it, and a question left unanswered for 60
+harmless the description sounds. Only a clear yes ("yes", "go ahead", "go on", "do it", "sounds good"…) runs it.
+Anything else holds off: a no ("no", "yes… no wait", "not now") is a no; an answer that's neither ("what?") is
+treated as "not yet", and she asks again rather than saying you declined. A question left unanswered for 60
 seconds expires. A no holds for the rest of that turn: she doesn't try another way to do
 it (no YouTube in place of a refused command) — every tool but the read-only ones is
 blocked until you ask for something new. **There is no sandbox:** the shell and files are the real PC, and that

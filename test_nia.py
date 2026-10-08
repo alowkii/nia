@@ -112,6 +112,20 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
     assert nia.bonsai_servers() == [ours]
     nia.psutil.process_iter = real
 
+    # She asks to be restarted (restart_myself): the window restarts her - and the language model too, if asked
+    import time
+    for what, server_restarts in (("assistant", 0), ("both", 1)):
+        helper_server, restarted = Recorder(), []
+        child = nia.Assistant(hub, server=helper_server)
+        child.restart = lambda: restarted.append(1)
+        assert child.handle({"restart": what, "state": "speaking"}) == {"state": "speaking"}, "the rest goes on"
+        for _ in range(50):
+            if restarted:
+                break
+            time.sleep(0.02)
+        assert restarted == [1] and helper_server.restarts == server_restarts, what
+    assert nia.Assistant(hub).handle({"state": "awake"}) == {"state": "awake"}
+
     # The window's quit
     assert post("/quit")[0] == 204 and done.is_set()
     httpd.shutdown()

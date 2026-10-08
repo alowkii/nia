@@ -191,7 +191,7 @@ with tempfile.TemporaryDirectory() as tmp:
     settings.PATH = Path(tmp) / "settings.json"  # never touch the real settings.json
     nia = WakeWordDetector.__new__(WakeWordDetector)  # skip mic, models and LLM
     nia.settings, nia.tts = settings.load(), StubTTS()
-    set_volume, change_volume = nia._voice_tools()
+    set_volume, change_volume, _ = nia._voice_tools()  # the third is restart_myself
     assert set_volume.invoke({"percent": 50}) == "Your voice volume is now 50%"
     assert nia.tts.level == 0.5 and settings.load()["voice_volume"] == 0.5
     assert change_volume.invoke({"step": 25}) == "Your voice volume is now 75%"
@@ -229,7 +229,7 @@ nia = WakeWordDetector.__new__(WakeWordDetector)  # skip mic, models and LLM
 nia.settings = {**settings.DEFAULTS, "spoken_replies": False, "wake_word": False}  # shown, never played
 nia.lines, nia.interrupted = __import__("queue").Queue(), threading.Event()
 nia.state, nia.deadline, nia.busy, nia.busy_ended = State.LISTENING, 0.0, False, 0.0
-nia.rest, nia.greeted, nia.held, nia.quitting = "", None, False, False
+nia.rest, nia.greeted, nia.held, nia.quitting, nia.restart_after = "", None, False, False, None
 class StubMic:
     """Records how the microphone is opened"""
     def __init__(self):
@@ -287,9 +287,24 @@ window.send({"type": "settings", "values": {"push_to_talk": True}})  # applies a
 window.send({"type": "ptt_up"})  # released with nothing said: back to sleep once the last words are in
 started = time.time()
 assert events_until(state="asleep") and 2 < time.time() - started < 4
+# "Restart yourself": she says so first, then asks the window to restart her - not before the reply is out
+restart_myself = next(t for t in nia._voice_tools() if t.name == "restart_myself")
+assert "about 30 seconds" in restart_myself.invoke({"also_llm_server": True}) and nia.restart_after == "both"
+assert "about 10 seconds" in restart_myself.invoke({}) and nia.restart_after == "assistant"
+window.send({"type": "text", "text": "restart yourself"})
+seen = events_until(restart="assistant")
+assert [m for m in seen if "nia" in m] and seen.index(next(m for m in seen if "nia" in m)) < len(seen) - 1, \
+    "the reply goes out before the restart"
+assert nia.restart_after is None
+
 # Picking a microphone in the window switches it live; one that's gone falls back to the default, and says so
 window.send({"type": "settings", "values": {"mic_device": "Microphone That Was Unplugged"}})
-assert {"mic": ""} in events_until(mic="") and nia.mic.devices == [None]
+assert {"mic": ""} in events_until(mic="")
+for _ in range(50):  # the window hears which mic a moment before it's reopened
+    if nia.mic.devices:
+        break
+    time.sleep(0.02)
+assert nia.mic.devices == [None]
 window.send({"type": "quit"})
 loop.join(5)
 assert not loop.is_alive(), "quit from the window stops the loop"

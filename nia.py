@@ -183,8 +183,8 @@ class Server:
 class Assistant:
     """main.py as a hidden child process, joined to the hub over an authenticated local connection"""
 
-    def __init__(self, hub):
-        self.hub, self.proc, self.conn = hub, None, None
+    def __init__(self, hub, server=None):
+        self.hub, self.server, self.proc, self.conn = hub, server, None, None  # server: restarted when she asks
         self.stopping = False
 
     def start(self):
@@ -205,9 +205,23 @@ class Assistant:
         try:
             self.conn = listener.accept()
             while True:
-                self.hub.send(**self.conn.recv())
+                if message := self.handle(self.conn.recv()):
+                    self.hub.send(**message)
         except (EOFError, OSError):  # the assistant exited, or never connected
             pass
+
+    def handle(self, message):
+        """A restart she asked for (restart_myself) is carried out; everything else is for the page"""
+        what = message.pop("restart", None)
+        if what:
+            logger.info(f"She asked to be restarted ({what})")
+
+            def restart():
+                if what == "both" and self.server:
+                    self.server.restart()  # the assistant waits for it as it starts
+                self.restart()
+            threading.Thread(target=restart, daemon=True).start()
+        return message
 
     def _watch(self, listener, proc):
         code = proc.wait()
@@ -385,7 +399,8 @@ def open_window(url):
 def main():
     url = f"http://127.0.0.1:{PORT}"
     hub, done = Hub(), threading.Event()
-    server, assistant = Server(hub), Assistant(hub)
+    server = Server(hub)
+    assistant = Assistant(hub, server)
     try:
         httpd = HudServer(("127.0.0.1", PORT), handler(hub, assistant, server, done))
     except OSError:  # NIA is already running: just show her

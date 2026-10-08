@@ -1,6 +1,7 @@
 import os
 import random
 import re
+import subprocess
 import sys
 import time
 import enum
@@ -256,6 +257,7 @@ class WakeWordDetector:
         self.greeted = None  # the last greeting, so the next one differs
         self.held = False  # the window's mic button is held down (push-to-talk)
         self.quitting = False
+        self.restart_after = None  # "assistant" or "both", set by restart_myself during a turn
 
         # Everything the voice loop acts on arrives here: lines heard (on_line), and from the window
         # typed text, mic presses and "quit" (command) - so all state changes happen on the loop's thread
@@ -279,6 +281,9 @@ class WakeWordDetector:
         ensure_llm_server()
         self.assistant = AssistantModel(extra_tools=self._voice_tools())
         claude.ANNOUNCE = lambda: self.speak("One moment, sir.")  # Claude takes 15-40 s: say so, don't go silent
+        # A change built on a branch in the background: she says how it went, unprompted, on the loop's thread
+        claude.ON_DONE = lambda text: self.lines.put(SimpleNamespace(
+            control="announce", text=text, duration=0, last_transcription_latency_ms=0))
         self.assistant.warm_up()
         logger.info("Assistant ready!")
 
@@ -310,7 +315,29 @@ class WakeWordDetector:
             Not for music - use the Spotify volume tools for that"""
             return self.set_voice_volume(self.settings["voice_volume"] + step / 100)
 
-        return [set_voice_volume, change_voice_volume]
+        @tool
+        def restart_myself(also_llm_server: bool = False) -> str:
+            """Restart yourself, right after this reply: when the user asks ("restart yourself", "reboot"), or when
+            something of yours is clearly stuck - you keep mishearing, a setting needs a restart, a tool keeps
+            failing. also_llm_server: restart the language model too - only if your own thinking seems stuck
+            (replies hang or come back garbled). Takes ~10 s, ~30 s with the language model; the conversation
+            starts fresh, memory stays"""
+            self.restart_after = "both" if also_llm_server else "assistant"
+            return ("Restarting right after this reply. Tell the user in a few words - back in about "
+                    f"{30 if also_llm_server else 10} seconds")
+
+        return [set_voice_volume, change_voice_volume, restart_myself]
+
+    def restart(self):
+        """Hand over to a fresh copy of herself: nia.py's window restarts her (and the language model, if asked);
+        run on her own, she starts a new copy and quits"""
+        what, self.restart_after = self.restart_after, None
+        logger.info(f"Restarting myself ({what})")
+        if hud.conn:
+            hud.send(restart=what)
+        else:
+            subprocess.Popen([sys.executable, *sys.argv], creationflags=subprocess.CREATE_NEW_CONSOLE)
+            self.lines.put(None)
 
     def on_line(self, line):
         """Each finished utterance, on Moonshine's thread. While NIA is busy, only a stop phrase gets
@@ -434,6 +461,10 @@ class WakeWordDetector:
                     break
 
                 control = getattr(line, "control", None)  # from the window's mic button
+                if control == "announce":  # news from a background job
+                    with self.working():
+                        self.speak(line.text)
+                    continue
                 if control and control != "text":
                     logger.info(f"From the window: {control}")
                 if control in ("wake", "ptt_down"):
@@ -535,6 +566,8 @@ class WakeWordDetector:
                 started = time.perf_counter()
                 self.say(reply)
                 logger.info(f"Spoke in {time.perf_counter() - started:.1f}s")
+        if self.restart_after:  # asked for during the turn: only now, once she's said so
+            self.restart()
 
     def say(self, reply):
         """Speak a reply in plain sentences, at most about max_spoken_words of it; the rest waits for "go on" """
