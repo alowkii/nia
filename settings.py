@@ -21,6 +21,7 @@ DEFAULTS = {
     # ponytail: Kokoro takes ~1 s to start speaking on CPU; "piper_en_US-lessac-medium" ~0.2 s but more robotic
     "voice": "kokoro_bm_george",  # British male, for the JARVIS manner; "kokoro_af_heart" was the American default
     "voice_speed": 1.2,  # 1 = the voice's natural pace; George at 1.2 says the same in ~17% less time
+    "ready_chime": True,  # a soft rising chime each time NIA is ready - after starting, and after a restart
     "voice_volume": 1.0,  # NIA's own voice, 0.1-1 (1 = full; more would clip); also set by voice ("speak quieter")
     "mic_device": "",  # the microphone NIA listens through, by name; "" = Windows' default (switchable live)
     "stt_model": "medium",  # Moonshine streaming: tiny / small / medium (tiny rarely hears "Nia")

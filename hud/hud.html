@@ -601,7 +601,12 @@ events.onmessage = (e) => {
   render();
   showMic();
 };
-events.onerror = () => { mode = 'offline'; error = null; render(); };
+// Lost nia.py: offline - or booting, if she said she's rebooting. When it answers again, reload the page, so
+// it's the page the (possibly changed) nia.py serves now
+let rebooting = false, lost = false;
+events.addEventListener('message', (e) => { if (JSON.parse(e.data).rebooting) rebooting = true; });
+events.onerror = () => { lost = true; mode = rebooting ? 'booting' : 'offline'; error = null; render(); };
+events.onopen = () => { if (lost) location.reload(); };
 
 // ---- Typing
 $('cmd').addEventListener('keydown', (e) => {

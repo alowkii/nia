@@ -112,18 +112,22 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
     assert nia.bonsai_servers() == [ours]
     nia.psutil.process_iter = real
 
-    # She asks to be restarted (restart_myself): the window restarts her - and the language model too, if asked
+    # She asks to be restarted (restart_myself): just her...
+    import threading
     import time
-    for what, server_restarts in (("assistant", 0), ("both", 1)):
-        helper_server, restarted = Recorder(), []
-        child = nia.Assistant(hub, server=helper_server)
-        child.restart = lambda: restarted.append(1)
-        assert child.handle({"restart": what, "state": "speaking"}) == {"state": "speaking"}, "the rest goes on"
-        for _ in range(50):
-            if restarted:
-                break
-            time.sleep(0.02)
-        assert restarted == [1] and helper_server.restarts == server_restarts, what
+    reboot, restarted = threading.Event(), []
+    child = nia.Assistant(hub, server=Recorder(), done=reboot)
+    child.restart = lambda: restarted.append(1)
+    assert child.handle({"restart": "assistant", "state": "speaking"}) == {"state": "speaking"}, "the rest goes on"
+    for _ in range(50):
+        if restarted:
+            break
+        time.sleep(0.02)
+    assert restarted == [1] and not reboot.is_set() and not child.rebooting
+    # ...or a reboot: main() shuts all of NIA down and hands over to a fresh copy of nia.py
+    assert child.handle({"restart": "all"}) == {}
+    assert reboot.is_set() and child.rebooting and restarted == [1]
+    assert hub.latest["rebooting"] is True, "the page shows booting, not offline, while nia.py is away"
     assert nia.Assistant(hub).handle({"state": "awake"}) == {"state": "awake"}
 
     # The logo: the window's icon and header, served from assets/logo only

@@ -47,7 +47,8 @@ FIELDS = [
         ("thinking", "Thinking", "check"), ("temperature", "Temperature", "number"), ("top_p", "Top-p", "number"),
         ("top_k", "Top-k", "number"), ("presence_penalty", "Presence penalty", "number")]),
     ("Voice", [
-        ("voice", "Voice", "voice"), ("voice_speed", "Speaking speed (0.5-2, 1 = natural)", "number"),
+        ("voice", "Voice", "voice"), ("ready_chime", "Chime when she's ready", "check"),
+        ("voice_speed", "Speaking speed (0.5-2, 1 = natural)", "number"),
         ("voice_volume", "Voice volume (0.1-1)", "number"),
         ("max_spoken_words", "Words spoken before “Shall I go on?”", "number"),
         ("greeting", "Greetings (| between them)", "text"),
@@ -70,8 +71,9 @@ FIELDS = [
 ]
 SERVER_KEYS = {key for key, _, _ in FIELDS[0][1]}
 # Read by the running assistant each time they're used, so they change without a restart
-LIVE_KEYS = {"claude_effort", "claude_model", "mic_device", "voice_speed", "voice_volume", "max_spoken_words", "greeting", "duck_level", "wake_threshold",
-             "session_timeout", "wake_word", "push_to_talk", "spoken_replies", "hud_theme"}
+LIVE_KEYS = {"ready_chime", "claude_effort", "claude_model", "mic_device", "voice_speed", "voice_volume",
+             "max_spoken_words", "greeting", "duck_level", "wake_threshold", "session_timeout", "wake_word",
+             "push_to_talk", "spoken_replies", "hud_theme"}
 VOICES = ["kokoro_bm_fable", "kokoro_bm_george", "kokoro_af_heart"]
 STT_MODELS = ["tiny", "small", "medium"]
 
@@ -182,16 +184,20 @@ class Server:
             logger.error("LLM server didn't come up - see logs/llama-server.log; Restart server in the settings")
             self.hub.send(server="down")
 
-    def stop(self):
+    def stop(self, any_of_ours=False):
+        """The server NIA started; any_of_ours: every llama-server of NIA's, even one she didn't start"""
         if self.proc and self.proc.poll() is None:
             self.proc.terminate()
             self.proc.wait(10)
+        if any_of_ours:
+            ours = bonsai_servers()  # never Ollama's
+            for proc in ours:
+                proc.kill()
+            psutil.wait_procs(ours, timeout=10)  # a dying one would pass for "still starting" to the next start
 
     def restart(self):
         """To apply new server settings - including a server NIA didn't start"""
-        self.stop()
-        for proc in bonsai_servers():  # never Ollama's
-            proc.kill()
+        self.stop(any_of_ours=True)
         time.sleep(1)  # let the GPU memory go
         self.start()
 
@@ -199,9 +205,10 @@ class Server:
 class Assistant:
     """main.py as a hidden child process, joined to the hub over an authenticated local connection"""
 
-    def __init__(self, hub, server=None):
-        self.hub, self.server, self.proc, self.conn = hub, server, None, None  # server: restarted when she asks
-        self.stopping = False
+    def __init__(self, hub, server=None, done=None):
+        self.hub, self.server, self.proc, self.conn = hub, server, None, None
+        self.done = done  # set when she asks for a reboot: main() then restarts all of NIA
+        self.stopping = self.rebooting = False
 
     def start(self):
         key = secrets.token_bytes(16)
@@ -227,16 +234,18 @@ class Assistant:
             pass
 
     def handle(self, message):
-        """A restart she asked for (restart_myself) is carried out; everything else is for the page"""
+        """A restart she asked for (restart_myself) is carried out; everything else is for the page.
+        "all" reboots the whole of NIA - this script, the window's page, the LLM server, the assistant - so
+        changed code loads; "assistant" restarts just her"""
         what = message.pop("restart", None)
-        if what:
+        if what == "all" and self.done:
+            logger.info("She asked for a reboot - restarting all of NIA")
+            self.rebooting = True
+            self.hub.send(state="booting", rebooting=True)
+            self.done.set()
+        elif what:
             logger.info(f"She asked to be restarted ({what})")
-
-            def restart():
-                if what == "both" and self.server:
-                    self.server.restart()  # the assistant waits for it as it starts
-                self.restart()
-            threading.Thread(target=restart, daemon=True).start()
+            threading.Thread(target=self.restart, daemon=True).start()
         return message
 
     def _watch(self, listener, proc):
@@ -418,16 +427,27 @@ def main():
     url = f"http://127.0.0.1:{PORT}"
     hub, done = Hub(), threading.Event()
     server = Server(hub)
-    assistant = Assistant(hub, server)
-    try:
-        httpd = HudServer(("127.0.0.1", PORT), handler(hub, assistant, server, done))
-    except OSError:  # NIA is already running: just show her
-        logger.info("NIA is already running - opening another window onto her")
-        open_window(url)
-        return
+    assistant = Assistant(hub, server, done)
+    rebooted = os.environ.pop("NIA_REBOOT", None)  # started by a reboot: the window is already open
+    for attempt in range(20 if rebooted else 1):  # after a reboot, the old copy may still be letting go of the port
+        try:
+            httpd = HudServer(("127.0.0.1", PORT), handler(hub, assistant, server, done))
+            break
+        except OSError:
+            if attempt == 19 or not rebooted:  # NIA is already running: just show her
+                logger.info("NIA is already running - opening another window onto her")
+                open_window(url)
+                return
+            time.sleep(0.5)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     logger.info(f"NIA's window: {url}")
-    window = open_window(url)
+    window = None if rebooted else open_window(url)
+    if rebooted:
+        def reopen():  # the old window reconnects within a few seconds; if it was closed meanwhile, open one
+            time.sleep(15)
+            if not hub.last_seen and not hub.pages:
+                open_window(url)
+        threading.Thread(target=reopen, daemon=True).start()
     ensure_ollama()
     server.start()
     assistant.start()
@@ -448,10 +468,14 @@ def main():
     except KeyboardInterrupt:
         logger.info("Stopping (Ctrl+C)")
     assistant.stop()
-    server.stop()
-    if window and window.poll() is None:
-        window.terminate()
+    server.stop(any_of_ours=assistant.rebooting)  # a reboot reloads the model even if NIA didn't start it
     httpd.shutdown()
+    httpd.server_close()  # frees the port for the new copy
+    if assistant.rebooting:  # a fresh copy of this script, which reloads all of NIA's code; the window stays
+        subprocess.Popen([sys.executable, *sys.argv], cwd=ROOT, env={**os.environ, "NIA_REBOOT": "1"})
+        logger.info("Rebooting: handed over to a fresh copy")
+    elif window and window.poll() is None:
+        window.terminate()
 
 
 if __name__ == "__main__":

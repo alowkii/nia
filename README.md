@@ -66,9 +66,11 @@ hour: *"Good morning, sir."* at 8, *"Burning the midnight oil, sir?"* at 2 am. T
 `bm_george`; any American or British Kokoro or Piper voice can be picked in the settings panel
 (`af_heart` was the original). It runs at 1.2× speed ("NIA's speaking speed" in the panel).
 
-**Restarting herself:** "restart yourself" (or when something of hers is clearly stuck) — she says she'll be back
-in a moment, then the window restarts her: ~15 s, back to *Standing by*, with the conversation fresh and memory
-kept. If her thinking itself seems stuck, she can restart the language model too (~30 s).
+**Rebooting:** "reboot" or "restart yourself" — she says she'll be back in a moment, then all of NIA restarts:
+`nia.py`, the window's page, the language model, speech and agent, so any change to her code takes effect. The
+window stays open and reloads itself; ~40 s later she's back at *Standing by* with the chime, the conversation
+fresh and memory kept. If something of hers is stuck (she keeps mishearing), she may restart just her speech and
+agent on her own (~10 s). Ollama is left running; its models hold no NIA code.
 
 Her own voice volume is a tool too: "speak up", "you're too loud", "talk at 50 percent"
 (10-100%; more would only clip). It's saved, so it survives restarts.
@@ -134,9 +136,10 @@ python nia.py
 
 (`pythonw nia.py`, or a shortcut to it, runs it without a console.) It opens NIA's window and, hidden
 behind it, starts the LLM server if it isn't already up (~20 s) and the assistant. When the orb shows
-*Standing by*, say "Hey Nia" — or type into the command line at the bottom. **Closing the window shuts
-everything down**, including the LLM server if NIA started it. Running it again while NIA is up just opens
-another window onto her.
+*Standing by* — with a soft, warm two-note chime as she's ready (*Chime when she's ready* in the settings turns
+it off) — say "Hey Nia", or type into the command line at the bottom. **Closing the window shuts everything
+down**, including the LLM server if NIA started it. Running it again while NIA is up just opens another window
+onto her. Say "reboot" to restart all of it — see **Rebooting** under [How it works](#how-it-works).
 
 ### The window
 
@@ -259,8 +262,7 @@ sources, slower.
 ### Changing herself, on a branch
 
 "Ask Claude to integrate Discord into you": on a spoken yes, NIA has Claude Code build the change in a separate
-checkout (`D:
-ia-changes\`) on a new branch, `nia/<what>-<when>` — her running code and your working folder are
+checkout (`D:\nia-changes\`) on a new branch, `nia/<what>-<when>` — her running code and your working folder are
 never touched. Claude may edit only inside that checkout, never the approval rules, the Claude lock-down, the window
 script or the existing tests, and run nothing but the test suites. When it's done NIA runs every test herself: if all
 pass, the change is committed to the branch and she tells you its name, for you to review and merge (`git diff
@@ -380,12 +382,14 @@ python test_nia.py
 transcripts — what should wake her, what shouldn't, and where the threshold cuts — plus
 the cleanup of replies before they're spoken (markdown, the ~40-word cut), how her name
 alone and clipped fragments are recognised, greetings, her voice volume, each sentence's loudness
-curve, and the voice loop driven from the window: typed commands, the mic button (wake, sleep,
-push-to-talk), settings that apply at once, and quitting.
+curve, the ready chime (warm, never tinny, no click, played once she's ready), and the voice loop driven from
+the window: typed commands, the mic button (wake, sleep, push-to-talk), settings that apply at once, asking to
+restart or reboot, and quitting.
 
 [test_nia.py](test_nia.py) checks the window's script: the page and its live state stream, typed
 commands and mic presses reaching the assistant, settings validated, saved and applied (at once, or by
-restarting only what needs it), and that no other web page can drive NIA.
+restarting only what needs it), a reboot she asks for handing over to a fresh nia.py, the logo files, and that
+no other web page can drive NIA.
 
 [test_agent.py](test_agent.py) runs the real Deep Agent offline with a scripted model, a
 fake Spotify client, a stubbed YouTube and an in-memory filesystem, so it needs no

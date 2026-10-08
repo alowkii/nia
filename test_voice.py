@@ -201,6 +201,17 @@ with tempfile.TemporaryDirectory() as tmp:
     change_volume.invoke({"step": -500})
     assert nia.tts.level == 0.1  # never silent
 
+# The ready chime: two warm notes rising, 1.6 s, quiet, silent at both ends (no click), nothing shrill
+from voice_assistant.voice_assistant import CHIME_NOTES, chime
+sound = chime()
+assert len(sound) == int(24000 * 1.6) and np.isfinite(sound).all() and abs(np.abs(sound).max() - 0.3) < 1e-3
+assert abs(sound[0]) < 1e-3 and abs(sound[-1]) < 1e-3
+second = int(24000 * CHIME_NOTES[1][0])
+assert np.abs(sound[second + 200:second + 2400]).max() > np.abs(sound[second - 800:second]).max(), \
+    "the second note lands"
+spectrum = np.abs(np.fft.rfft(sound))
+assert spectrum[np.fft.rfftfreq(len(sound), 1 / 24000) > 2000].sum() < 0.03 * spectrum.sum(), "warm, not tinny"
+
 # The window: a spoken sentence becomes a loudness curve it follows, 60 values a second
 rate = 24000
 loud_then_quiet = np.concatenate([np.sin(np.arange(rate) / 3) * 0.8, np.sin(np.arange(rate) / 3) * 0.1])
@@ -246,6 +257,10 @@ hud.connect(on_command=nia.command, address=f"{listener.address[1]}:{key.hex()}"
 while not accepted:
     time.sleep(0.01)
 window = accepted[0]
+# The ready chime is recorded, not played - tests stay silent
+from voice_assistant import voice_assistant as va
+chimes = []
+va.play_chime = lambda volume=1.0, rate=24000: chimes.append(volume)
 loop = threading.Thread(target=nia.run, daemon=True)
 loop.start()
 
@@ -259,6 +274,7 @@ def events_until(**want):
     raise AssertionError(f"never got {want}; got {seen}")
 
 assert events_until(state="asleep")  # ready, waiting
+assert chimes == [nia.settings["voice_volume"]], "one chime when she's ready, at her voice's volume"
 nia.on_line(SimpleNamespace(text="Hey Nia, what time is it?", duration=1.0, last_transcription_latency_ms=90))
 time.sleep(0.3)
 assert not window.poll(0.2), "with the wake word off, speech alone doesn't wake her"
@@ -289,8 +305,8 @@ started = time.time()
 assert events_until(state="asleep") and 2 < time.time() - started < 4
 # "Restart yourself": she says so first, then asks the window to restart her - not before the reply is out
 restart_myself = next(t for t in nia._voice_tools() if t.name == "restart_myself")
-assert "about 30 seconds" in restart_myself.invoke({"also_llm_server": True}) and nia.restart_after == "both"
-assert "about 10 seconds" in restart_myself.invoke({}) and nia.restart_after == "assistant"
+assert "about 40 seconds" in restart_myself.invoke({}) and nia.restart_after == "all", "asked to: the whole system"
+assert "about 10 seconds" in restart_myself.invoke({"whole_system": False}) and nia.restart_after == "assistant"
 window.send({"type": "text", "text": "restart yourself"})
 seen = events_until(restart="assistant")
 assert [m for m in seen if "nia" in m] and seen.index(next(m for m in seen if "nia" in m)) < len(seen) - 1, \

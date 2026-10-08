@@ -54,6 +54,40 @@ def pick_greeting(greetings, hour, last=None):
     return random.choice([g for g in pool if g != last] or pool)
 
 
+CHIME_NOTES = ((0.0, 440.0, 0.9), (0.16, 659.25, 1.0))  # (start s, Hz, level): A4 rising a fifth to E5
+CHIME_PAD = (220.0, 329.63, 554.37)  # A3, E4, C#5: an A major chord swelling softly underneath
+CHIME_LENGTH = 1.6
+
+
+def chime(rate=24000, peak=0.3):
+    """The sound of NIA becoming ready, ~1.6 s: two warm felt-mallet notes rising a fifth over a soft chord, in a
+    little room. Rounded 12 ms attacks (no click), low-mid pitches (nothing shrill). Made here, not a file"""
+    t = np.arange(int(rate * CHIME_LENGTH)) / rate
+    ease_in = lambda x, length: 0.5 - 0.5 * np.cos(np.pi * np.clip(x / length, 0, 1))
+    sound = np.zeros(len(t))
+    for start, freq, level in CHIME_NOTES:
+        local = np.clip(t - start, 0, None)
+        tone = (np.sin(2 * np.pi * freq * local) + 0.2 * np.sin(2 * np.pi * freq * 1.0025 * local)) / 1.2  # warmth
+        tone = tone * np.exp(-local / 0.55) + 0.18 * np.sin(4 * np.pi * freq * local) * np.exp(-local / 0.10)
+        sound += level * tone * ease_in(local, 0.012) * (t >= start)
+    swell = ease_in(t, 0.18) * np.exp(-np.clip(t - 0.18, 0, None) / 0.55)
+    sound += 0.10 * swell * sum(np.sin(2 * np.pi * f * t) + 0.25 * np.sin(2 * np.pi * f * 1.004 * t) for f in CHIME_PAD)
+    # The room: the sound convolved with a dark, decaying noise burst, mixed in quietly
+    tail = np.arange(int(rate * 1.05))
+    burst = np.convolve(np.random.default_rng(7).standard_normal(len(tail)) * np.exp(-tail / (rate * 0.35)),
+                        np.ones(24) / 24, "same")
+    size = len(sound) + len(burst)
+    wet = np.fft.irfft(np.fft.rfft(sound, size) * np.fft.rfft(burst, size))[:len(sound)]
+    sound = 0.78 * sound + 0.22 * wet / np.abs(wet).max() * np.abs(sound).max()
+    sound *= np.clip((CHIME_LENGTH - t) / 0.25, 0, 1)  # a soft tail-out
+    return (sound / np.abs(sound).max() * peak).astype(np.float32)
+
+
+def play_chime(volume=1.0, rate=24000):
+    """Play the chime without waiting for it to finish"""
+    sd.play(chime(rate) * volume, rate)
+
+
 def voice_language(voice):
     """British voices (kokoro_bm_george, piper_en_GB-alan-medium) need British pronunciation to load"""
     return "en_gb" if re.search(r"^kokoro_b[fm]_|en_GB", voice) else "en_us"
@@ -257,7 +291,7 @@ class WakeWordDetector:
         self.greeted = None  # the last greeting, so the next one differs
         self.held = False  # the window's mic button is held down (push-to-talk)
         self.quitting = False
-        self.restart_after = None  # "assistant" or "both", set by restart_myself during a turn
+        self.restart_after = None  # "assistant" or "all", set by restart_myself during a turn
 
         # Everything the voice loop acts on arrives here: lines heard (on_line), and from the window
         # typed text, mic presses and "quit" (command) - so all state changes happen on the loop's thread
@@ -316,15 +350,15 @@ class WakeWordDetector:
             return self.set_voice_volume(self.settings["voice_volume"] + step / 100)
 
         @tool
-        def restart_myself(also_llm_server: bool = False) -> str:
-            """Restart yourself, right after this reply: when the user asks ("restart yourself", "reboot"), or when
-            something of yours is clearly stuck - you keep mishearing, a setting needs a restart, a tool keeps
-            failing. also_llm_server: restart the language model too - only if your own thinking seems stuck
-            (replies hang or come back garbled). Takes ~10 s, ~30 s with the language model; the conversation
-            starts fresh, memory stays"""
-            self.restart_after = "both" if also_llm_server else "assistant"
+        def restart_myself(whole_system: bool = True) -> str:
+            """Restart, right after this reply. When the user asks you to restart or reboot: always the whole
+            system - your window, the language model, speech and agent, all reloaded so any change to your code
+            takes effect (~40 s). Only when you restart on your own because something of yours is stuck (you keep
+            mishearing, a tool keeps failing): whole_system=False restarts just your speech and agent (~10 s).
+            The conversation starts fresh; memory stays"""
+            self.restart_after = "all" if whole_system else "assistant"
             return ("Restarting right after this reply. Tell the user in a few words - back in about "
-                    f"{30 if also_llm_server else 10} seconds")
+                    f"{40 if whole_system else 10} seconds")
 
         return [set_voice_volume, change_voice_volume, restart_myself]
 
@@ -445,6 +479,8 @@ class WakeWordDetector:
         self.mic.start()
         logger.info(f"Listening for {s['wake_phrase']!r}...")
         self.idle()
+        if s["ready_chime"]:  # she's ready: a soft chime, so you know without looking
+            play_chime(s["voice_volume"])
 
         try:
             while True:
