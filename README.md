@@ -3,7 +3,8 @@
 A Jarvis-style voice assistant that runs entirely on your own machine. Wake phrase,
 speech recognition, reasoning, and speech synthesis are all local — nothing is sent
 to a cloud AI API. The only network calls are to Spotify and YouTube, and only when
-you ask for them; the only account needed is a Spotify developer app.
+you ask for them, plus the window's two fonts from Google Fonts (it falls back to Windows'
+own fonts offline); the only account needed is a Spotify developer app.
 
 Say **"Hey Nia"**, then talk — or say it all at once: "Hey Nia, play some lofi".
 
@@ -29,11 +30,11 @@ drives a two-state machine ([voice_assistant/voice_assistant.py](voice_assistant
 
 The wake phrase is matched fuzzily against the start of each utterance, because the
 recogniser hears "Hey Nia" as "Hey, Nia." or with a stray word in front. The match
-threshold (default 0.8, in the control panel) is the knob: lower wakes more easily but
+threshold (default 0.8, in the settings panel) is the knob: lower wakes more easily but
 false-triggers more — "Hey Mia" already scores 0.83. The mic is muted while NIA thinks
 and speaks, so she doesn't transcribe herself. While she speaks, every other app (Spotify,
 browser, games) is turned down to 30% of its volume in the Windows mixer and restored
-afterwards — "Other apps' volume while NIA speaks" in the control panel; 1 turns it off.
+afterwards — "Other apps' volume while NIA speaks" in the settings panel; 1 turns it off.
 **Interrupting:** while she's thinking or talking, say **"Stop"**, **"Nia, stop"** or
 **"Hey Nia"**. Her voice cuts off within a fraction of a second (up to ~1 s if she was
 still preparing the first sentence — that synthesis is never aborted, since aborting it
@@ -42,6 +43,21 @@ ends before its next step (steps already taken stay taken — an opened tab stay
 "Hey Nia, pause the music" both stops her and does it. The mic stays live while she
 works, but only a stop phrase at the start of a line counts, so her own voice can't
 interrupt or command her.
+
+**Short answers:** replies are spoken as plain sentences (any markdown is stripped) and cut
+after about 40 words at a sentence end — she then asks *"Shall I go on, sir?"* and a "yes",
+"go on" or "tell me more" reads the rest ("Max words spoken" in the settings panel). Her
+name alone ("Nia", or "Near" as Moonshine often hears it) gets the greeting, not a guess at
+a song called Near, and a clipped scrap like "Jo." gets *"Sorry sir, I only caught 'Jo'"*
+instead of an action.
+
+**Manner:** JARVIS from Iron Man — formal, unhurried and dry: *"Very good, sir. Thunderstruck is
+playing now."*, *"I'm afraid Spotify isn't responding, sir. Shall I restart it?"* No exclamation
+marks or "Enjoy!", and no wit when something has failed. Waking her gets a different greeting
+each time, picked from **Greetings** in the settings panel (`|` between them) plus a few for the
+hour: *"Good morning, sir."* at 8, *"Burning the midnight oil, sir?"* at 2 am. The voice is Kokoro's British
+`bm_george`; any American or British Kokoro or Piper voice can be picked in the settings panel
+(`af_heart` was the original). It runs at 1.2× speed ("NIA's speaking speed" in the panel).
 
 Her own voice volume is a tool too: "speak up", "you're too loud", "talk at 50 percent"
 (10-100%; more would only clip). It's saved, so it survives restarts.
@@ -64,7 +80,7 @@ prompt prefix stays identical and llama-server reuses its cache.
   stock llama.cpp and Ollama can't load Bonsai's ternary format, plus
   [`Ternary-Bonsai-2-27B-PTQ1_0.gguf`](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf).
   Both are expected under `D:\bonsai` (the fork in `llama-prism\`) — change "Bonsai folder"
-  in the control panel if yours live elsewhere
+  in the settings panel if yours live elsewhere
 - A working microphone and speaker
 - A [Spotify Developer](https://developer.spotify.com/dashboard) app, for music control
 
@@ -99,33 +115,42 @@ The first music command opens a browser once for OAuth and caches the token in
 
 ## Running
 
-The easiest way is the control panel:
+One script runs everything, in one window:
 
 ```bash
-python ui.py
+python nia.py
 ```
 
-It edits every setting (model, context, thinking, sampling, voice, speech model, wake
-phrase and match threshold, greeting, timeout) and starts or stops the LLM server, the assistant, and the
-text chat, each in its own console window. Settings are saved to `settings.json`; the
-defaults live in [settings.py](settings.py). Server settings apply when the server
-restarts, assistant settings when the assistant restarts.
+(`pythonw nia.py`, or a shortcut to it, runs it without a console.) It opens NIA's window and, hidden
+behind it, starts the LLM server if it isn't already up (~20 s) and the assistant. When the orb shows
+*Standing by*, say "Hey Nia" — or type into the command line at the bottom. **Closing the window shuts
+everything down**, including the LLM server if NIA started it. Running it again while NIA is up just opens
+another window onto her.
 
-Or run the assistant directly:
+### The window
 
-```bash
-python main.py
-```
+- **Centre:** the orb — rings, core and label in the colour of her state: *Booting*, *Standing by*
+  (waiting for the wake phrase), *Listening* (it ripples, and shows your words as they're heard),
+  *Thinking*, speaking (the core and the bars move with the loudness of each word), and *Offline*.
+- **Left:** the voice pipeline — which stage is working, with the actual tool in use while she
+  thinks (Spotify, YouTube, shell, files, memory…) and the LLM server's state.
+- **Right:** the conversation — what you said and her reply, shown even when spoken replies are off.
+- **Bottom:** her state, the mic button — tap to wake her or put her to sleep (or to restart her when
+  offline); hold it in push-to-talk mode — and a command line for typing instead of talking.
+- **⚙ Settings:** the theme (six colour sets), the wake word / push-to-talk / spoken-replies switches,
+  and every other setting: the LLM server, voice, listening, memory and approvals, music. Saving
+  restarts only what needs it — voice speed or greetings apply at once; a new voice restarts the
+  assistant (a few seconds); server settings restart the server too. Spotify login and an LLM server
+  restart are there as well.
 
-If the LLM server isn't running, this starts it in its own window and waits for it
-(~20 s). Wait for `Listening for 'hey nia'...`, then say "Hey Nia".
+The window is [hud/hud.html](hud/hud.html) in an Edge app window, served by [nia.py](nia.py) on
+`127.0.0.1:8765` and updated live over an event stream. The assistant runs as a hidden child process
+(main.py) joined to it by an authenticated local connection ([utils/hud.py](utils/hud.py)); only that
+window can drive it — a web page can't send its requests. Settings are saved to `settings.json`; the
+defaults live in [settings.py](settings.py).
 
-For a keyboard-driven session with no audio stack at all — useful for iterating on
-prompts — use [test.py](test.py):
-
-```bash
-python test.py
-```
+To run just the assistant, with its log in the console and no window: `python main.py`. For a
+keyboard-only session with no audio at all — handy for iterating on prompts — `python test.py`.
 
 ## Logs
 
@@ -133,11 +158,11 @@ Everything lands in `logs/`:
 
 | File | What's in it |
 |---|---|
-| `nia.log` | Each turn — what was heard (and transcription latency), tool calls with arguments and results, the reply, LLM and speech timings — plus startup, control-panel actions, and every crash with its full traceback. Rotates at 5 MB, keeping 3 old files. |
+| `nia.log` | Each turn — what was heard or typed (and transcription latency), tool calls with arguments and results, the reply, LLM and speech timings — plus startup, settings changes, and every crash with its full traceback. Rotates at 5 MB, keeping 3 old files. |
+| `assistant.out.log` | The hidden assistant's console output — mostly a copy of the above, plus anything a native library prints as it crashes. |
 | `llama-server.log` | The LLM server's own output: model loading, per-request token speeds, errors. Rewritten each time the server starts. |
 
-When the assistant is started from the control panel, its window stays open after a
-crash so you can read the error.
+If she crashes, the window shows *Offline · stopped unexpectedly*; tap the mic to restart her.
 
 ## What it can do
 
@@ -158,11 +183,15 @@ Ask in plain language; the model maps it to a tool.
 If the Spotify app isn't running, NIA opens it (through Windows' `spotify:` link — no
 shell, nothing to approve) and waits for it to come online; if it's open but idle,
 playback starts on it anyway, preferring this PC over a phone. When no song is named, she
-picks at random from **Random music picks** in the control panel (`music_moods`, a
-comma-separated list of playlist searches) and starts at a random track with shuffle on.
+picks at random from **Random music picks** in the settings panel (`music_moods`, a
+comma-separated list of playlist searches), trying other picks if a search finds nothing, and
+starts at a random track with shuffle on. A song is played inside its album, starting at that
+track — Spotify's desktop app silently ignores a lone track sent on its own. If a freshly
+opened app isn't ready yet (a 404), she retries once.
 After every play she checks the music really started: a stuck Spotify app accepts
-commands but loads nothing, and she'll say so rather than claim it's playing. When the
-login expires ("Refresh token expired"), use **Spotify login** in the control panel.
+commands but loads nothing, and she'll say so rather than claim it's playing — offering a
+restart, but never a second one within 10 minutes. When the
+login expires ("Refresh token expired"), use **Spotify login** in the settings panel.
 
 ### YouTube
 
@@ -170,12 +199,37 @@ login expires ("Refresh token expired"), use **Spotify login** in the control pa
 |---|---|
 | **Play** | "play X on YouTube" searches and opens the top result in your browser |
 | **Transcript** | "summarize this video" reads what's said in the video last played (or a link, ID or search) |
+| **Websites** | "open Google", "show me the news" — any http(s) address, opened in your browser |
 
 No API key or account: search goes through [yt-dlp](https://github.com/yt-dlp/yt-dlp)
 and transcripts through [youtube-transcript-api](https://github.com/jdepoix/youtube-transcript-api).
-Neither needs a spoken yes — the only thing they can open is a youtube.com watch link.
+None of these needs a spoken yes — they can only open a web address in the browser, never
+run anything, and at most one tab every 15 seconds.
 YouTube returns no results at all for some searches (age-restricted artists, for one);
 NIA says so. Long transcripts are cut to the first few minutes to fit Bonsai's context.
+
+### Memory
+
+NIA remembers across restarts, and only what's relevant reaches the LLM ([agent/memory.py](agent/memory.py)):
+
+- **Facts** — "remember that Priya's birthday is June 3" (or anything lasting you mention) is saved
+  with the `remember` tool; "forget …" deletes it.
+- **Past exchanges** — every finished turn is saved too.
+- **Recall by meaning** — each message is embedded with [EmbeddingGemma](https://ollama.com/library/embeddinggemma)
+  (on the CPU through Ollama, ~25 ms) and the few most similar memories — at most 4, only above the
+  match threshold — are attached to it. An off-topic message gets none.
+- **A short working history** — the LLM sees only recent exchanges (4 to 8; it cuts in steps of 4 so
+  llama-server's prompt cache survives most turns). Older ones come back through recall when they
+  matter, so the conversation stays around 6K tokens instead of growing until it's summarized.
+
+Memories live in `memory/nia_memory.sqlite` (kept out of git), searched by plain cosine similarity —
+milliseconds into the thousands. Set it up once with `ollama pull embeddinggemma`; clear **Memory
+embedding model** in the settings panel to turn memory off. EmbeddingGemma was picked over all-minilm,
+granite-embedding and nomic-embed-text because it alone separated relevant memories (similarity ≥ 0.29)
+from off-topic questions (≤ 0.16) on a test set.
+
+Most of each request is fixed, though: NIA's instructions and ~30 tool definitions are ~5.3K tokens
+every turn, cached by llama-server. Memory bounds the part that grows, not that.
 
 ### Her own voice
 
@@ -221,7 +275,7 @@ ollama create openthai-cpu -f openthai-cpu.Modelfile
 ```
 
 The Modelfile adds the `decision` capability the upstream build is missing and keeps it off the GPU.
-Clear **Approval model** in the control panel to skip this layer (anything not on the allowlist
+Clear **Approval model** in the settings panel to skip this layer (anything not on the allowlist
 then asks). [eval_approval.py](eval_approval.py) re-runs the 40 commands the design was chosen on
 (20 harmless, 20 risky, 16 of them unseen by the questions): currently 20/20 harmless run, 0/20
 risky. Every decision and its scores are logged.
@@ -233,7 +287,9 @@ account of what they do, and anything that deletes, closes programs, shuts down,
 touches the registry is always added out loud ("Note that it deletes files"), however
 harmless the description sounds. Only a clear yes ("yes", "go ahead", "do it") runs it. Anything
 else, including "yes… no wait", refuses it, and a question left unanswered for 60
-seconds expires. **There is no sandbox:** the shell and files are the real PC, and that
+seconds expires. A no holds for the rest of that turn: she doesn't try another way to do
+it (no YouTube in place of a refused command) — every tool but the read-only ones is
+blocked until you ask for something new. **There is no sandbox:** the shell and files are the real PC, and that
 spoken yes is the only guard — anyone within earshot can answer it.
 
 ## Tests
@@ -241,34 +297,47 @@ spoken yes is the only guard — anyone within earshot can answer it.
 ```bash
 python test_agent.py
 python test_voice.py
+python test_nia.py
 ```
 
 [test_voice.py](test_voice.py) checks the fuzzy wake-phrase matcher against real Moonshine
 transcripts — what should wake her, what shouldn't, and where the threshold cuts — plus
-the cleanup of replies before they're spoken and her voice volume.
+the cleanup of replies before they're spoken (markdown, the ~40-word cut), how her name
+alone and clipped fragments are recognised, greetings, her voice volume, each sentence's loudness
+curve, and the voice loop driven from the window: typed commands, the mic button (wake, sleep,
+push-to-talk), settings that apply at once, and quitting.
+
+[test_nia.py](test_nia.py) checks the window's script: the page and its live state stream, typed
+commands and mic presses reaching the assistant, settings validated, saved and applied (at once, or by
+restarting only what needs it), and that no other web page can drive NIA.
 
 [test_agent.py](test_agent.py) runs the real Deep Agent offline with a scripted model, a
 fake Spotify client, a stubbed YouTube and an in-memory filesystem, so it needs no
 network, no mic, no LLM server — and never touches the real PC. It checks that tool calls
 reach the right place, that tool errors go back to the model instead of crashing, that PC
 changes wait for a clear spoken yes (and a late or hedged one refuses), that long tool
-results are cut and an overflowing conversation starts fresh, and that YouTube opens only
-watch links without asking.
+results are cut and an overflowing conversation starts fresh, that YouTube and websites open
+only web addresses without asking, that a no blocks other actions that turn, and the Spotify
+fixes from a real session (album playback, 404 retry, no repeat restarts).
 
 ## Layout
 
 ```
-main.py                             entry point
-ui.py                               control panel: settings, start/stop everything
-settings.py                         setting defaults (overrides in settings.json)
+nia.py                              start here: NIA's window, with the LLM server and assistant behind it
+hud/hud.html                        the window itself (HUD, settings panel)
+main.py                             the assistant on its own (nia.py runs it hidden)
+settings.py                         setting defaults and checks (overrides in settings.json)
 voice_assistant/voice_assistant.py  state machine, STT, TTS
-run_bonsai.bat                      starts the LLM server (llama-server + Bonsai)
+utils/hud.py                        the assistant's link to the window
+agent/server.py                     the LLM server command and health check
+run_bonsai.bat                      starts just the LLM server (llama-server + Bonsai)
 agent/chat.py                       Deep Agent, PC backend, approvals, Spotify tools
 agent/action_controller.py          Spotify operations (and re-login: python -m agent.action_controller)
 agent/youtube.py                    YouTube tools
+agent/memory.py                     long-term memory: facts and past exchanges, recalled by vector search
 agent/prompts/                      system prompt
 preprocess_voice.py                 builds a speaker embedding from a voice sample
-test_agent.py, test_voice.py         offline tests
+test_agent.py, test_voice.py, test_nia.py  offline tests
 eval_approval.py                    live check of the approval layers (needs Ollama)
 agent/approval.py                   which PC commands run without asking
 openthai-cpu.Modelfile              builds the approval model for Ollama
@@ -283,7 +352,7 @@ test.py                             text-only REPL
   Anyone within earshot can currently issue commands.
 - **Replies take ~2–4 s** from the end of your sentence: Bonsai reads the prompt and
   tools, calls a tool, then words the result. Kokoro adds ~1 s before speech starts; pick
-  `piper_en_US-lessac-medium` as the voice in the control panel for ~0.2 s, sounding
+  `piper_en_US-lessac-medium` as the voice in the settings panel for ~0.2 s, sounding
   more robotic.
 - **Spotify must be open somewhere.** An idle app is woken, but with no Spotify app
   running at all there's nothing to play on.
@@ -303,7 +372,9 @@ license; see its page.
 | [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) and [Piper](https://github.com/rhasspy/piper) voices | NIA's voice, through Moonshine |
 | [spotipy](https://github.com/spotipy-dev/spotipy) | Spotify Web API client |
 | [yt-dlp](https://github.com/yt-dlp/yt-dlp) and [youtube-transcript-api](https://github.com/jdepoix/youtube-transcript-api) | YouTube search and transcripts |
+| [EmbeddingGemma](https://ollama.com/library/embeddinggemma) by Google | embeddings for NIA's memory search |
 | [OpenThai-SystemOne](https://huggingface.co/iapp/OpenThai-SystemOne-Ollama) by iApp Technology, run by [Ollama](https://github.com/ollama/ollama) | the decision model that clears harmless PC commands — chosen with the [S1MB leaderboard](https://huggingface.co/spaces/hotchpotch/S1MB-leaderboard) |
+| [Rajdhani](https://fonts.google.com/specimen/Rajdhani) and [JetBrains Mono](https://www.jetbrains.com/lp/mono/) | the window's type |
 | [pycaw](https://github.com/AndreMiras/pycaw) | turning other apps down while NIA speaks (Windows mixer) |
 | [python-dotenv](https://github.com/theskumar/python-dotenv) | loading `.env` |
 | [Resemblyzer](https://github.com/resemble-ai/Resemblyzer) | the speaker embedding in `preprocess_voice.py` |

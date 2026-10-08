@@ -1,14 +1,10 @@
-import os
-import sys
-
+"""The assistant on its own: mic, speech and agent, with no window. nia.py runs this hidden behind NIA's window;
+run it directly (python main.py) to see its log in the console."""
 from voice_assistant.voice_assistant import WakeWordDetector, logger
 
 if __name__ == "__main__":
     try:
-        detector = WakeWordDetector()
-        detector.run()
+        WakeWordDetector().run()
     except Exception:
         logger.exception("NIA crashed")
-        if os.getenv("NIA_PAUSE_ON_CRASH") and sys.stdin:  # set by ui.py, so its console window stays open to read
-            input("\nNIA crashed - the error is above and in logs/nia.log. Press Enter to close.")
         raise SystemExit(1)

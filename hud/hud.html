@@ -1,0 +1,592 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NIA</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+  /* Colours are set per theme from THEMES below; --c is the current state's colour */
+  :root { --bg: #03070A; --main: #5FE3FF; --text: #D7F6FF; --sub: #9CC2D1; --sub2: #7FA6B6; --muted: #6F95A6;
+          --off: #3E5966; --done: #7CF5C4; --rgb: 95,227,255; --c: #6B8CFF;
+          --display: Rajdhani, Bahnschrift, "Segoe UI", sans-serif;
+          --mono: "JetBrains Mono", "Cascadia Mono", Consolas, ui-monospace, monospace; }
+  html, body { margin: 0; height: 100%; background: var(--bg); overflow: hidden; }
+  a { color: var(--main); }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes spinr { to { transform: rotate(-360deg); } }
+  @keyframes wave { 0%, 100% { transform: scaleY(.3); } 50% { transform: scaleY(1); } }
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+  @keyframes breathe { 0%, 100% { transform: scale(.94); opacity: .6; } 50% { transform: scale(1); opacity: 1; } }
+  @keyframes flutter { 0% { transform: scale(1); } 20% { transform: scale(1.05); } 40% { transform: scale(.98); }
+                       60% { transform: scale(1.03); } 100% { transform: scale(1); } }
+  .rot { transform-box: fill-box; transform-origin: center; animation: spin 40s linear infinite; }
+  .rotr { transform-box: fill-box; transform-origin: center; animation: spinr 40s linear infinite; }
+  .bar { transform-origin: center; animation: wave .9s ease-in-out infinite; }
+  .blink { animation: blink 1.6s ease-in-out infinite; }
+  .core { transform-box: fill-box; transform-origin: center; }
+  .core-breathe { animation: breathe 4s ease-in-out infinite; }
+  .flutter { animation: flutter .7s ease-out 1; }
+  @media (prefers-reduced-motion: reduce) {
+    .rot, .rotr, .bar, .blink, .core-breathe, .flutter { animation: none !important; }
+  }
+  button { font: inherit; cursor: pointer; }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--main); outline-offset: 3px; }
+  input::placeholder { color: var(--muted); }
+  [hidden] { display: none !important; }
+  .sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+
+  /* The 1440x900 artboard, scaled to fit the window */
+  #stage { position: absolute; left: 50%; top: 50%; width: 1440px; height: 900px; }
+  .hud { position: relative; width: 1440px; height: 900px; box-sizing: border-box; padding: 44px 64px 40px;
+         display: grid; grid-template-columns: 260px minmax(0, 1fr) 300px; grid-template-rows: auto minmax(0, 1fr) auto;
+         column-gap: 48px; row-gap: 24px; background: var(--bg); color: var(--text); font-family: var(--mono);
+         font-size: 12px; overflow: hidden; }
+  header { grid-column: 1 / 4; display: flex; align-items: center; justify-content: space-between; }
+  .brand { font-family: var(--display); font-weight: 600; font-size: 22px; letter-spacing: 8px; }
+  .chip { display: flex; align-items: center; gap: 10px; color: var(--c); letter-spacing: 3px; font-size: 11px;
+          min-width: 120px; justify-content: center; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; flex-shrink: 0; }
+  .right { display: flex; align-items: center; gap: 16px; }
+  #clock { color: var(--sub2); letter-spacing: 3px; font-size: 11px; }
+  .icon-btn { width: 44px; height: 44px; background: transparent; border: none; display: flex; align-items: center;
+              justify-content: center; padding: 0; }
+  #gear { margin-right: -12px; color: var(--sub2); }
+  #gear[aria-expanded="true"] { color: var(--main); }
+
+  #modules { align-self: center; display: flex; flex-direction: column; gap: 18px; }
+  .module { display: flex; align-items: center; gap: 12px; }
+  .module .name { flex: 1; font-size: 12px; }
+  .module .status { font-size: 10px; letter-spacing: 2px; }
+
+  .center { display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 28px; min-height: 0; }
+  #orb { position: relative; width: 460px; height: 460px; transition: opacity .6s; }
+  #orb svg { position: absolute; inset: 0; }
+  .orb-text { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center;
+              justify-content: center; gap: 12px; text-align: center; }
+  #label { font-family: var(--display); font-weight: 500; font-size: 40px; letter-spacing: 10px; color: var(--c); line-height: 1; }
+  #sub { font-size: 11px; color: var(--sub); max-width: 220px; line-height: 1.6; }
+  #bars { display: flex; align-items: center; gap: 5px; height: 48px; }
+  #bars span { display: block; width: 2px; border-radius: 1px; background: var(--c); }
+
+  #conversation { align-self: center; display: flex; flex-direction: column; gap: 28px; }
+  .turn { display: flex; flex-direction: column; gap: 8px; }
+  .who { font-size: 10px; letter-spacing: 3px; color: var(--muted); }
+  .turn p { margin: 0; font-size: 14px; line-height: 1.6; color: var(--text); overflow-wrap: anywhere;
+            display: -webkit-box; -webkit-line-clamp: 9; -webkit-box-orient: vertical; overflow: hidden; }
+  #liveWho { color: var(--c); }
+  #liveText { color: var(--sub); }
+
+  footer { grid-column: 1 / 4; display: flex; align-items: center; justify-content: space-between; gap: 32px; }
+  #modes { display: flex; gap: 2px; flex-wrap: wrap; }
+  .mode { min-height: 44px; padding: 0 10px; border-bottom: 1px solid transparent; color: var(--muted);
+          letter-spacing: 2px; font-size: 10px; display: flex; align-items: center; gap: 8px; box-sizing: border-box; }
+  .footer-right { display: flex; align-items: center; gap: 20px; }
+  #mic { width: 56px; height: 56px; border-radius: 50%; border: 1px solid var(--c); background: transparent;
+         display: flex; align-items: center; justify-content: center; flex-shrink: 0; color: var(--c); touch-action: none; }
+  #mic.active { background: rgba(var(--rgb), .08); }
+  #cmd { width: 380px; height: 44px; box-sizing: border-box; padding: 0 4px; background: transparent; border: none;
+         border-bottom: 1px solid rgba(var(--rgb), .25); color: var(--text); font-family: var(--mono); font-size: 13px; }
+
+  /* Settings */
+  #settings { position: absolute; top: 96px; right: 52px; width: 340px; max-height: 764px; overflow-y: auto;
+              box-sizing: border-box; padding: 24px; display: flex; flex-direction: column; gap: 22px;
+              background: var(--bg); border: 1px solid rgba(var(--rgb), .2); z-index: 10;
+              scrollbar-width: thin; scrollbar-color: rgba(var(--rgb), .3) transparent; }
+  #settings[hidden] { display: none; }
+  .panel-head { display: flex; align-items: center; justify-content: space-between; }
+  .heading { font-size: 10px; letter-spacing: 3px; color: var(--sub2); }
+  .group { display: flex; flex-direction: column; gap: 6px; }
+  .caption { font-size: 10px; letter-spacing: 2px; color: var(--muted); }
+  .swatches { display: flex; margin-left: -12px; }
+  .swatch span { width: 18px; height: 18px; border-radius: 50%; box-shadow: 0 0 0 3px var(--bg), 0 0 0 4px transparent; }
+  .swatch[aria-pressed="true"] span { box-shadow: 0 0 0 3px var(--bg), 0 0 0 4px var(--text); }
+  .switch { min-height: 56px; padding: 0; background: transparent; border: none; border-top: 1px solid rgba(var(--rgb), .1);
+            display: flex; align-items: center; justify-content: space-between; gap: 12px; text-align: left; color: var(--text); width: 100%; }
+  .switch .txt { display: flex; flex-direction: column; gap: 4px; }
+  .switch .txt span:first-child { font-size: 12px; }
+  .switch .hint { font-size: 10px; color: var(--muted); }
+  .track { position: relative; width: 36px; height: 20px; border-radius: 10px; background: rgba(var(--rgb), .18); flex-shrink: 0; }
+  .knob { position: absolute; top: 2px; left: 2px; width: 16px; height: 16px; border-radius: 50%; background: var(--muted);
+          transition: left .15s; }
+  .switch[aria-checked="true"] .track { background: var(--main); }
+  .switch[aria-checked="true"] .knob { left: 18px; background: var(--bg); }
+  .field { display: flex; flex-direction: column; gap: 4px; }
+  .field label { font-size: 11px; color: var(--sub); }
+  .field input, .field select, .paste { height: 32px; box-sizing: border-box; padding: 0 4px; background: transparent; border: none;
+            border-bottom: 1px solid rgba(var(--rgb), .25); color: var(--text); font-family: var(--mono); font-size: 12px; width: 100%; }
+  .field select option { background: var(--bg); color: var(--text); }
+  .fields { display: flex; flex-direction: column; gap: 12px; }
+  .fields .switch { min-height: 44px; }
+  .text-btn { min-height: 44px; padding: 0 14px; background: transparent; border: 1px solid rgba(var(--rgb), .35);
+              color: var(--main); letter-spacing: 2px; font-size: 10px; }
+  .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .note { font-size: 11px; color: var(--sub); line-height: 1.6; min-height: 1em; }
+  .note.error { color: #FF6B5E; }
+</style>
+</head>
+<body>
+<div id="stage">
+<div class="hud" id="hud">
+  <header>
+    <span class="brand">NIA</span>
+    <div class="chip" role="status" aria-live="polite"><span class="dot blink"></span><span id="chip">BOOTING</span></div>
+    <div class="right">
+      <span id="clock"></span>
+      <button type="button" class="icon-btn" id="gear" aria-label="Settings" aria-expanded="false" aria-controls="settings">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+      </button>
+    </div>
+  </header>
+
+  <section id="modules" aria-label="Voice pipeline"></section>
+
+  <section class="center">
+    <div id="orb">
+      <svg width="460" height="460" viewBox="0 0 460 460" fill="none" aria-hidden="true">
+        <circle cx="230" cy="230" r="226" stroke="currentColor" stroke-opacity=".12" stroke-width="1"></circle>
+        <circle id="ring1" class="rot" cx="230" cy="230" r="196" stroke="currentColor" stroke-opacity=".55" stroke-width="1.5" stroke-linecap="round"></circle>
+        <circle id="ring2" class="rotr" cx="230" cy="230" r="164" stroke="currentColor" stroke-width="2" stroke-linecap="round"></circle>
+        <circle cx="230" cy="230" r="164" stroke="currentColor" stroke-opacity=".1" stroke-width="1"></circle>
+        <circle id="core" class="core" cx="230" cy="230" r="128" fill="currentColor"></circle>
+      </svg>
+      <div class="orb-text">
+        <span id="label"></span>
+        <span id="sub"></span>
+      </div>
+    </div>
+    <div id="bars" aria-hidden="true"></div>
+  </section>
+
+  <section id="conversation" aria-label="Conversation" aria-live="polite">
+    <div class="turn" id="youTurn" hidden>
+      <span class="who">YOU</span>
+      <p id="you"></p>
+    </div>
+    <div class="turn" id="liveTurn" hidden>
+      <span class="who" id="liveWho"></span>
+      <p id="liveText"></p>
+    </div>
+  </section>
+
+  <footer>
+    <div id="modes" aria-label="Assistant state"></div>
+    <div class="footer-right">
+      <button type="button" id="mic" aria-label="Start listening">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><rect x="9" y="3" width="6" height="11" rx="3"></rect><path d="M5 11a7 7 0 0 0 14 0M12 18v3"></path></svg>
+      </button>
+      <label class="sr" for="cmd">Command</label>
+      <input id="cmd" type="text" autocomplete="off" placeholder="Type, or say “Hey Nia”">
+    </div>
+  </footer>
+
+  <div id="settings" role="dialog" aria-label="Settings" hidden>
+    <div class="panel-head">
+      <span class="heading">SETTINGS</span>
+      <button type="button" class="icon-btn" id="closeSettings" aria-label="Close settings" style="margin: -12px -12px -12px 0">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true" style="color: var(--sub)"><path d="M6 6l12 12M18 6L6 18"></path></svg>
+      </button>
+    </div>
+    <div class="group">
+      <span class="caption">THEME</span>
+      <div class="swatches" id="swatches"></div>
+    </div>
+    <div id="toggles"></div>
+    <form id="form" class="group" style="gap: 22px" novalidate></form>
+    <div class="group">
+      <span class="caption">SPOTIFY</span>
+      <div class="actions"><button type="button" class="text-btn" id="spotifyLogin">LOG IN TO SPOTIFY</button></div>
+      <div id="spotifyPaste" hidden class="group" style="gap: 8px">
+        <label class="note" for="pasteUrl">Approve NIA in the browser tab that opened, then paste the address it lands on here.</label>
+        <input class="paste" id="pasteUrl" type="text" autocomplete="off" placeholder="https://…?code=…">
+        <div class="actions"><button type="button" class="text-btn" id="spotifyConnect">CONNECT</button></div>
+      </div>
+      <span class="note" id="spotifyNote" role="status"></span>
+    </div>
+    <div class="group">
+      <span class="caption">LLM SERVER</span>
+      <div class="actions"><button type="button" class="text-btn" id="serverRestart">RESTART SERVER</button></div>
+      <span class="note">Logs: logs/nia.log · logs/llama-server.log</span>
+    </div>
+  </div>
+</div>
+</div>
+
+<script>
+const THEMES = {
+  cyan:   { main: '#5FE3FF', done: '#7CF5C4', text: '#D7F6FF', sub: '#9CC2D1', sub2: '#7FA6B6', muted: '#6F95A6', off: '#3E5966', rgb: '95,227,255',  bg: '#03070A',
+            s: { booting: '#94A3B8', asleep: '#6B8CFF', awake: '#5FE3FF', ripple: '#B8F3FF', thinking: '#FFB547', speaking: '#7CF5C4', offline: '#FF5A4E' } },
+  gold:   { main: '#FFC857', done: '#A8E07A', text: '#FFF3DC', sub: '#D6C29C', sub2: '#B8A57F', muted: '#9F8C6C', off: '#5A4D36', rgb: '255,200,87',  bg: '#070503',
+            s: { booting: '#A8A29E', asleep: '#8C93FF', awake: '#FFC857', ripple: '#FFE3A3', thinking: '#5FE3FF', speaking: '#A8E07A', offline: '#FF5A4E' } },
+  ice:    { main: '#DDEBF2', done: '#8FE3B0', text: '#F2F8FB', sub: '#AEBEC7', sub2: '#93A3AC', muted: '#7F8F99', off: '#3F4B52', rgb: '221,235,242', bg: '#050607',
+            s: { booting: '#8E9AA6', asleep: '#7E9BFF', awake: '#DDEBF2', ripple: '#FFFFFF', thinking: '#FFB547', speaking: '#7CF5C4', offline: '#FF6B5E' } },
+  mint:   { main: '#7CF5C4', done: '#E6FFF5', text: '#DFFBEF', sub: '#A3CFBC', sub2: '#86B3A0', muted: '#6F9D8A', off: '#3A5A4D', rgb: '124,245,196', bg: '#030806',
+            s: { booting: '#94A3B8', asleep: '#6B8CFF', awake: '#7CF5C4', ripple: '#C4FBE4', thinking: '#FF8A5B', speaking: '#5FE3FF', offline: '#FF5A6E' } },
+  violet: { main: '#B9A3FF', done: '#7CF5C4', text: '#EEE8FF', sub: '#BDB3DB', sub2: '#A398C4', muted: '#9087B0', off: '#4A4466', rgb: '185,163,255', bg: '#06040B',
+            s: { booting: '#A3A3B8', asleep: '#5FA8FF', awake: '#B9A3FF', ripple: '#DCD1FF', thinking: '#FFD166', speaking: '#7CF5C4', offline: '#FF5A4E' } },
+  red:    { main: '#FF5A4E', done: '#F3E6E4', text: '#FFE7E4', sub: '#D6AEA9', sub2: '#BC9690', muted: '#A9837E', off: '#5C3A36', rgb: '255,90,78',   bg: '#080303',
+            s: { booting: '#A8A29E', asleep: '#6B8CFF', awake: '#FF5A4E', ripple: '#FFA79F', thinking: '#FFD166', speaking: '#7CF5C4', offline: '#8C8C94' } }
+};
+const THEME_NAMES = { cyan: 'Cyan', gold: 'Arc gold', ice: 'Ice white', mint: 'Mint', violet: 'Violet', red: 'Red alert' };
+// How each state looks: ring periods (s), core glow and animation, ring dashes
+const LOOK = {
+  booting:  { label: 'BOOTING',     short: 'BOOT',   d: [6, 3],    glow: 0.05, core: 'core-breathe', dash: ['60 40', '30 30'] },
+  asleep:   { label: 'STANDING BY', short: 'SLEEP',  d: [120, 90], glow: 0.04, core: 'core-breathe', dash: ['260 972', '120 910'] },
+  awake:    { label: 'LISTENING',   short: 'LISTEN', d: [28, 12],  glow: 0.08, core: '',             dash: ['260 972', '120 910'] },
+  thinking: { label: 'THINKING',    short: 'THINK',  d: [10, 4],   glow: 0.08, core: '',             dash: ['260 972', '120 910'] },
+  speaking: { label: '',            short: 'SPEAK',  d: [20, 8],   glow: 0.16, core: '',             dash: ['260 972', '120 910'] },
+  offline:  { label: 'OFFLINE',     short: 'OFF',    d: [1, 1],    glow: 0,    core: '',             dash: ['260 972', '120 910'] }
+};
+// The voice pipeline column: [status, kind] per state - a = active, d = done, o = idle
+const PIPELINE = {
+  booting:  [['LOADING', 'a'], ['LOADING', 'a'], ['LOADING', 'a'], ['CONNECTING', 'a'], ['LOADING', 'a'], ['LOADING', 'a']],
+  asleep:   [['LISTENING', 'a'], ['READY', 'd'], ['READY', 'd'], ['READY', 'd'], ['READY', 'd'], ['READY', 'd']],
+  awake:    [['HEARD', 'd'], ['LIVE', 'a'], ['YOU', 'd'], ['READY', 'o'], ['READY', 'o'], ['READY', 'o']],
+  thinking: [['HEARD', 'd'], ['DONE', 'd'], ['YOU', 'd'], ['BONSAI', 'a'], ['READY', 'o'], ['READY', 'o']],
+  speaking: [['ARMED', 'd'], ['DONE', 'd'], ['YOU', 'd'], ['DONE', 'd'], ['DONE', 'd'], ['LIVE', 'a']],
+  offline:  [['OFF', 'o'], ['OFF', 'o'], ['OFF', 'o'], ['OFF', 'o'], ['OFF', 'o'], ['OFF', 'o']]
+};
+const MODULES = ['Wake word', 'Speech to text', 'Speaker', 'Reasoning', 'Tools', 'Voice'];
+const SPOTIFY = /^(now_playing|play|play_something|restart_spotify|add_to_queue|pause|resume|skip|set_volume|change_volume|shuffle|repeat)$/;
+const toolLabel = (name) => SPOTIFY.test(name) ? 'SPOTIFY' : /youtube/.test(name) ? 'YOUTUBE'
+  : name === 'open_link' ? 'BROWSER' : name === 'execute' ? 'SHELL' : /file|^ls$|glob|grep|delete/.test(name) ? 'FILES'
+  : /remember|forget/.test(name) ? 'MEMORY' : name === 'task' ? 'AGENT' : /voice_volume/.test(name) ? 'VOICE'
+  : name.replace(/_/g, ' ').toUpperCase().slice(0, 10);
+
+const $ = (id) => document.getElementById(id);
+const post = (path, data) => fetch(path, { method: 'POST', headers: { 'X-NIA': '1', 'Content-Type': 'application/json' },
+                                             body: JSON.stringify(data || {}) });
+let config = { author: 'you', wake_phrase: 'hey nia', theme: 'cyan', wake_word: true, push_to_talk: false, spoken_replies: true, voice: '', voice_speed: 1 };
+let t = THEMES.cyan;
+let mode = 'booting', ripple = false, rippleTimer = null, tool = null, server = 'loading', error = null;
+let you = '', nia = '', partial = '';
+let envelope = null, envelopeFps = 60, envelopeStart = 0, level = 0;
+
+// ---- Fit the 1440x900 artboard to the window
+function fit() {
+  const scale = Math.min(innerWidth / 1440, innerHeight / 900);
+  $('stage').style.transform = `translate(-50%, -50%) scale(${scale})`;
+}
+addEventListener('resize', fit);
+fit();
+
+// ---- Clock
+function tick() {
+  const now = new Date();
+  const time = now.toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+  const day = now.toLocaleDateString('en-GB', { weekday: 'short', day: '2-digit', month: 'short' }).replace(',', '');
+  $('clock').textContent = `${time} · ${day}`.toUpperCase();
+}
+setInterval(tick, 10000);
+tick();
+
+// ---- Static parts built once
+const modulesEl = $('modules');
+MODULES.forEach((name) => {
+  modulesEl.insertAdjacentHTML('beforeend',
+    `<div class="module"><span class="dot"></span><span class="name">${name}</span><span class="status"></span></div>`);
+});
+const bars = [];
+for (let i = 0; i < 32; i++) {
+  const span = document.createElement('span');
+  span.className = 'bar';
+  span.style.animationDelay = ((i % 12) * 0.07).toFixed(2) + 's';
+  $('bars').appendChild(span);
+  bars.push(span);
+}
+const MODES = [['booting', 'BOOT'], ['asleep', 'SLEEP'], ['awake', 'LISTEN'], ['ripple', 'RIPPLE'], ['thinking', 'THINK'],
+               ['speaking', 'SPEAK'], ['offline', 'OFF']];
+MODES.forEach(([key, short]) => {
+  $('modes').insertAdjacentHTML('beforeend', `<span class="mode" data-mode="${key}"><span class="dot"></span>${short}</span>`);
+});
+
+function applyTheme(name) {
+  t = THEMES[name] || THEMES.cyan;
+  const root = document.documentElement.style;
+  for (const k of ['bg', 'main', 'text', 'sub', 'sub2', 'muted', 'off', 'done', 'rgb']) root.setProperty('--' + k, t[k]);
+  document.querySelectorAll('.swatch').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.theme === name)));
+}
+
+const wakeWords = () => config.wake_phrase.replace(/\b\w/g, (c) => c.toUpperCase());
+
+// ---- Everything that changes with NIA's state (per event, not per frame)
+function render() {
+  const rip = ripple && mode === 'awake';
+  const look = LOOK[mode];
+  const color = rip ? t.s.ripple : t.s[mode];
+  document.documentElement.style.setProperty('--c', color);
+  $('chip').textContent = look.label || 'SPEAKING';
+  $('label').textContent = look.label;
+
+  const subs = {
+    booting: server === 'loading' ? 'Loading speech models · connecting to Bonsai' : 'Loading speech models',
+    asleep: config.wake_word ? `Waiting for “${wakeWords()}”` : config.push_to_talk ? 'Hold the mic to talk' : 'Tap the mic to talk',
+    awake: rip ? '' : 'Waiting for your command',
+    thinking: tool ? `Bonsai · ${toolLabel(tool).toLowerCase()}` : 'Asking Bonsai',
+    speaking: '',
+    offline: error ? 'Stopped unexpectedly · tap the mic to restart' : 'Stopped · tap the mic to restart'
+  };
+  $('sub').textContent = server === 'down' && mode !== 'offline' ? 'The LLM server stopped · see logs/llama-server.log' : subs[mode];
+
+  // Orb
+  const orb = $('orb');
+  orb.style.color = color;
+  orb.style.opacity = mode === 'offline' ? 0.45 : 1;
+  const ringPlay = mode === 'offline' ? 'paused' : 'running';
+  const ring1 = $('ring1'), ring2 = $('ring2');
+  ring1.setAttribute('stroke-dasharray', look.dash[0]);
+  ring2.setAttribute('stroke-dasharray', look.dash[1]);
+  ring1.style.animationDuration = look.d[0] + 's';
+  ring2.style.animationDuration = look.d[1] + 's';
+  ring1.style.animationPlayState = ring2.style.animationPlayState = ringPlay;
+  const core = $('core');
+  core.setAttribute('class', 'core ' + look.core);
+  if (mode !== 'speaking') {
+    core.style.transform = '';
+    core.setAttribute('fill-opacity', rip ? 0.18 : look.glow);
+  }
+
+  // Bars (speaking ones are driven per frame by the voice)
+  const play = mode === 'asleep' || mode === 'offline' ? 'paused' : 'running';
+  bars.forEach((bar, i) => {
+    const env = Math.sin((i / 31) * Math.PI);
+    let h = 2;
+    if (mode === 'awake') h = rip ? 8 + Math.round(40 * env * Math.abs(Math.sin(i * 0.9) * 0.7 + Math.cos(i * 0.37) * 0.3))
+                                  : 3 + Math.round(8 * env * Math.abs(Math.sin(i * 0.9)));
+    if (mode === 'thinking' || mode === 'booting') h = 3 + Math.round(6 * env);
+    if (mode !== 'speaking') bar.style.height = h + 'px';
+    bar.style.opacity = (0.3 + 0.7 * env).toFixed(2);
+    bar.style.animationPlayState = play;
+  });
+
+  // Pipeline column
+  const rows = PIPELINE[mode].map((row) => row.slice());
+  rows[2][0] = mode === 'booting' || mode === 'offline' || mode === 'asleep' ? rows[2][0] : config.author.toUpperCase().slice(0, 10);
+  if (!config.wake_word && mode !== 'offline') rows[0] = config.push_to_talk ? ['HOLD MIC', 'o'] : ['OFF', 'o'];
+  if (mode === 'thinking' && tool) rows[4] = [toolLabel(tool), 'a'];
+  if (mode === 'speaking' && !tool) rows[4] = ['READY', 'o'];
+  if (mode === 'speaking' && !config.spoken_replies) rows[5] = ['MUTED', 'o'];
+  if (server === 'loading' && mode !== 'offline') rows[3] = ['LOADING', 'a'];
+  if (server === 'down') rows[3] = ['DOWN', 'o'];
+  modulesEl.querySelectorAll('.module').forEach((el, i) => {
+    const [status, kind] = rows[i];
+    const dot = kind === 'a' ? color : kind === 'd' ? t.done : t.off;
+    el.querySelector('.dot').style.background = dot;
+    el.querySelector('.name').style.color = kind === 'a' ? t.text : t.sub2;
+    const st = el.querySelector('.status');
+    st.textContent = status;
+    st.style.color = dot;
+  });
+
+  // Footer: which state she's in
+  document.querySelectorAll('.mode').forEach((el) => {
+    const key = el.dataset.mode;
+    const on = key === 'ripple' ? rip : key === mode && !(key === 'awake' && rip);
+    const c = key === 'ripple' ? t.s.ripple : t.s[key];
+    el.querySelector('.dot').style.background = c;
+    el.style.color = on ? c : t.muted;
+    el.style.borderBottomColor = on ? c : 'transparent';
+    el.setAttribute('aria-current', on ? 'true' : 'false');
+  });
+
+  // Mic
+  const idle = mode === 'asleep' || mode === 'offline';
+  const mic = $('mic');
+  mic.classList.toggle('active', !idle);
+  mic.setAttribute('aria-label', mode === 'offline' ? 'Restart Nia' : config.push_to_talk ? 'Hold to talk'
+                                 : idle ? 'Start listening' : 'Stop listening');
+  $('cmd').placeholder = config.wake_word ? `Type, or say “${wakeWords()}”` : 'Type a command';
+
+  // Conversation
+  $('youTurn').hidden = !you;
+  $('you').textContent = you;
+  let live = null;
+  if (rip && partial) live = ['NIA · HEARING', `“…${partial}”`];
+  else if (mode === 'thinking') live = ['NIA · THINKING', tool ? `Using ${toolLabel(tool).toLowerCase()}…` : 'Asking Bonsai…'];
+  else if (nia) live = ['NIA', nia];
+  $('liveTurn').hidden = !live;
+  if (live) { $('liveWho').textContent = live[0]; $('liveText').textContent = live[1]; }
+}
+
+// ---- Per frame: the core and bars follow the words being spoken
+function frame(now) {
+  let target = 0;
+  if (envelope) {
+    const i = Math.floor((now - envelopeStart) / 1000 * envelopeFps);
+    if (i < envelope.length) target = envelope[i];
+  }
+  level += (target - level) * (target > level ? 0.55 : 0.14);  // quick to rise with a syllable, slower to fall
+  if (mode === 'speaking') {
+    const core = $('core');
+    core.style.transform = `scale(${(0.9 + 0.22 * level).toFixed(3)})`;
+    core.setAttribute('fill-opacity', (0.1 + 0.12 * level).toFixed(3));
+    const phase = now / 160;
+    bars.forEach((bar, i) => {
+      const env = Math.sin((i / 31) * Math.PI);
+      const shape = Math.abs(Math.sin(i * 0.55 + phase) * 0.6 + Math.cos(i * 1.3 - phase * 0.7) * 0.4);
+      bar.style.height = (4 + Math.round(42 * env * shape * (0.2 + 0.8 * level))) + 'px';
+    });
+  }
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ---- NIA's state, streamed by nia.py
+const events = new EventSource('/events');
+events.onmessage = (e) => {
+  const m = JSON.parse(e.data);
+  if (m.config) { config = { ...config, ...m.config }; applyTheme(config.theme); renderToggles(); }
+  if ('server' in m) server = m.server;
+  if ('error' in m) error = m.error;
+  if ('you' in m) { you = m.you; tool = null; partial = ''; nia = ''; }
+  if ('tool' in m) tool = m.tool;
+  if ('nia' in m) nia = m.nia;
+  if (m.partial) {
+    partial = m.partial;
+    ripple = true;
+    const orb = $('orb');
+    orb.classList.remove('flutter');
+    void orb.offsetWidth;  // restart the flutter for each new word
+    orb.classList.add('flutter');
+    clearTimeout(rippleTimer);
+    rippleTimer = setTimeout(() => { ripple = false; render(); }, 700);
+  }
+  if (m.state) {
+    if (m.state !== mode && m.state === 'awake') tool = null;
+    mode = m.state;
+    envelope = m.envelope || null;
+    if (m.envelope) { envelopeFps = m.fps; envelopeStart = performance.now(); }
+  }
+  render();
+};
+events.onerror = () => { mode = 'offline'; error = null; render(); };
+
+// ---- Typing
+$('cmd').addEventListener('keydown', (e) => {
+  const text = $('cmd').value.trim();
+  if (e.key !== 'Enter' || !text) return;
+  post('/command', { text });
+  you = text; nia = ''; tool = null;
+  $('cmd').value = '';
+  render();
+});
+
+// ---- Mic: tap to wake or sleep, hold for push-to-talk, tap to restart when offline
+const mic = $('mic');
+let holding = false;
+mic.addEventListener('click', () => {
+  if (config.push_to_talk && mode !== 'offline') return;
+  if (mode === 'offline') post('/mic', { action: 'restart' });
+  else post('/mic', { action: mode === 'asleep' ? 'wake' : 'sleep' });
+});
+const pttDown = () => { if (config.push_to_talk && mode !== 'offline' && !holding) { holding = true; post('/mic', { action: 'ptt_down' }); } };
+const pttUp = () => { if (holding) { holding = false; post('/mic', { action: 'ptt_up' }); } };
+mic.addEventListener('pointerdown', pttDown);
+['pointerup', 'pointerleave', 'pointercancel'].forEach((ev) => mic.addEventListener(ev, pttUp));
+mic.addEventListener('keydown', (e) => { if (e.key === ' ' && !e.repeat) { e.preventDefault(); pttDown(); } });
+mic.addEventListener('keyup', (e) => { if (e.key === ' ') pttUp(); });
+
+// ---- Settings
+const panel = $('settings'), gear = $('gear');
+function openSettings(open) {
+  panel.hidden = !open;
+  gear.setAttribute('aria-expanded', String(open));
+  if (open) { loadForm(); $('closeSettings').focus(); } else gear.focus();
+}
+gear.addEventListener('click', () => openSettings(panel.hidden));
+$('closeSettings').addEventListener('click', () => openSettings(false));
+document.addEventListener('keydown', (e) => { if (e.key === 'Escape' && !panel.hidden) openSettings(false); });
+
+Object.keys(THEMES).forEach((key) => {
+  $('swatches').insertAdjacentHTML('beforeend',
+    `<button type="button" class="icon-btn swatch" data-theme="${key}" aria-label="${THEME_NAMES[key]} theme" aria-pressed="false">
+       <span style="background:${THEMES[key].main}"></span></button>`);
+});
+$('swatches').addEventListener('click', (e) => {
+  const b = e.target.closest('.swatch');
+  if (b) { applyTheme(b.dataset.theme); post('/settings', { hud_theme: b.dataset.theme }); }
+});
+
+// The three switches from the design; they apply at once
+const TOGGLES = [['wake_word', 'Wake word', () => `“${wakeWords()}”`], ['push_to_talk', 'Push to talk', () => 'Hold the mic to speak'],
+                 ['spoken_replies', 'Spoken replies', () => `${config.voice.replace(/^kokoro_|^piper_/, '')} · ${config.voice_speed}×`]];
+function switchHtml(key, name, hint, on) {
+  return `<button type="button" class="switch" role="switch" data-key="${key}" aria-checked="${on}">
+    <span class="txt"><span>${name}</span><span class="hint">${hint}</span></span>
+    <span class="track"><span class="knob"></span></span></button>`;
+}
+function renderToggles() {
+  $('toggles').innerHTML = TOGGLES.map(([key, name, hint]) => switchHtml(key, name, hint(), !!config[key])).join('');
+}
+$('toggles').addEventListener('click', (e) => {
+  const b = e.target.closest('.switch');
+  if (!b) return;
+  const on = b.getAttribute('aria-checked') !== 'true';
+  b.setAttribute('aria-checked', String(on));
+  config[b.dataset.key] = on;
+  post('/settings', { [b.dataset.key]: on });
+  render();
+});
+
+// Every other setting, as a form; saving restarts whatever needs it
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+async function loadForm() {
+  const { values, fields, voices, stt_models } = await (await fetch('/settings')).json();
+  const form = $('form');
+  const options = (list, value) => list.map((v) => `<option${v === value ? ' selected' : ''}>${esc(v)}</option>`).join('');
+  form.innerHTML = fields.map(([section, items]) => `<div class="group fields">
+      <span class="caption">${esc(section.toUpperCase())}</span>
+      ${items.map(([key, label, kind]) => {
+        const id = 'f_' + key, v = values[key];
+        if (kind === 'check') return switchHtml(key, esc(label), '', !!v).replace('class="switch"', 'class="switch field-switch"');
+        const input = kind === 'voice' ? `<select id="${id}" name="${key}">${options(voices, v)}</select>`
+          : kind === 'stt' ? `<select id="${id}" name="${key}">${options(stt_models, v)}</select>`
+          : `<input id="${id}" name="${key}" type="text" inputmode="${kind === 'number' ? 'decimal' : 'text'}" value="${esc(v)}" autocomplete="off">`;
+        return `<div class="field"><label for="${id}">${esc(label)}</label>${input}</div>`;
+      }).join('')}
+    </div>`).join('') +
+    `<div class="group"><div class="actions"><button type="submit" class="text-btn">SAVE</button></div>
+       <span class="note" id="formNote" role="status"></span></div>`;
+}
+$('form').addEventListener('click', (e) => {
+  const b = e.target.closest('.field-switch');
+  if (b) b.setAttribute('aria-checked', String(b.getAttribute('aria-checked') !== 'true'));
+});
+$('form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const data = {};
+  $('form').querySelectorAll('input[name], select[name]').forEach((el) => { data[el.name] = el.value; });
+  $('form').querySelectorAll('.field-switch').forEach((b) => { data[b.dataset.key] = b.getAttribute('aria-checked') === 'true'; });
+  const note = $('formNote');
+  const res = await post('/settings', data);
+  const body = await res.json();
+  note.classList.toggle('error', !res.ok);
+  if (!res.ok) { note.textContent = body.error; return; }
+  const r = body.restarting;
+  note.textContent = !r.length ? 'Saved.' : r.includes('server')
+    ? 'Saved. Restarting the LLM server and NIA to apply it (about 30 s).'
+    : 'Saved. Restarting NIA to apply it (a few seconds).';
+});
+
+$('serverRestart').addEventListener('click', () => post('/server/restart'));
+$('spotifyLogin').addEventListener('click', async () => {
+  await post('/spotify/login');
+  $('spotifyPaste').hidden = false;
+  $('spotifyNote').textContent = '';
+  $('pasteUrl').focus();
+});
+$('spotifyConnect').addEventListener('click', async () => {
+  const res = await post('/spotify/code', { url: $('pasteUrl').value });
+  const note = $('spotifyNote');
+  note.classList.toggle('error', !res.ok);
+  note.textContent = res.ok ? 'Logged in to Spotify.' : (await res.json()).error;
+  if (res.ok) { $('spotifyPaste').hidden = true; $('pasteUrl').value = ''; }
+});
+
+applyTheme('cyan');
+renderToggles();
+render();
+</script>
+</body>
+</html>

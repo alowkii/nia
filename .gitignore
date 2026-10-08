@@ -227,3 +227,9 @@ __marimo__/
 .streamlit/secrets.toml
 # NIA personal settings (defaults live in settings.py)
 settings.json
+
+# NIA long-term memory (personal: facts and past conversations)
+memory/
+
+# The window's own browser profile (nia.py)
+.hud-browser/
