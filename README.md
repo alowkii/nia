@@ -65,7 +65,10 @@ instead of an action.
 
 **Manner:** JARVIS from Iron Man — formal, unhurried and dry: *"Very good, sir. The browser stays."*,
 *"I'm afraid Spotify won't play, sir — even after a restart."* No exclamation
-marks or "Enjoy!", and no wit when something has failed. Waking her after a while gets a greeting,
+marks or "Enjoy!", and no wit when something has failed. **Numbers are always words**, in her voice and in the
+window alike: *"forty percent"*, *"twenty twenty-six"*, *"nine oh five"*, *"six dollars and thirty cents"*,
+*"version one point oh point one"* ([utils/words.py](utils/words.py)) - links stay as they are. Waking her after a
+while gets a greeting,
 picked from **Greetings** in the settings panel (`|` between them) plus a few for the hour: *"Good morning,
 sir."* at 8, *"Burning the midnight oil, sir?"* at 2 am. Called again within half an hour of talking, she
 just answers *"Sir?"* or *"Yes, sir?"*, as someone already in the room would. "Nia, …" with her name first
@@ -428,7 +431,7 @@ python tests/test_nia.py
 
 [tests/test_voice.py](tests/test_voice.py) checks the fuzzy wake-phrase matcher against real Moonshine
 transcripts — what should wake her, what shouldn't, and where the threshold cuts — plus
-the cleanup of replies before they're spoken (markdown, the ~40-word cut), how her name
+the cleanup of replies before they're spoken (markdown, the ~40-word cut, numbers as words), how her name
 alone and clipped fragments are recognised, greetings, her voice volume, each sentence's loudness
 curve, the ready chime (warm, never tinny, no click, played once she's ready), and the voice loop driven from
 the window: typed commands, the mic button (wake, sleep, push-to-talk), settings that apply at once, asking to
@@ -464,7 +467,7 @@ agent/claude.py                     asking Claude Code, and building changes to 
 agent/memory.py                     long-term memory and skills, recalled by vector search
 agent/server.py                     the LLM server command and health check
 agent/prompts/                      system prompt
-utils/                              the assistant's link to the window, microphones, logging
+utils/                              the assistant's link to the window, microphones, logging, numbers as words
 assets/logo/                        the NIA logo: SVG and PNG in every lockup, app icons, favicon
 assets/screenshots/                 the window, for this README
 tests/                              the offline test suites (test_agent, test_voice, test_nia)

@@ -24,6 +24,7 @@ from langgraph.types import Command
 
 import settings
 from utils.hud import hud
+from utils.words import in_words
 from . import approval, claude, web, youtube
 from .server import SERVER_LOG, llm_server_command, llm_up
 from .approval import risks
@@ -454,7 +455,7 @@ class AssistantModel:
                 self.recent.append(memory_id)
         if isinstance(reply, str) and reply and quiet_success(result["messages"]):
             logger.info(f"Done quietly - shown, not said: {reply!r}")
-            hud.send(nia=reply)  # in the window, for the record
+            hud.send(nia=in_words(reply))  # in the window, for the record - numbers as words, as she'd say them
             reply = ""  # the music starting is the answer: nothing to say over it
         return reply
 
