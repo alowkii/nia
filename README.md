@@ -214,7 +214,7 @@ Everything lands in `logs/`:
 
 | File | What's in it |
 |---|---|
-| `nia.log` | Each turn — what was heard or typed (and transcription latency), tool calls with arguments and results (a shell command, its approval decision and its output, as much as NIA saw), the reply, LLM and speech timings — plus each step Claude took (every search, page, edit and command), each time the conversation is summarized to fit Bonsai's context (how much, how long, and where the full text went - `conversation_history/` in your home folder), startup, settings changes, and every crash with its full traceback. Rotates at 5 MB, keeping 3 old files. |
+| `nia.log` | Each turn — what was heard or typed (and transcription latency), tool calls with arguments and results (a shell command, its approval decision and its output, as much as NIA saw), the reply, LLM and speech timings — plus each step Claude took (every search, page, edit and command), each time the conversation is summarized to fit Bonsai's context (how much, how long, and where the full text went - `logs/conversation_history/`), startup, settings changes, and every crash with its full traceback. Rotates at 5 MB, keeping 3 old files. |
 | `claude/` | Every Claude run, whole: one transcript per question or change (`<time>-ask-<question>.jsonl`, `<time>-build-<request>.jsonl`). |
 | `assistant.out.log` | The hidden assistant's console output — mostly a copy of the above, plus anything a native library prints as it crashes. |
 | `window.log` | The window's script (nia.py): starting and stopping the server and assistant, settings changes. |
@@ -351,8 +351,11 @@ embedding model** in the settings panel to turn memory off. EmbeddingGemma was p
 granite-embedding and nomic-embed-text because it alone separated relevant memories (similarity ≥ 0.29)
 from off-topic questions (≤ 0.16) on a test set.
 
-Most of each request is fixed, though: NIA's instructions and ~30 tool definitions are ~5.3K tokens
-every turn, cached by llama-server. Memory bounds the part that grows, not that.
+Most of each request is fixed, though: NIA's instructions and tool definitions are ~10K tokens every turn
+(measured by llama-server), cached by llama-server. Memory and the recent-turns cut bound the part that grows,
+not that. When even the recent turns would overfill Bonsai's context (85% of it, by a rough count of what's
+actually sent), the older part is condensed into a summary - logged in `nia.log`, with the full text kept in
+`logs/conversation_history/`.
 
 ### Her own voice
 
