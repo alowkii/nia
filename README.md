@@ -214,7 +214,7 @@ Everything lands in `logs/`:
 
 | File | What's in it |
 |---|---|
-| `nia.log` | Each turn — what was heard or typed (and transcription latency), tool calls with arguments and results (a shell command, its approval decision and its output, as much as NIA saw), the reply, LLM and speech timings — plus each step Claude took (every search, page, edit and command), startup, settings changes, and every crash with its full traceback. Rotates at 5 MB, keeping 3 old files. |
+| `nia.log` | Each turn — what was heard or typed (and transcription latency), tool calls with arguments and results (a shell command, its approval decision and its output, as much as NIA saw), the reply, LLM and speech timings — plus each step Claude took (every search, page, edit and command), each time the conversation is summarized to fit Bonsai's context (how much, how long, and where the full text went - `conversation_history/` in your home folder), startup, settings changes, and every crash with its full traceback. Rotates at 5 MB, keeping 3 old files. |
 | `claude/` | Every Claude run, whole: one transcript per question or change (`<time>-ask-<question>.jsonl`, `<time>-build-<request>.jsonl`). |
 | `assistant.out.log` | The hidden assistant's console output — mostly a copy of the above, plus anything a native library prints as it crashes. |
 | `window.log` | The window's script (nia.py): starting and stopping the server and assistant, settings changes. |

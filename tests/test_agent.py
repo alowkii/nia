@@ -698,6 +698,36 @@ def test_long_tool_results_are_cut_to_fit():
     assert len(result.content) < chat.MAX_TOOL_CHARS + 300 and "cut to fit" in result.content
 
 
+def test_summarizing_the_conversation_is_logged():
+    # Deep Agents condenses the conversation when its rough count nears 85% of Bonsai's context. It had happened at
+    # least six times in real use without a word in the log (an extra LLM call each time, and a saved file)
+    import logging
+    seen = []
+
+    class Collect(logging.Handler):
+        def emit(self, record):
+            seen.append(record.getMessage())
+
+    log = logging.getLogger("agent.chat")
+    handler, level = Collect(), log.level
+    log.addHandler(handler)
+    log.setLevel(logging.INFO)
+    try:
+        # NIA's real context size: her instructions and tools alone count as ~9,000 tokens, each note ~430 more
+        llm = ScriptedLLM(messages=iter([AIMessage(f"Noted, sir. {n}") for n in range(40)]),
+                          profile={"max_input_tokens": 16384})
+        a = AssistantModel(llm=llm, backend=StateBackend(), memory=False)
+        for _ in range(13):
+            a.respond("Here's a note to keep. " + "lorem ipsum dolor sit amet " * 60)
+    finally:
+        log.removeHandler(handler)
+        log.setLevel(level)
+    started = [m for m in seen if m.startswith("Summarizing the conversation")]
+    done = [m for m in seen if m.startswith("Summarized in")]
+    assert len(started) == 1 and "older messages" in started[0] and "tokens) are being condensed" in started[0], seen
+    assert len(done) == 1 and "tokens of summary replace them" in done[0], seen
+
+
 def test_context_overflow_starts_a_fresh_conversation():
     from langchain_core.exceptions import ContextOverflowError
 
