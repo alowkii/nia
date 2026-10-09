@@ -362,6 +362,8 @@ class StubAgent:
     pending = None
     conversations_over = 0
     def respond(self, text):
+        if text.startswith("take your time"):  # a long turn: steps that are each quick but add up
+            time.sleep(0.6)
         return f"Done: {text}, sir."
     def learn_preferences(self):  # each conversation's end: learned from in the background
         StubAgent.conversations_over += 1
@@ -413,6 +415,20 @@ window.send({"type": "text", "text": "pause the music"})
 seen = events_until(state="awake")
 assert {"you": "pause the music"} in seen and {"state": "thinking"} in seen
 assert {"nia": "Done: pause the music, sir."} in seen, "the reply shows in the window even when not spoken"
+# A turn still going after a while gets "One moment, sir" - once; a quick one doesn't. One turn spent 90 s on nine
+# fast shell commands without a word, and looked stuck
+import agent.chat as agent_chat
+said_one_moment, real_long, real_announce = [], va.LONG_TURN, agent_chat.ANNOUNCE
+va.LONG_TURN, agent_chat.ANNOUNCE = 0.2, lambda: said_one_moment.append(1)
+agent_chat.ANNOUNCED.clear()
+window.send({"type": "text", "text": "take your time and look for VLC"})
+events_until(state="awake")
+assert said_one_moment == [1], "a long turn says 'One moment, sir' once"
+agent_chat.ANNOUNCED.clear()
+window.send({"type": "text", "text": "quick one"})
+events_until(state="awake")
+assert said_one_moment == [1], "a quick turn says nothing extra"
+va.LONG_TURN, agent_chat.ANNOUNCE = real_long, real_announce
 window.send({"type": "text", "text": "set the volume to 50%"})
 seen = events_until(state="awake")
 assert {"nia": "Done: set the volume to fifty percent, sir."} in seen, "numbers in words, in the window as in her voice"

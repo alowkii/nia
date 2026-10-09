@@ -55,9 +55,10 @@ def find_app(name):
 
 @tool
 def open_app(app: str, file: str = "") -> str:
-    """Open an installed app - "open VLC", "open Notepad" - optionally with a file to open in it: "play this movie
-    in VLC". app is its name as the user says it. file is the file's full path (a file-tool path like /d/x.mp4 is
-    fine). No approval needed. This finds apps the way Windows does - never search folders for an app's program"""
+    """Open an installed app - "open VLC", "open Notepad" - or play a file in one: "play this movie in VLC", "open
+    the song in Groove". app is its name as the user says it; file is the file's full path (a file-tool path like
+    /d/x.mp4 is fine) - find the file first, then call this once. No approval needed. It finds the app the way
+    Windows does, so never search folders or run `where` for an app's program"""
     program = find_app(app)
     if program is None:
         return f"{app} doesn't seem to be installed: it isn't in the Start menu or among Windows' registered apps"

@@ -45,6 +45,7 @@ TIME_GREETINGS = [
 ]
 
 
+LONG_TURN = 8.0  # seconds of work before she says "One moment, sir" - most replies take 2-7 s
 # Called again soon after talking, she answers like someone already in the room - "Good evening" every time
 # sounded like a bot. A real greeting only after this long without a word
 RECENT = 30 * 60
@@ -705,6 +706,11 @@ class WakeWordDetector:
         hud.send(you=text)
         with self.working():
             started = time.perf_counter()
+            # Still working after a while - steps that are each quick but add up: say so once, don't go silent. One
+            # turn spent 90 s on nine fast shell commands without a word, and looked stuck
+            still_working = threading.Timer(LONG_TURN, agent_chat.announce)
+            still_working.daemon = True
+            still_working.start()
             try:
                 reply = self.assistant.respond(text)
             except Exception:  # one bad turn mustn't kill the assistant
@@ -714,6 +720,7 @@ class WakeWordDetector:
                 logger.info(f"Stopped by the user after {time.perf_counter() - started:.1f}s")
                 reply = "" if self.quitting else "Okay."
                 self.interrupted.clear()  # the stop is handled - don't cut off the "Okay." too
+            still_working.cancel()
             logger.info(f"Reply: {reply!r} (LLM {time.perf_counter() - started:.1f}s)")
             if reply:
                 started = time.perf_counter()
