@@ -310,6 +310,54 @@ def test_she_learns_preferences_from_a_conversation():
             m.db.close()
 
 
+def test_installed_apps_are_found_the_way_windows_finds_them():
+    # "Play one of the movies in VLC": VLC was in C:\Program Files (x86)\VideoLAN\VLC, but NIA guessed folders
+    # ("...\VLC media player", `where vlc.exe`) until her steps ran out. open_app asks Windows instead: its registered
+    # apps, then the Start menu. Here a stand-in Start menu and player - nothing real is opened
+    import tempfile
+    import pythoncom
+    from win32com.shell import shell
+    from agent import apps
+
+    with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent.parent / "logs",
+                                     ignore_cleanup_errors=True) as tmp:
+        tmp = Path(tmp)
+        player, movie = tmp / "player" / "fakeplayer.exe", tmp / "movies" / "The Founder (2016).mp4"
+        for path in (player, movie):
+            path.parent.mkdir()
+            path.write_bytes(b"")
+        menu = tmp / "Start Menu"
+        menu.mkdir()
+        for name in ("Fake Player", "Fake Player - reset preferences"):  # the plain one is preferred
+            link = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None, pythoncom.CLSCTX_INPROC_SERVER,
+                                              shell.IID_IShellLink)
+            link.SetPath(str(player if name == "Fake Player" else tmp / "player" / "missing.exe"))
+            link.QueryInterface(pythoncom.IID_IPersistFile).Save(str(menu / f"{name}.lnk"), 0)
+
+        opened = []
+        real = apps.START_MENUS, apps.registered, apps.os.startfile
+        apps.START_MENUS, apps.registered = [menu], lambda name: None  # only the stand-in Start menu
+        apps.os.startfile = lambda program, arguments="": opened.append((Path(program), arguments))
+        try:
+            assert apps.find_app("fake player") == player and apps.find_app("Fake Player.exe") == player
+            # A file-tool path is turned into the Windows one and opened in the app
+            tool_path = "/" + str(movie)[0].lower() + str(movie)[2:].replace("\\", "/")
+            assert apps.open_app.invoke({"app": "Fake Player", "file": tool_path}) == \
+                "Opened The Founder (2016).mp4 in fakeplayer"
+            assert opened == [(player, f'"{movie}"')]
+            assert apps.open_app.invoke({"app": "Fake Player"}) == "Opened fakeplayer" and opened[-1][1] == ""
+            # Plain answers when it can't: no such file, no such app
+            assert apps.open_app.invoke({"app": "Fake Player", "file": str(tmp / "nope.mp4")}).startswith(
+                "Not opened: there's no file")
+            assert "doesn't seem to be installed" in apps.open_app.invoke({"app": "Some Other Player"})
+            assert len(opened) == 2, "nothing opened when it couldn't be"
+        finally:
+            apps.START_MENUS, apps.registered, apps.os.startfile = real
+    # It's one of NIA's tools, and needs no approval - like opening a website
+    from agent import chat
+    assert "open_app" not in chat.NEEDS_APPROVAL
+
+
 def test_chat_does_not_build_spotify():
     a = assistant(AIMessage("Evening, sir."))
     assert a.respond("Hey Nia!") == "Evening, sir."

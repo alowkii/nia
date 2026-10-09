@@ -370,6 +370,12 @@ model sees, so the docstring is the prompt.
 
 ### Your PC
 
+**Apps:** "open VLC", "play this movie in VLC", "open Notepad" - [open_app](agent/apps.py) finds an installed
+app the way Windows does (its registered programs, then the Start menu), never by guessing folders, and opens it,
+with a file if you name one. No approval needed, like opening a website. Windows only (the registry, the Start menu
+and `os.startfile` exist nowhere else); macOS would use `open -a "VLC" movie.mp4`, Linux the app's command on
+PATH or its `.desktop` entry - see *Known limitations*.
+
 NIA can also work on the PC itself. Deep Agents' file tools only accept `/`-style
 paths, so each drive is mounted as a folder — `C:\Users` is `/c/Users`, `D:\nia` is
 `/d/nia` — while the shell takes normal Windows paths. Her prompt includes where
@@ -483,6 +489,20 @@ scripts/openthai-cpu.Modelfile      builds the approval model for Ollama
 ```
 
 ## Known limitations
+
+- **Windows only.** Several parts use what only Windows has, so NIA doesn't run on Linux or macOS as it is:
+
+  | Part | On Windows | What Linux / macOS would need |
+  |---|---|---|
+  | Her window, taskbar button, Start-menu entry | pywebview on WebView2 (.NET), app IDs via `pywin32` | pywebview's GTK/Qt (Linux) or Cocoa (macOS) backend; a `.desktop` file or an app bundle |
+  | Opening apps (`open_app`) | registered apps, the Start menu, `os.startfile` | `open -a "App" file` on macOS; the app's command on PATH or its `.desktop` entry on Linux |
+  | Turning other apps down while she speaks | the volume mixer (`pycaw`) | PulseAudio / PipeWire (Linux), CoreAudio (macOS) |
+  | Ending the model server with her | a job object | a process group, or `prctl(PR_SET_PDEATHSIG)` on Linux |
+  | Ctrl+C and a closed console | a console control handler | ordinary signals |
+  | Her shell and paths | `cmd.exe`, `C:\...` (`/c/...` in the file tools) | bash or zsh, `/home/...`, and prompt rules to match |
+  | Install | `pywin32` (Windows-only) | without it |
+
+  The language model (llama-server), speech (Moonshine) and the agent itself are cross-platform.
 
 - **No speaker verification.** A check that commands came from your voice (Resemblyzer)
   added too much latency per command and was removed. Anyone within earshot can issue commands.

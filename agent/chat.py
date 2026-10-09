@@ -27,7 +27,7 @@ from langgraph.types import Command
 import settings
 from utils.hud import hud
 from utils.words import in_words
-from . import approval, claude, web, youtube
+from . import approval, apps, claude, web, youtube
 from .server import SERVER_LOG, llm_server_command, llm_up
 from .approval import risks
 from .memory import Memory, note, preferences_note
@@ -392,7 +392,7 @@ class AssistantModel:
         backend = backend or pc_backend()
         self.agent = create_deep_agent(
             model=llm,
-            tools=self._spotify_tools() + youtube.TOOLS + web.TOOLS + claude.TOOLS + list(extra_tools)
+            tools=self._spotify_tools() + youtube.TOOLS + web.TOOLS + claude.TOOLS + apps.TOOLS + list(extra_tools)
             + (self.memory.tools() if self.memory else []),
             system_prompt=initial_prompt + pc_prompt + self_prompt,
             backend=backend,
