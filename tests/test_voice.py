@@ -14,7 +14,7 @@ import numpy as np
 import settings
 from agent.chat import CANCEL
 from utils.hud import envelope, hud
-from voice_assistant.voice_assistant import (State, WakeWordDetector, cut_off, drop_filler, first_part, fragment,
+from voice_assistant.voice_assistant import (WakeWordDetector, cut_off, drop_filler, first_part, fragment,
                                              hesitation, name_only, pick_greeting, plain, speakable, stop_request,
                                              voice_language, wake_command)
 
@@ -36,6 +36,7 @@ assert wake("I just can't stop loving you Hey Nia, pause the music.") == "pause 
 # How Moonshine really heard "Hey Nia" in one evening's session (0.62 and 0.77 by score alone)
 assert wake("Heinear,") == "" and wake("Heineia,") == "" and wake("He near.") == ""
 assert wake("Heineia, play some Post Malone") == "play some Post Malone"
+assert wake("Heaenea.") == ""  # 0.46 by score: a real miss on 9 Oct
 
 # Not woken
 assert wake("Hey nice to meet you.") is None  # 0.77, just under the default
@@ -166,7 +167,7 @@ nia = WakeWordDetector.__new__(WakeWordDetector)  # skip mic, models and LLM
 nia.settings = {**settings.DEFAULTS}
 nia.lines, nia.tts = __import__("queue").Queue(), StubVoice()
 nia.interrupted = __import__("threading").Event()
-nia.state = State.LISTENING
+nia.awake = False
 
 with nia.working():
     heard(nia, "Sure, playing some lofi beats now")  # her own voice: ignored, nothing stopped
@@ -195,7 +196,7 @@ with tempfile.TemporaryDirectory() as tmp:
     settings.PATH = Path(tmp) / "settings.json"  # never touch the real settings.json
     nia = WakeWordDetector.__new__(WakeWordDetector)  # skip mic, models and LLM
     nia.settings, nia.tts = settings.load(), StubTTS()
-    set_volume, change_volume, _ = nia._voice_tools()  # the third is restart_myself
+    set_volume, change_volume, *_ = nia._voice_tools()  # then restart_myself and shut_down_myself
     assert set_volume.invoke({"percent": 50}) == "Your voice volume is now 50%"
     assert nia.tts.level == 0.5 and settings.load()["voice_volume"] == 0.5
     assert change_volume.invoke({"step": 25}) == "Your voice volume is now 75%"
@@ -243,7 +244,7 @@ class StubAgent:
 nia = WakeWordDetector.__new__(WakeWordDetector)  # skip mic, models and LLM
 nia.settings = {**settings.DEFAULTS, "spoken_replies": False, "wake_word": False}  # shown, never played
 nia.lines, nia.interrupted = __import__("queue").Queue(), threading.Event()
-nia.state, nia.deadline, nia.busy, nia.busy_ended = State.LISTENING, 0.0, False, 0.0
+nia.awake, nia.deadline, nia.busy, nia.busy_ended = False, 0.0, False, 0.0
 nia.rest, nia.greeted, nia.held, nia.quitting, nia.restart_after = "", None, False, False, None
 class StubMic:
     """Records how the microphone is opened"""
@@ -316,6 +317,11 @@ seen = events_until(restart="assistant")
 assert [m for m in seen if "nia" in m] and seen.index(next(m for m in seen if "nia" in m)) < len(seen) - 1, \
     "the reply goes out before the restart"
 assert nia.restart_after is None
+# "Shut down" switches all of NIA off - never a restart (a real session rebooted her when asked to shut down)
+shut_down = next(t for t in nia._voice_tools() if t.name == "shut_down_myself")
+assert "don't ask" in shut_down.invoke({}) and nia.restart_after == "off"
+window.send({"type": "text", "text": "shut down"})
+assert events_until(restart="off") and nia.restart_after is None
 
 # Picking a microphone in the window switches it live; one that's gone falls back to the default, and says so
 window.send({"type": "settings", "values": {"mic_device": "Microphone That Was Unplugged"}})

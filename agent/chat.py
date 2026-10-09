@@ -108,6 +108,18 @@ def recent_turns(turns):
     return keep_recent_turns
 
 
+# Spotify actions whose result you hear: when they work, the music answers - she says nothing. Only a failure
+# gets words ("When checked and if it's not working only then reply anything")
+QUIET_WHEN_DONE = {"play", "play_something", "resume", "skip", "pause"}
+
+
+def quiet_success(messages):
+    """Whether this turn only started, changed or paused the music - and every one of those worked"""
+    users = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
+    results = [m for m in messages[users[-1] if users else 0:] if isinstance(m, ToolMessage)]
+    return bool(results) and all(m.name in QUIET_WHEN_DONE and m.status != "error" for m in results)
+
+
 @wrap_tool_call
 def tool_guard(request, handler):
     """Keeps tools from breaking the turn: a failing tool (e.g. Spotify's "No active device") becomes
@@ -343,6 +355,10 @@ class AssistantModel:
             exchange = f"{author} asked: {self.request} | NIA answered: {reply[:300]}"
             if (memory_id := self.memory.add(exchange, "exchange")) is not None:
                 self.recent.append(memory_id)
+        if isinstance(reply, str) and reply and quiet_success(result["messages"]):
+            logger.info(f"Done quietly - shown, not said: {reply!r}")
+            hud.send(nia=reply)  # in the window, for the record
+            reply = ""  # the music starting is the answer: nothing to say over it
         return reply
 
     def _spotify_tools(self):
@@ -369,7 +385,8 @@ class AssistantModel:
         @tool
         def restart_spotify() -> str:
             """Force-close and reopen the Spotify app on this PC. For "restart Spotify", or when Spotify is
-            stuck (it accepts commands but nothing plays). Use this - never the shell - for closing Spotify"""
+            stuck. Playing already restarts a stuck app once by itself, so don't offer this after a play fails.
+            Use this - never the shell - for closing Spotify"""
             return sp().restart_app()
 
         @tool

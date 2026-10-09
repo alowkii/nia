@@ -2,6 +2,10 @@
 import json
 from pathlib import Path
 
+from dotenv import load_dotenv
+
+load_dotenv()  # .env, for everything that imports settings
+
 PATH = Path(__file__).resolve().parent / "settings.json"
 
 DEFAULTS = {

@@ -4,14 +4,13 @@ import random
 import subprocess
 import time
 from pathlib import Path
-from dotenv import load_dotenv
 import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
 import settings
 
-load_dotenv()
 logger = logging.getLogger(__name__)
+PLAY_WAIT = 15  # seconds Spotify gets to start playing before it counts as stuck
 
 # Absolute, so the saved login is found whatever the working directory
 CACHE = Path(__file__).resolve().parent.parent / ".spotify_cache"
@@ -72,18 +71,39 @@ class SpotifyController:
     def _start(self, **kwargs):
         """start_playback, opening the Spotify app first if no device is available, and waking an
         idle device when none is active - an open Spotify app that hasn't played recently is listed
-        but idle, and Spotify won't pick it on its own. Then checks something really started:
+        but idle, and Spotify won't pick it on its own. Then waits until something really plays:
         Spotify accepts commands even when its app is stuck and loads nothing, and "Successfully
-        playing" would be a lie."""
+        playing" would be a lie. If this PC's app still plays nothing, it's restarted and asked again,
+        once, without asking - only if that fails too is there anything to tell the user."""
         started = time.time()
         devices = self.sp.devices()["devices"]
         logger.info(f"Spotify devices: {[(d.get('name'), d.get('type'), d.get('is_active')) for d in devices]}")
         if not any(d["is_active"] for d in devices) and not any(d["type"] == "Computer" for d in devices):
             devices = self.open_app()  # nothing playing anywhere and no app on this PC: open it here
-        if devices and not any(d["is_active"] for d in devices):
+        target = next((d for d in devices if d["is_active"]), None)
+        if devices and not target:
             # Prefer a computer - NIA runs on one - over a phone that happens to be listed first
-            device = min(devices, key=lambda d: d["type"] != "Computer")
-            kwargs["device_id"] = device["id"]
+            target = min(devices, key=lambda d: d["type"] != "Computer")
+            kwargs["device_id"] = target["id"]
+        self._send(kwargs)
+        if self._playing(started):
+            return
+        where = (target or {}).get("name") or "the device"
+        # Restarting again won't help if it was just done - one session restarted it five times in a row
+        if (target or {}).get("type") == "Computer" and time.time() - getattr(self, "restarted", 0) >= 600:
+            logger.info("Spotify still isn't playing - restarting the app and asking again")
+            self.restart_app()
+            fresh = [d for d in self.sp.devices()["devices"] if d["type"] == "Computer"]
+            if fresh:
+                kwargs["device_id"] = fresh[0]["id"]  # a restarted app is idle, and its id may have changed
+            self._send(kwargs)
+            if self._playing(started):
+                return
+            raise RuntimeError(f"Nothing started playing on {where}, even after restarting Spotify. Tell the user "
+                               "it isn't playing, in a few words - don't restart it again")
+        raise RuntimeError(f"Nothing started playing on {where}. Tell the user it isn't playing, in a few words")
+
+    def _send(self, kwargs):
         try:
             self.sp.start_playback(**kwargs)
         except spotipy.SpotifyException as e:
@@ -94,19 +114,17 @@ class SpotifyController:
             fresh = [d for d in self.sp.devices()["devices"] if d["type"] == "Computer"]
             kwargs["device_id"] = fresh[0]["id"] if fresh else kwargs.pop("device_id")
             self.sp.start_playback(**kwargs)
-        for _ in range(6):  # ~3 s for the app to load the track
+
+    def _playing(self, started, wait=PLAY_WAIT):
+        """Whether something plays within `wait` seconds - a cold app took ~10 s, and giving up at ~3 s
+        had her say Spotify wasn't responding while it was about to play"""
+        for _ in range(int(wait * 2)):
             time.sleep(0.5)
             playback = self.get_current_playback()
             if playback and playback.get("item") and playback.get("is_playing"):
                 logger.info(f"Spotify playing after {time.time() - started:.1f}s")
-                return
-        where = playback["device"]["name"] if playback and playback.get("device") else "the device"
-        if time.time() - getattr(self, "restarted", 0) < 600:
-            # Restarting again won't help - one session tried it five times in a row
-            raise RuntimeError(f"Spotify accepted the command but nothing started playing on {where}, even though "
-                               "Spotify was restarted recently. Don't restart it again: tell the user it isn't playing")
-        raise RuntimeError(f"Spotify accepted the command but nothing started playing on {where}. The app may be "
-                           "stuck: tell the user, and offer to restart it with restart_spotify")
+                return True
+        return False
 
     def _search(self, query, kind):
         """Top hit for kind 'track', 'playlist' or 'album', or None"""
@@ -205,13 +223,8 @@ class SpotifyController:
         return self._after_skip("Went back to previous track")
 
     def set_volume(self, volume_percent):
-        """Set volume (0-100)"""
-        try:
-            volume_percent = int(volume_percent)
-        except (ValueError, TypeError):
-            return f"Invalid volume value: {volume_percent}. Must be a number between 0-100"
-        if not 0 <= volume_percent <= 100:
-            return "Volume must be between 0 and 100"
+        """Set volume, clamped to 0-100"""
+        volume_percent = max(0, min(int(volume_percent), 100))
         self.sp.volume(volume_percent)
         return f"Volume set to {volume_percent}%"
 
@@ -232,21 +245,9 @@ class SpotifyController:
         return f"Shuffle {'enabled' if state else 'disabled'} successfully"
 
     def repeat(self, state='context'):
-        """
-        Set repeat mode
-        state: 'track', 'context', or 'off'
-        - 'track': repeat current track
-        - 'context': repeat current context (playlist/album)
-        - 'off': turn off repeat
-        """
-        if state not in ('track', 'context', 'off'):
-            return "Invalid repeat state. Use 'track', 'context', or 'off'"
+        """Repeat 'track', 'context' (the playlist or album) or 'off'"""
         self.sp.repeat(state)
-        if state == 'track':
-            return "Repeat mode set to: repeat current track"
-        if state == 'context':
-            return "Repeat mode set to: repeat playlist/album"
-        return "Repeat mode turned off"
+        return f"Repeat set to {state}"
 
     def add_to_queue(self, track_name):
         """Add a track to the queue"""

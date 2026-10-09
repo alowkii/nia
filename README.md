@@ -63,8 +63,8 @@ name alone ("Nia", or "Near" as Moonshine often hears it) gets the greeting, not
 a song called Near, and a clipped scrap like "Jo." gets *"Sorry sir, I only caught 'Jo'"*
 instead of an action.
 
-**Manner:** JARVIS from Iron Man — formal, unhurried and dry: *"Very good, sir. Thunderstruck is
-playing now."*, *"I'm afraid Spotify isn't responding, sir. Shall I restart it?"* No exclamation
+**Manner:** JARVIS from Iron Man — formal, unhurried and dry: *"Very good, sir. The browser stays."*,
+*"I'm afraid Spotify won't play, sir — even after a restart."* No exclamation
 marks or "Enjoy!", and no wit when something has failed. Waking her gets a different greeting
 each time, picked from **Greetings** in the settings panel (`|` between them) plus a few for the
 hour: *"Good morning, sir."* at 8, *"Burning the midnight oil, sir?"* at 2 am. The voice is Kokoro's British
@@ -75,7 +75,8 @@ hour: *"Good morning, sir."* at 8, *"Burning the midnight oil, sir?"* at 2 am. T
 `nia.py`, the window's page, the language model, speech and agent, so any change to her code takes effect. The
 window stays open and reloads itself; ~40 s later she's back at *Standing by* with the chime, the conversation
 fresh and memory kept. If something of hers is stuck (she keeps mishearing), she may restart just her speech and
-agent on her own (~10 s). Ollama is left running; its models hold no NIA code.
+agent on her own (~10 s). Ollama is left running; its models hold no NIA code. "Shut down" or "turn off"
+switches all of NIA off instead, as closing the window does.
 
 Her own voice volume is a tool too: "speak up", "you're too loud", "talk at 50 percent"
 (10-100%; more would only clip). It's saved, so it survives restarts.
@@ -226,9 +227,10 @@ comma-separated list of playlist searches), trying other picks if a search finds
 starts at a random track with shuffle on. A song is played inside its album, starting at that
 track — Spotify's desktop app silently ignores a lone track sent on its own. If a freshly
 opened app isn't ready yet (a 404), she retries once.
-After every play she checks the music really started: a stuck Spotify app accepts
-commands but loads nothing, and she'll say so rather than claim it's playing — offering a
-restart, but never a second one within 10 minutes. When the
+After every play she waits up to 15 s for the music to really start: a stuck Spotify app accepts
+commands but loads nothing. If this PC's app still plays nothing, she restarts it and tries once more on her
+own (never twice within 10 minutes). When the music starts she says nothing — it is the answer; her reply only
+appears in the window. Only if it still won't play does she speak up. When the
 login expires ("Refresh token expired"), use **Spotify login** in the settings panel.
 
 ### YouTube
@@ -445,15 +447,12 @@ scripts/run_bonsai.bat              starts just the LLM server (llama-server + B
 scripts/text_chat.py                text-only chat in the console, no audio
 scripts/eval_approval.py            live check of the approval layers (needs Ollama)
 scripts/openthai-cpu.Modelfile      builds the approval model for Ollama
-scripts/preprocess_voice.py         builds a speaker embedding from a voice sample
 ```
 
 ## Known limitations
 
-- **Speaker verification is disabled.** The code to check that a command came from
-  your voice is present but commented out in `voice_assistant.py` — it added too much
-  latency per command. `scripts/preprocess_voice.py` still generates the reference embedding.
-  Anyone within earshot can currently issue commands.
+- **No speaker verification.** A check that commands came from your voice (Resemblyzer)
+  added too much latency per command and was removed. Anyone within earshot can issue commands.
 - **Replies take ~2–4 s** from the end of your sentence: Bonsai reads the prompt and
   tools, calls a tool, then words the result. Kokoro adds ~1 s before speech starts; pick
   `piper_en_US-lessac-medium` as the voice in the settings panel for ~0.2 s, sounding
@@ -481,7 +480,6 @@ license; see its page.
 | [Rajdhani](https://fonts.google.com/specimen/Rajdhani) and [JetBrains Mono](https://www.jetbrains.com/lp/mono/) | the window's type |
 | [pycaw](https://github.com/AndreMiras/pycaw) | turning other apps down while NIA speaks (Windows mixer) |
 | [python-dotenv](https://github.com/theskumar/python-dotenv) | loading `.env` |
-| [Resemblyzer](https://github.com/resemble-ai/Resemblyzer) | the speaker embedding in `scripts/preprocess_voice.py` |
 
 NIA isn't affiliated with or endorsed by any of these projects, Spotify or YouTube.
 
