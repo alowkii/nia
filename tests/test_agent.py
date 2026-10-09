@@ -64,6 +64,10 @@ def assistant(*replies, spotify=None, extra_tools=(), approval_model=None, memor
 
 
 def test_tools_reach_spotify():
+    from agent import chat
+    # "I don't want it to reply when setting the volume, changing the music and stuff": all quiet when they work
+    assert {"set_volume", "change_volume", "shuffle", "repeat", "add_to_queue", "set_voice_volume",
+            "change_voice_volume", "play", "pause", "skip"} <= chat.QUIET_WHEN_DONE
     cases = [
         (call("play", query="Back in Black", kind="album"), ("play_album", ("Back in Black",))),
         (call("play", query="Highway to Hell"), ("play_track", ("Highway to Hell",))),
@@ -75,14 +79,26 @@ def test_tools_reach_spotify():
     ]
     for tool_call, expected in cases:
         a = assistant(tool_call, AIMessage("Done, sir."), spotify=FakeSpotify())
-        # Music that starts or changes answers for itself: she says nothing ("only then reply anything")
-        quiet = tool_call.tool_calls[0]["name"] in ("play", "play_something", "skip")
+        # Minor actions answer for themselves - the music, the volume: she says nothing ("only then reply anything")
+        quiet = tool_call.tool_calls[0]["name"] in chat.QUIET_WHEN_DONE
         assert a.respond("do it") == ("" if quiet else "Done, sir."), tool_call.tool_calls
         assert a._spotify.calls == [expected], (tool_call.tool_calls, a._spotify.calls)
     # ...but a reply that asks something is said: this one went unspoken, and the user was left waiting
     asks = "Paused it, sir. What would you like to watch on YouTube?"
     a = assistant(call("pause"), AIMessage(asks), spotify=FakeSpotify())
     assert a.respond("why don't you pause it and let's use youtube") == asks
+    # ...and so is the rest of a request with several parts: the volume goes unmentioned, the search is answered
+    from langchain_core.tools import tool
+
+    @tool
+    def web_search(query: str) -> str:
+        """Searches the web"""
+        return "Canberra is the capital of Australia"
+
+    both = AIMessage("", tool_calls=[{"name": "set_volume", "args": {"percent": 30}, "id": "v"},
+                                     {"name": "web_search", "args": {"query": "capital of Australia"}, "id": "w"}])
+    a = assistant(both, AIMessage("Canberra, sir."), spotify=FakeSpotify(), extra_tools=[web_search])
+    assert a.respond("turn it down to 30 and what's the capital of Australia") == "Canberra, sir."
 
 
 def test_spotify_errors_go_back_to_the_model():
@@ -654,7 +670,7 @@ def test_extra_tools_reach_the_agent():
         return "ok"
 
     a = assistant(call("set_voice_volume", percent=60), AIMessage("Quieter now, sir."), extra_tools=[set_voice_volume])
-    assert a.respond("talk at 60 percent") == "Quieter now, sir."
+    assert a.respond("talk at 60 percent") == "", "a minor action: done without a word (the chime plays the level)"
     assert heard == [60]
 
 

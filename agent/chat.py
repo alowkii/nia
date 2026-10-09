@@ -155,9 +155,11 @@ def counting_what_is_sent(turns):
     return count
 
 
-# Spotify actions whose result you hear: when they work, the music answers - she says nothing. Only a failure
-# gets words ("When checked and if it's not working only then reply anything")
-QUIET_WHEN_DONE = {"play", "play_something", "resume", "skip", "pause"}
+# Minor actions whose result you hear - the music, the volume, her own voice: when they work, that answers - she
+# says nothing. Only a failure or a question gets words ("When checked and if it's not working only then reply
+# anything"; "I don't want it to reply when setting the volume, changing the music and stuff even as done")
+QUIET_WHEN_DONE = {"play", "play_something", "resume", "skip", "pause", "set_volume", "change_volume", "shuffle",
+                   "repeat", "add_to_queue", "set_voice_volume", "change_voice_volume"}
 
 
 def quiet_success(messages, reply):
