@@ -246,8 +246,11 @@ threading.Thread(target=lambda: accepted.append(listener.accept()), daemon=True)
 
 class StubAgent:
     pending = None
+    conversations_over = 0
     def respond(self, text):
         return f"Done: {text}, sir."
+    def learn_preferences(self):  # each conversation's end: learned from in the background
+        StubAgent.conversations_over += 1
 
 nia = WakeWordDetector.__new__(WakeWordDetector)  # skip mic, models and LLM
 nia.settings = {**settings.DEFAULTS, "spoken_replies": False, "wake_word": False}  # shown, never played
@@ -312,6 +315,11 @@ seen = events_until(state="awake")
 assert {"you": "I mean, could you play some lofi?"} in seen, seen
 window.send({"type": "sleep"})
 assert events_until(state="asleep")
+for _ in range(50):  # the conversation ended: she learns from it, on its own thread
+    if StubAgent.conversations_over:
+        break
+    time.sleep(0.02)
+assert StubAgent.conversations_over == 1, "sent to sleep: the conversation is learned from, once"
 window.send({"type": "wake"})
 assert events_until(state="awake")
 window.send({"type": "settings", "values": {"push_to_talk": True}})  # applies at once

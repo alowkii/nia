@@ -44,6 +44,8 @@ DEFAULTS = {
     "embedding_model": "embeddinggemma",
     "memory_results": 4,
     "memory_min_similarity": 0.22,
+    # After each conversation she learns how you like things (LangMem on Bonsai) - volume, music, how she talks
+    "learn_preferences": True,
     # Only this many recent exchanges are sent to the LLM; older ones come back through memory if relevant
     "history_turns": 4,
     # Decision model for PC commands that aren't on the read-only allowlist (see agent/approval.py): run

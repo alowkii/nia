@@ -473,6 +473,10 @@ class WakeWordDetector:
     def idle(self):
         hud.show("awake" if self.awake else "asleep")
 
+    def conversation_over(self):
+        """Back to waiting for the wake phrase: she learns from the conversation in the background"""
+        threading.Thread(target=self.assistant.learn_preferences, daemon=True).start()
+
     def stay_awake(self):
         """After an exchange: listen for a follow-up until the session times out - or, with push-to-talk
         released, only for the words still being transcribed"""
@@ -510,6 +514,7 @@ class WakeWordDetector:
                     logger.info(f"No command - listening for {s['wake_phrase']!r} again.")
                     self.awake = False
                     self.idle()
+                    self.conversation_over()
                     continue
                 if line is None:  # the window closed or asked her to stop
                     logger.info("Stopping (asked to quit)")
@@ -538,6 +543,7 @@ class WakeWordDetector:
                 if control == "sleep":
                     self.awake, self.rest = False, ""
                     self.idle()
+                    self.conversation_over()
                     continue
                 typed = control == "text"
 

@@ -325,6 +325,14 @@ NIA remembers across restarts, and only what's relevant reaches the LLM ([agent/
   recalls the skill and she follows its steps instead of working the job out again. "What routines do you know?"
   lists them; "forget my evening routine" deletes one. The idea comes from [memU](https://github.com/NevaMind-AI/memU),
   kept inside NIA's own memory: no extra model calls, no cloud.
+- **Preferences, learned by herself** — when a conversation ends, she reviews it in the background: what you
+  said *and* what she did (setting the volume to 50 after you said "too loud" says more than either alone).
+  [LangMem](https://langchain-ai.github.io/langmem/)'s memory manager, run on Bonsai, compares it with what she
+  already knows and adds a preference ("Aalok likes Spotify at 40 percent volume"), rewrites one that changed, or
+  removes one you've said is no longer true. Most conversations teach her nothing, and then nothing is saved. What
+  she's learned goes with every turn, so she just follows it; "what have you learned about me?" lists it, and
+  "forget that I…" removes one. The review takes ~15 s of the LLM after you've stopped talking, and she warms her
+  prompt cache again afterwards; switch it off with **Learn my preferences** in the settings panel.
 - **Past exchanges** — every finished turn worth keeping is saved too (not "I guess so", or a sentence cut off at
   "..."), and a search returns one of each: the same question asked five times comes back once.
 - **Recall by meaning** — each message is embedded with [EmbeddingGemma](https://ollama.com/library/embeddinggemma)

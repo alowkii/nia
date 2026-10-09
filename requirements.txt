@@ -19,6 +19,8 @@ psutil==7.1.3
 deepagents==0.7.23
 langgraph==1.2.12
 langchain-openai==1.6.7
+# Learning your preferences after each conversation: LangMem's memory manager, run on Bonsai
+langmem==0.0.30
 
 # Spotify control
 spotipy==2.25.2
