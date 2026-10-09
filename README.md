@@ -250,7 +250,9 @@ opened app isn't ready yet (a 404), she retries once.
 After every play she waits up to 15 s for the music to really start: a stuck Spotify app accepts
 commands but loads nothing. If this PC's app still plays nothing, she restarts it and tries once more on her
 own (never twice within 10 minutes). When the music starts she says nothing — it is the answer; her reply only
-appears in the window. Only if it still won't play does she speak up. When the
+appears in the window. The same goes for every minor action you can hear the result of: Spotify or her own
+volume, shuffle, repeat, queueing, pausing, skipping. When you ask for several things at once, she answers only
+about the others. Only if it still won't play does she speak up. When the
 login expires ("Refresh token expired"), use **Spotify login** in the settings panel.
 
 ### YouTube
@@ -359,7 +361,7 @@ actually sent), the older part is condensed into a summary - logged in `nia.log`
 
 ### Her own voice
 
-"Speak up", "you're too loud", "talk at 50 percent" set her voice volume (see above).
+"Speak up", "you're too loud", "talk at 50 percent" set her voice volume (see above) - without a word: her chime plays at the new level, so you hear it.
 
 Adding a new capability means a `@tool` function the model can call — Spotify's are in
 `_spotify_tools()` in [`agent/chat.py`](agent/chat.py), YouTube's in

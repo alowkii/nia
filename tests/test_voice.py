@@ -233,14 +233,20 @@ with tempfile.TemporaryDirectory() as tmp:
     nia = WakeWordDetector.__new__(WakeWordDetector)  # skip mic, models and LLM
     nia.settings, nia.tts = settings.load(), StubTTS()
     set_volume, change_volume, *_ = nia._voice_tools()  # then restart_myself and shut_down_myself
+    from voice_assistant import voice_assistant as va
+    chimed, real_chime = [], va.play_chime
+    va.play_chime = chimed.append  # recorded, never played
     assert set_volume.invoke({"percent": 50}) == "Your voice volume is now 50%"
     assert nia.tts.level == 0.5 and settings.load()["voice_volume"] == 0.5
+    assert chimed == [0.5], "she says nothing about it (a minor action), so the chime plays at the new level"
     assert change_volume.invoke({"step": 25}) == "Your voice volume is now 75%"
     assert nia.tts.level == 0.75 and settings.load()["voice_volume"] == 0.75
     assert "maximum" in change_volume.invoke({"step": 100})  # capped, and says so
     assert nia.tts.level == 1.0
     change_volume.invoke({"step": -500})
     assert nia.tts.level == 0.1  # never silent
+    assert chimed == [0.5, 0.75, 1.0, 0.1]
+    va.play_chime = real_chime
 
 # Numbers always as words - heard and shown the same ("50 percent" and "fifty percent" both came out before)
 from utils.words import in_words

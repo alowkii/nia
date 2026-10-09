@@ -343,19 +343,26 @@ class WakeWordDetector:
             return "Your voice is at 100%, its maximum - for louder, the user can turn up the Windows volume"
         return f"Your voice volume is now {level:.0%}"
 
+    def volume_heard(self, level):
+        """Set her voice volume and play the chime at it: the change goes unannounced (a minor action), so the
+        chime is how the new level is heard"""
+        result = self.set_voice_volume(level)
+        play_chime(self.settings["voice_volume"])
+        return result
+
     def _voice_tools(self):
         @tool
         def set_voice_volume(percent: int) -> str:
             """Set how loud YOUR OWN voice is, in percent (10-100, 100 is the maximum), e.g. "talk at 50 percent".
             Not for music - use the Spotify volume tools for that"""
-            return self.set_voice_volume(percent / 100)
+            return self.volume_heard(percent / 100)
 
         @tool
         def change_voice_volume(step: int) -> str:
             """Make YOUR OWN voice louder (positive step) or quieter (negative step), in percent.
             For "speak up", "talk quieter", "you're too loud". Use 25 or -25 unless told an amount.
             Not for music - use the Spotify volume tools for that"""
-            return self.set_voice_volume(self.settings["voice_volume"] + step / 100)
+            return self.volume_heard(self.settings["voice_volume"] + step / 100)
 
         @tool
         def restart_myself(whole_system: bool = True) -> str:
