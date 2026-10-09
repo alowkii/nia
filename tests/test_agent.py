@@ -698,34 +698,54 @@ def test_long_tool_results_are_cut_to_fit():
     assert len(result.content) < chat.MAX_TOOL_CHARS + 300 and "cut to fit" in result.content
 
 
-def test_summarizing_the_conversation_is_logged():
-    # Deep Agents condenses the conversation when its rough count nears 85% of Bonsai's context. It had happened at
-    # least six times in real use without a word in the log (an extra LLM call each time, and a saved file)
+def test_summarizing_counts_only_what_the_model_is_sent():
+    # Deep Agents condenses the conversation when its rough count nears 85% of Bonsai's context. It counted the
+    # whole conversation - before NIA's own trimming to recent turns - and so condensed history Bonsai was never
+    # going to see: six times in real use, silently. It now counts what's sent, and says when it summarizes
     import logging
-    seen = []
+    from langchain_core.messages import SystemMessage
+    from agent import chat
 
-    class Collect(logging.Handler):
-        def emit(self, record):
-            seen.append(record.getMessage())
+    def run(turns, words):
+        seen = []
 
-    log = logging.getLogger("agent.chat")
-    handler, level = Collect(), log.level
-    log.addHandler(handler)
-    log.setLevel(logging.INFO)
-    try:
-        # NIA's real context size: her instructions and tools alone count as ~9,000 tokens, each note ~430 more
-        llm = ScriptedLLM(messages=iter([AIMessage(f"Noted, sir. {n}") for n in range(40)]),
-                          profile={"max_input_tokens": 16384})
-        a = AssistantModel(llm=llm, backend=StateBackend(), memory=False)
-        for _ in range(13):
-            a.respond("Here's a note to keep. " + "lorem ipsum dolor sit amet " * 60)
-    finally:
-        log.removeHandler(handler)
-        log.setLevel(level)
-    started = [m for m in seen if m.startswith("Summarizing the conversation")]
-    done = [m for m in seen if m.startswith("Summarized in")]
-    assert len(started) == 1 and "older messages" in started[0] and "tokens) are being condensed" in started[0], seen
-    assert len(done) == 1 and "tokens of summary replace them" in done[0], seen
+        class Collect(logging.Handler):
+            def emit(self, record):
+                seen.append(record.getMessage())
+
+        log = logging.getLogger("agent.chat")
+        handler, level = Collect(), log.level
+        log.addHandler(handler)
+        log.setLevel(logging.INFO)
+        try:
+            # NIA's real context size: her instructions and tools alone count as ~9,000 tokens
+            llm = ScriptedLLM(messages=iter([AIMessage(f"Noted, sir. {n}") for n in range(60)]),
+                              profile={"max_input_tokens": 16384})
+            a = AssistantModel(llm=llm, backend=StateBackend(), memory=False)
+            for _ in range(turns):
+                a.respond("Here's a note to keep. " + "lorem ipsum dolor sit amet " * words)
+        finally:
+            log.removeHandler(handler)
+            log.setLevel(level)
+        return ([m for m in seen if m.startswith("Summarizing the conversation")],
+                [m for m in seen if m.startswith("Summarized in")])
+
+    # Sixteen ordinary turns: the whole conversation passes the trigger at turn 13, what's sent never does
+    started, done = run(16, 60)
+    assert started == [] and done == [], "condensed history the model wasn't going to see"
+    # Turns so long that even the recent ones don't fit: condensed - and logged
+    started, done = run(6, 150)
+    assert len(started) == 1 and "older messages" in started[0] and "tokens) are being condensed" in started[0]
+    assert len(done) == 1 and "tokens of summary replace them" in done[0]
+
+    # The trimming both use keeps a leading system message
+    many = [SystemMessage("rules")] + [HumanMessage(f"turn {n}") for n in range(12)]
+    kept = chat.recent(many, 4)
+    assert kept[0].content == "rules" and [m.content for m in kept[1:]] == [f"turn {n}" for n in range(5, 12)]
+    assert chat.recent(many[:5], 4) == many[:5], "nothing cut while it's short"
+    # Its files - each summarized conversation, large tool results - go in NIA's logs/, not the home folder
+    assert chat.pc_backend().artifacts_root == chat.tool_path(str(chat.ARTIFACTS))
+    assert chat.ARTIFACTS == Path(chat.__file__).resolve().parent.parent / "logs"
 
 
 def test_context_overflow_starts_a_fresh_conversation():
