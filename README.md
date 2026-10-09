@@ -46,7 +46,10 @@ threshold (default 0.8, in the settings panel) is the knob: lower wakes more eas
 false-triggers more — "Hey Mia" already scores 0.83. The mic is muted while NIA thinks
 and speaks, so she doesn't transcribe herself. While she speaks, every other app (Spotify,
 browser, games) is turned down to 30% of its volume in the Windows mixer and restored
-afterwards — "Other apps' volume while NIA speaks" in the settings panel; 1 turns it off.
+afterwards — "Other apps' volume while NIA speaks" in the settings panel; 1 turns it off. While her chime plays,
+everything else on the PC is muted, Windows' own sounds included, and put back the moment it ends. Each app's own
+volume is recorded once, however her sounds overlap, and kept in `logs/quieted.json` while anything is lowered - so
+if NIA is stopped mid-sound, her next start puts the volumes back.
 **Interrupting:** while she's thinking or talking, say **"Stop"**, **"Nia, stop"** or
 **"Hey Nia"**. Her voice cuts off within a fraction of a second (up to ~1 s if she was
 still preparing the first sentence — that synthesis is never aborted, since aborting it
