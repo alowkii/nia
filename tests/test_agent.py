@@ -75,7 +75,9 @@ def test_tools_reach_spotify():
     ]
     for tool_call, expected in cases:
         a = assistant(tool_call, AIMessage("Done, sir."), spotify=FakeSpotify())
-        assert a.respond("do it") == "Done, sir."
+        # Music that starts or changes answers for itself: she says nothing ("only then reply anything")
+        quiet = tool_call.tool_calls[0]["name"] in ("play", "play_something", "skip")
+        assert a.respond("do it") == ("" if quiet else "Done, sir."), tool_call.tool_calls
         assert a._spotify.calls == [expected], (tool_call.tool_calls, a._spotify.calls)
 
 
@@ -141,6 +143,15 @@ def test_memory_finds_what_matters_and_persists():
         m.add("Aalok asked what are you doing tonight | NIA answered your gym day is Tuesday", "exchange")
         hits = m.search("what are you doing right now", k=4, min_similarity=0.2)
         assert sum("right now" in h[3] for h in hits) == 1 and any("tonight" in h[3] for h in hits), hits
+        m.db.close()
+
+        # A past exchange needs a closer match than a fact: at 0.24-0.28 they were nearly all off-topic in real
+        # sessions ("Sat down" brought back a volume change). Both of these score 0.25 against the question
+        m = Memory("stub", Path(tmp) / "loose.sqlite", embed=word_embed)
+        m.add("Aalok likes sad songs best late on rainy winter evenings with tea and a book nearby", "fact")
+        m.add("Aalok asked why are sad songs so loud | NIA answered Done sir volume at seventy five", "exchange")
+        hits = m.search("play some sad songs", min_similarity=0.22)
+        assert [(round(h[0], 2), h[2]) for h in hits] == [(0.25, "fact")], hits
         m.db.close()
 
         # Exchanges that only made sense in the moment aren't kept
@@ -266,6 +277,8 @@ def test_approval_layers():
     approval.hazards = model_says(0.0)  # the model thinks everything is harmless...
     assert approval.decide(run("taskkill /F /IM chrome.exe"), "m", 0.5)[0] == "ask"  # ...but risks always ask
     assert approval.decide(run("winget install VLC"), "m", 0.5)[0] == "ask"
+    # "Shut down the computer system": the PC goes off only after a spoken yes ("shut down" alone is NIA herself)
+    assert approval.decide(run("shutdown /s /t 0"), "m", 0.5) == ("ask", "it shuts down or restarts the PC")
     assert approval.decide(run("powershell \"...SendKeys('^w')\""), "m", 0.5)[0] == "ask"
     assert approval.decide({"name": "edit_file", "args": {"file_path": "/a.txt"}}, "m", 0.5)[0] == "ask"
     assert calls == [], "the model must never be asked about risky commands or file changes"
@@ -568,6 +581,60 @@ def test_play_something_opens_spotify_and_picks_from_preferences():
 
 
 @without_waiting
+def test_spotify_is_given_time_and_one_restart_before_she_says_anything():
+    # Real sessions: Spotify, opened cold, was playing ~10 s after launch - but NIA gave up at ~3 s, said it
+    # wasn't responding and offered a restart. Now it gets ~15 s, then this PC's app is restarted once, unasked
+    from agent import action_controller
+    launched = []
+    action_controller.os.startfile = launched.append
+
+    class SlowToPlay:
+        """Only a phone is listed until the PC app is launched; playback starts on look number `plays_at`"""
+        def __init__(self, plays_at, devices=None):
+            self.looks, self.plays_at, self.listed = 0, plays_at, devices
+        def devices(self):
+            if self.listed is not None:
+                return {"devices": self.listed}
+            return {"devices": [{"id": "laptop", "name": "ALOKLT", "type": "Computer", "is_active": False}]
+                    if launched else [{"id": "phone", "type": "Smartphone", "is_active": False}]}
+        def start_playback(self, **kwargs):
+            pass
+        def current_playback(self):
+            self.looks += 1
+            return {"item": {"name": "x"}, "is_playing": self.looks >= self.plays_at, "device": {"name": "ALOKLT"}}
+
+    def controller(api):
+        c = object.__new__(SpotifyController)  # skip OAuth
+        c.sp, c.restarts = api, []
+        c.restart_app = lambda: c.restarts.append(1) or setattr(c, "restarted", time.time())  # never the real app
+        return c
+
+    # Opened cold, playing after ~12 s: no error, no restart - nothing to say
+    c = controller(SlowToPlay(plays_at=25))
+    c._start(context_uri="spotify:playlist:p")
+    assert launched == ["spotify:"] and c.sp.looks == 25 and c.restarts == []
+    # Stuck for the whole 15 s: restarted once, unasked, then it plays
+    c = controller(SlowToPlay(plays_at=35))
+    c._start(context_uri="spotify:playlist:p")
+    assert c.restarts == [1] and c.sp.looks == 35
+    # Still nothing after the restart: only now is there something to tell the user
+    c = controller(SlowToPlay(plays_at=10 ** 6))
+    try:
+        c._start(context_uri="spotify:playlist:p")
+        raise AssertionError("a Spotify that never plays was reported as playing")
+    except RuntimeError as e:
+        assert c.restarts == [1] and "even after restarting" in str(e) and "ALOKLT" in str(e)
+    # Playing on the phone: restarting this PC's app wouldn't help, so it isn't
+    phone = {"id": "phone", "name": "A069P", "type": "Smartphone", "is_active": True}
+    c = controller(SlowToPlay(plays_at=10 ** 6, devices=[phone]))
+    try:
+        c._start(context_uri="spotify:playlist:p")
+        raise AssertionError("claimed success")
+    except RuntimeError as e:
+        assert c.restarts == [] and "Nothing started playing on A069P" in str(e)
+
+
+@without_waiting
 def test_spotify_playback_fixes_from_a_real_session():
     import spotipy
     from agent import action_controller
@@ -603,16 +670,17 @@ def test_spotify_playback_fixes_from_a_real_session():
     assert c.sp.calls[0]["context_uri"] == "spotify:album:a" and c.sp.calls[0]["offset"] == {"uri": "spotify:track:t"}
     assert "uris" not in c.sp.calls[0]
 
-    # Nothing starts: offer a restart once - but never again after one (the session restarted five times)
+    # Nothing starts: restarted once by itself - but never again within 10 minutes (a session restarted five times)
     c = controller(StubAPI(plays=False))
-    for already_restarted, expect in ((False, "offer to restart"), (True, "Don't restart it again")):
-        if already_restarted:
-            c.restarted = action_controller.time.time()
+    restarts = []
+    c.restart_app = lambda: restarts.append(1) or setattr(c, "restarted", action_controller.time.time())
+    for expect in ("even after restarting", "Nothing started playing"):
         try:
             c.play_track("thunderstruck")
             raise AssertionError("claimed success")
         except RuntimeError as e:
             assert expect in str(e), str(e)
+    assert restarts == [1], "restarted once, not on every try"
 
     # A device id that went stale with a restart (404) is looked up again, once
     c = controller(StubAPI(ghost_device=True))
@@ -994,6 +1062,7 @@ def test_playback_wakes_an_idle_device_and_checks_it_started():
     def start(devices, plays=True):
         c = object.__new__(SpotifyController)  # skip OAuth
         c.sp = StubAPI(devices, plays)
+        c.restart_app = lambda: setattr(c, "restarted", time.time())  # never the real app
         c._start(context_uri="spotify:playlist:x")
         return c.sp.started
 
@@ -1016,7 +1085,7 @@ def test_playback_wakes_an_idle_device_and_checks_it_started():
         start([laptop], plays=False)
         raise AssertionError("a stuck Spotify app was reported as playing")
     except RuntimeError as e:
-        assert "nothing started playing on ALOKLT" in str(e)
+        assert "Nothing started playing" in str(e) and "even after restarting" in str(e)
 
 
 if __name__ == "__main__":

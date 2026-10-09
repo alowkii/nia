@@ -23,6 +23,9 @@ logger = logging.getLogger(__name__)
 
 DB = Path(__file__).resolve().parent.parent / "memory" / "nia_memory.sqlite"
 DUPLICATE = 0.88  # memories at least this alike are the same thing said twice
+# Past exchanges need a closer match than facts: the ones recalled at 0.24-0.28 were nearly all off-topic
+# ("Sat down" brought back a volume change), and an old answer like "X is playing" reads as current
+EXCHANGE_MIN = 0.30
 # EmbeddingGemma's own prompts for stored documents and for searches
 DOC_PREFIX, QUERY_PREFIX = "title: none | text: ", "task: search result | query: "
 
@@ -84,7 +87,7 @@ class Memory:
         for i in np.argsort(-sims):
             if sims[i] < min_similarity or len(hits) == k:
                 break
-            if self.rows[i][0] in exclude:
+            if self.rows[i][0] in exclude or self.rows[i][1] == "exchange" and sims[i] < EXCHANGE_MIN:
                 continue
             # One of each: the same question asked again scored 0.90-1.0 against its earlier copies (different
             # exchanges 0.55-0.81), and four copies of one answer only teach her to repeat it

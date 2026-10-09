@@ -232,14 +232,16 @@ class Assistant:
             pass
 
     def handle(self, message):
-        """A restart she asked for (restart_myself) is carried out; everything else is for the page.
-        "all" reboots the whole of NIA - this script, the window's page, the LLM server, the assistant - so
-        changed code loads; "assistant" restarts just her"""
+        """A restart she asked for (restart_myself, shut_down_myself) is carried out; everything else is for the
+        page. "all" reboots the whole of NIA - this script, the window's page, the LLM server, the assistant - so
+        changed code loads; "off" shuts all of it down, as closing the window does; "assistant" restarts just her"""
         what = message.pop("restart", None)
-        if what == "all" and self.done:
-            logger.info("She asked for a reboot - restarting all of NIA")
-            self.rebooting = True
-            self.hub.send(state="booting", rebooting=True)
+        if what in ("all", "off") and self.done:
+            self.rebooting = what == "all"
+            logger.info("She asked for a reboot - restarting all of NIA" if self.rebooting
+                        else "Asked to shut down - stopping all of NIA")
+            self.hub.send(**({"state": "booting", "rebooting": True} if self.rebooting
+                             else {"state": "offline", "closing": True}))  # the page closes its window
             self.done.set()
         elif what:
             logger.info(f"She asked to be restarted ({what})")
