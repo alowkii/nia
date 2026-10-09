@@ -214,6 +214,27 @@ with tempfile.TemporaryDirectory() as tmp:
     change_volume.invoke({"step": -500})
     assert nia.tts.level == 0.1  # never silent
 
+# Numbers always as words - heard and shown the same ("50 percent" and "fifty percent" both came out before)
+from utils.words import in_words
+for written, spoken in [
+        ("Volume set to 40%", "Volume set to forty percent"),
+        ("Done, sir. Volume at 50 percent.", "Done, sir. Volume at fifty percent."),
+        ("It's 22:13 on the 9th of October 2026.", "It's twenty-two thirteen on the ninth of October twenty twenty-six."),
+        ("Back at 9:05, or 7:00.", "Back at nine oh five, or seven o'clock."),
+        ("That costs $6.30, or ₹500.", "That costs six dollars and thirty cents, or five hundred rupees."),
+        ("You're on v1.0.1, Python 3.11.9", "You're on version one point oh point one, Python three point eleven point nine"),
+        ("1,234 files, -5 outside, 3.5 stars", "one thousand two hundred and thirty-four files, minus five outside, "
+                                               "three point five stars"),
+        ("It's 26°C, ~35 minutes away", "It's twenty-six degrees, about thirty-five minutes away"),
+        ("Bonsai 2 27B, mp3 at 320kbps", "Bonsai two twenty-seven B, mp three at three hundred and twenty kbps"),
+        ("the 1990s and the 80s", "the nineteen nineties and the eighties"),
+        ("Call 9876543210", "Call nine eight seven six five four three two one zero"),
+        ("Step 2 of 4, 0 left", "Step two of four, zero left"),
+        ("Very good, sir.", "Very good, sir.")]:
+    assert in_words(written) == spoken, (written, in_words(written))
+link = "Here: https://youtube.com/watch?v=abc123 - 2 minutes"
+assert in_words(link) == "Here: https://youtube.com/watch?v=abc123 - two minutes", "links are left alone"
+
 # The ready chime: two warm notes rising, 1.6 s, quiet, silent at both ends (no click), nothing shrill
 from voice_assistant.voice_assistant import CHIME_NOTES, chime
 sound = chime()
@@ -246,8 +267,11 @@ threading.Thread(target=lambda: accepted.append(listener.accept()), daemon=True)
 
 class StubAgent:
     pending = None
+    conversations_over = 0
     def respond(self, text):
         return f"Done: {text}, sir."
+    def learn_preferences(self):  # each conversation's end: learned from in the background
+        StubAgent.conversations_over += 1
 
 nia = WakeWordDetector.__new__(WakeWordDetector)  # skip mic, models and LLM
 nia.settings = {**settings.DEFAULTS, "spoken_replies": False, "wake_word": False}  # shown, never played
@@ -296,6 +320,9 @@ window.send({"type": "text", "text": "pause the music"})
 seen = events_until(state="awake")
 assert {"you": "pause the music"} in seen and {"state": "thinking"} in seen
 assert {"nia": "Done: pause the music, sir."} in seen, "the reply shows in the window even when not spoken"
+window.send({"type": "text", "text": "set the volume to 50%"})
+seen = events_until(state="awake")
+assert {"nia": "Done: set the volume to fifty percent, sir."} in seen, "numbers in words, in the window as in her voice"
 window.send({"type": "text", "text": "Hey Nia"})  # typed her name: the instant greeting, not 15 s of Bonsai
 seen = events_until(state="awake")
 said = [m["nia"] for m in seen if "nia" in m]
@@ -312,6 +339,11 @@ seen = events_until(state="awake")
 assert {"you": "I mean, could you play some lofi?"} in seen, seen
 window.send({"type": "sleep"})
 assert events_until(state="asleep")
+for _ in range(50):  # the conversation ended: she learns from it, on its own thread
+    if StubAgent.conversations_over:
+        break
+    time.sleep(0.02)
+assert StubAgent.conversations_over == 1, "sent to sleep: the conversation is learned from, once"
 window.send({"type": "wake"})
 assert events_until(state="awake")
 window.send({"type": "settings", "values": {"push_to_talk": True}})  # applies at once

@@ -65,7 +65,10 @@ instead of an action.
 
 **Manner:** JARVIS from Iron Man — formal, unhurried and dry: *"Very good, sir. The browser stays."*,
 *"I'm afraid Spotify won't play, sir — even after a restart."* No exclamation
-marks or "Enjoy!", and no wit when something has failed. Waking her after a while gets a greeting,
+marks or "Enjoy!", and no wit when something has failed. **Numbers are always words**, in her voice and in the
+window alike: *"forty percent"*, *"twenty twenty-six"*, *"nine oh five"*, *"six dollars and thirty cents"*,
+*"version one point oh point one"* ([utils/words.py](utils/words.py)) - links stay as they are. Waking her after a
+while gets a greeting,
 picked from **Greetings** in the settings panel (`|` between them) plus a few for the hour: *"Good morning,
 sir."* at 8, *"Burning the midnight oil, sir?"* at 2 am. Called again within half an hour of talking, she
 just answers *"Sir?"* or *"Yes, sir?"*, as someone already in the room would. "Nia, …" with her name first
@@ -325,6 +328,14 @@ NIA remembers across restarts, and only what's relevant reaches the LLM ([agent/
   recalls the skill and she follows its steps instead of working the job out again. "What routines do you know?"
   lists them; "forget my evening routine" deletes one. The idea comes from [memU](https://github.com/NevaMind-AI/memU),
   kept inside NIA's own memory: no extra model calls, no cloud.
+- **Preferences, learned by herself** — when a conversation ends, she reviews it in the background: what you
+  said *and* what she did (setting the volume to 50 after you said "too loud" says more than either alone).
+  [LangMem](https://langchain-ai.github.io/langmem/)'s memory manager, run on Bonsai, compares it with what she
+  already knows and adds a preference ("Aalok likes Spotify at 40 percent volume"), rewrites one that changed, or
+  removes one you've said is no longer true. Most conversations teach her nothing, and then nothing is saved. What
+  she's learned goes with every turn, so she just follows it; "what have you learned about me?" lists it, and
+  "forget that I…" removes one. The review takes ~15 s of the LLM after you've stopped talking, and she warms her
+  prompt cache again afterwards; switch it off with **Learn my preferences** in the settings panel.
 - **Past exchanges** — every finished turn worth keeping is saved too (not "I guess so", or a sentence cut off at
   "..."), and a search returns one of each: the same question asked five times comes back once.
 - **Recall by meaning** — each message is embedded with [EmbeddingGemma](https://ollama.com/library/embeddinggemma)
@@ -420,7 +431,7 @@ python tests/test_nia.py
 
 [tests/test_voice.py](tests/test_voice.py) checks the fuzzy wake-phrase matcher against real Moonshine
 transcripts — what should wake her, what shouldn't, and where the threshold cuts — plus
-the cleanup of replies before they're spoken (markdown, the ~40-word cut), how her name
+the cleanup of replies before they're spoken (markdown, the ~40-word cut, numbers as words), how her name
 alone and clipped fragments are recognised, greetings, her voice volume, each sentence's loudness
 curve, the ready chime (warm, never tinny, no click, played once she's ready), and the voice loop driven from
 the window: typed commands, the mic button (wake, sleep, push-to-talk), settings that apply at once, asking to
@@ -456,7 +467,7 @@ agent/claude.py                     asking Claude Code, and building changes to 
 agent/memory.py                     long-term memory and skills, recalled by vector search
 agent/server.py                     the LLM server command and health check
 agent/prompts/                      system prompt
-utils/                              the assistant's link to the window, microphones, logging
+utils/                              the assistant's link to the window, microphones, logging, numbers as words
 assets/logo/                        the NIA logo: SVG and PNG in every lockup, app icons, favicon
 assets/screenshots/                 the window, for this README
 tests/                              the offline test suites (test_agent, test_voice, test_nia)

@@ -19,6 +19,8 @@ psutil==7.1.3
 deepagents==0.7.23
 langgraph==1.2.12
 langchain-openai==1.6.7
+# Learning your preferences after each conversation: LangMem's memory manager, run on Bonsai
+langmem==0.0.30
 
 # Spotify control
 spotipy==2.25.2
@@ -31,6 +33,9 @@ youtube-transcript-api==1.2.4
 # Start-menu shortcut (pywin32 sets her app ID on both, so the taskbar shows NIA's icon - not Python's or Edge's)
 pywebview==6.2.1
 pywin32==312
+
+# Numbers as words in everything she says ("forty percent", "twenty twenty-six")
+num2words==0.5.14
 
 # Config
 python-dotenv==1.2.1

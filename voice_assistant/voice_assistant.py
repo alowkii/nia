@@ -24,6 +24,7 @@ from agent import claude
 from agent.chat import CANCEL, AssistantModel, ensure_llm_server
 from utils import mics
 from utils.hud import hud
+from utils.words import in_words
 
 # Set logging
 from utils.logger import logging
@@ -473,6 +474,10 @@ class WakeWordDetector:
     def idle(self):
         hud.show("awake" if self.awake else "asleep")
 
+    def conversation_over(self):
+        """Back to waiting for the wake phrase: she learns from the conversation in the background"""
+        threading.Thread(target=self.assistant.learn_preferences, daemon=True).start()
+
     def stay_awake(self):
         """After an exchange: listen for a follow-up until the session times out - or, with push-to-talk
         released, only for the words still being transcribed"""
@@ -510,6 +515,7 @@ class WakeWordDetector:
                     logger.info(f"No command - listening for {s['wake_phrase']!r} again.")
                     self.awake = False
                     self.idle()
+                    self.conversation_over()
                     continue
                 if line is None:  # the window closed or asked her to stop
                     logger.info("Stopping (asked to quit)")
@@ -538,6 +544,7 @@ class WakeWordDetector:
                 if control == "sleep":
                     self.awake, self.rest = False, ""
                     self.idle()
+                    self.conversation_over()
                     continue
                 typed = control == "text"
 
@@ -650,6 +657,7 @@ class WakeWordDetector:
         never interrupted, never two native calls at once - while this thread plays them with
         sounddevice and, on "stop", just stops playback. The helper finishes its current sentence
         and quits, so a stop in the first second waits for that sentence (under ~1 s)."""
+        text = in_words(text)  # numbers as words - heard and shown the same: "fifty percent", never "50%"
         with self.voice:  # "One moment" from a slow step's timer and the reply never talk over each other
             self._speak(text)
 

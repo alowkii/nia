@@ -191,6 +191,105 @@ def test_a_stuck_loop_is_cut_short():
     assert a.respond("check again") == "Done, sir." and ran[-1] == "again"
 
 
+def test_she_learns_preferences_from_a_conversation():
+    # After a conversation, LangMem's memory manager reads it - what was said and what she did - with what she
+    # already knows, and says what to add, rewrite or drop. Here a stand-in plays the manager, in its real format
+    import tempfile
+    from pathlib import Path
+    import settings
+    from agent import chat
+    from agent.memory import Memory
+    from langmem.knowledge.extraction import ExtractedMemory, Memory as LangMemMemory
+    from langchain_core.tools import tool
+
+    class RemoveDoc:  # what LangMem returns for a memory to delete (only its name is checked)
+        def __init__(self, json_doc_id):
+            self.json_doc_id = json_doc_id
+
+    class Manager:
+        def __init__(self, decide):
+            self.decide, self.seen = decide, []
+        def invoke(self, state):
+            self.seen.append(state)
+            return self.decide(state)
+
+    @tool
+    def set_volume(percent: int) -> str:
+        """Sets the Spotify volume"""
+        return f"Volume set to {percent}%"
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        real_path = settings.PATH
+        settings.PATH = Path(tmp) / "settings.json"  # never the real settings.json
+        settings.save(settings.DEFAULTS)
+        m = Memory("stub", Path(tmp) / "memory.sqlite", embed=word_embed)
+        stale = m.add("Aalok likes Spotify at 80 percent volume", "preference")
+        kept = m.add("Aalok wants short spoken answers", "preference")
+        gone = m.add("Aalok listens to jazz on Sundays", "preference")
+        try:
+            # A conversation: the volume set twice, once as a correction - the evidence is in what she did
+            a = assistant(call("set_volume", percent=80), AIMessage("Done, sir."),
+                          call("set_volume", percent=50), AIMessage("Done, sir."),
+                          AIMessage("Very good, sir."), extra_tools=[set_volume], memory=m)
+            a.respond("play something and turn it up")
+            a.respond("too loud, put it at 50")
+            a.respond("I don't really do jazz anymore")
+            assert {"role": "assistant", "content": "[Did: set_volume(percent=50)] Done, sir."} in a.session
+
+            def decide(state):  # rewrite the volume, keep the answers one, drop jazz, learn something new
+                known = {memory_id: doc.content for memory_id, doc in state["existing"]}
+                assert known[str(stale)].endswith("80 percent volume") and len(known) == 3
+                return [ExtractedMemory(str(stale), LangMemMemory(content="Aalok likes Spotify at 50 percent volume")),
+                        ExtractedMemory(str(kept), LangMemMemory(content=known[str(kept)])),
+                        ExtractedMemory(str(gone), RemoveDoc(str(gone))),
+                        ExtractedMemory("new-1", LangMemMemory(content="Aalok   corrects loud music quickly"))]
+
+            a.preference_manager = Manager(decide)
+            warmed = []
+            a.warm_up = lambda: warmed.append(1)
+            a.learn_preferences()
+            state = a.preference_manager.seen[0]
+            assert state["messages"][0] == {"role": "user", "content": "play something and turn it up"}
+            known = [text for _, text in m.preferences()]
+            assert known == ["Aalok wants short spoken answers", "Aalok likes Spotify at 50 percent volume",
+                             "Aalok corrects loud music quickly"], known
+            assert a.session == [] and warmed == [1], "learned once, then the LLM's cache is warmed again"
+
+            # What she learned goes with every turn - not left to a search
+            sent = []
+
+            class Recording(ScriptedLLM):
+                def _generate(self, messages, *args, **kwargs):
+                    sent.extend(messages)
+                    return super()._generate(messages, *args, **kwargs)
+
+            b = assistant(llm=Recording(messages=iter([AIMessage("Very good, sir.")])), memory=m)
+            b.respond("what's the weather like")
+            assert "Aalok likes Spotify at 50 percent volume" in str(sent[-1].content)
+            assert all(hit[2] != "preference" for hit in m.search("spotify volume", min_similarity=0.01)), \
+                "never in the recalled memories too"
+            # "Forget that I..." removes a learned preference
+            assert m.forget("loud music corrects") == ["Aalok corrects loud music quickly"]
+
+            # Nothing to learn from, learning switched off, or the manager failing: no call, or no harm
+            idle = Manager(lambda state: [])
+            b.preference_manager, b.session = idle, []
+            b.warm_up = lambda: None
+            b.learn_preferences()
+            settings.save({**settings.DEFAULTS, "learn_preferences": False})
+            b.record("hello", [], "Evening, sir.")
+            b.learn_preferences()
+            assert idle.seen == [] and b.session == []
+            settings.save(settings.DEFAULTS)
+            b.preference_manager = Manager(lambda state: 1 / 0)
+            b.record("hello", [], "Evening, sir.")
+            b.learn_preferences()  # logged, never raised
+            assert len(m.preferences()) == 2
+        finally:
+            settings.PATH = real_path
+            m.db.close()
+
+
 def test_chat_does_not_build_spotify():
     a = assistant(AIMessage("Evening, sir."))
     assert a.respond("Hey Nia!") == "Evening, sir."
