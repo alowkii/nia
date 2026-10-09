@@ -10,6 +10,7 @@ import os
 import queue
 import secrets
 import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -130,6 +131,75 @@ def bonsai_servers():
     return found
 
 
+def kill_tree(pid):
+    """A process and everything under it - .venv's python.exe is only a launcher; the real Python runs as its child,
+    and killing the launcher alone left her running"""
+    try:
+        root = psutil.Process(pid)
+        family = root.children(recursive=True) + [root]
+    except psutil.Error:
+        return
+    for proc in family:
+        try:
+            proc.kill()
+        except psutil.Error:
+            pass
+    psutil.wait_procs(family, timeout=10)
+
+
+def leftovers():
+    """NIA processes an earlier run left behind: an assistant (main.py here) or a model server whose parent is gone -
+    after a crash or a closed console. Never one with a living parent, such as a python main.py run by hand"""
+    def orphan(proc):
+        parent = proc.parent()
+        return parent is None or parent.create_time() > proc.create_time()  # its pid reused by something newer
+    found, servers = [], {proc.pid for proc in bonsai_servers()}
+    for proc in psutil.process_iter(["name", "cmdline", "cwd"]):
+        try:
+            assistant = ((proc.info["name"] or "").lower().startswith("python") and proc.info["cwd"]
+                         and Path(proc.info["cwd"]).resolve() == ROOT and (proc.info["cmdline"] or [""])[-1] == "main.py")
+            if (assistant or proc.pid in servers) and orphan(proc):
+                found.append(proc)
+        except (psutil.Error, OSError):
+            pass
+    return found
+
+
+JOBS = []  # open for as long as nia.py runs: when Windows closes them, it ends what's in them
+
+
+def bound_to_me(proc):
+    """Windows ends proc when nia.py ends, however that happens - Ctrl+C, a closed console, a crash, Task Manager.
+    A model server holding ~6 GB of GPU memory was left running after a Ctrl+C cut a shutdown short"""
+    if os.name != "nt":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    class Basic(ctypes.Structure):  # JOBOBJECT_BASIC_LIMIT_INFORMATION
+        _fields_ = [("user_time", ctypes.c_int64), ("job_time", ctypes.c_int64), ("flags", wintypes.DWORD),
+                    ("min_ws", ctypes.c_size_t), ("max_ws", ctypes.c_size_t), ("processes", wintypes.DWORD),
+                    ("affinity", ctypes.c_size_t), ("priority", wintypes.DWORD), ("scheduling", wintypes.DWORD)]
+
+    class Extended(ctypes.Structure):  # JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+        _fields_ = [("basic", Basic), ("io", ctypes.c_ulonglong * 6), ("process_memory", ctypes.c_size_t),
+                    ("job_memory", ctypes.c_size_t), ("peak_process", ctypes.c_size_t), ("peak_job", ctypes.c_size_t)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    job = kernel32.CreateJobObjectW(None, None)
+    limits = Extended()
+    limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not (job and kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits))  # 9: extended
+            and kernel32.AssignProcessToJobObject(job, int(proc._handle))):
+        logger.warning(f"Couldn't tie the LLM server to NIA (error {ctypes.get_last_error()}) - "
+                       "if NIA is killed, end llama-server yourself")
+        return
+    JOBS.append(job)
+
+
 def ensure_ollama():
     """Memory and auto-approval run on Ollama: start its tray app (as at login) if it isn't up"""
     s = settings.load()
@@ -167,6 +237,7 @@ class Server:
         logger.info(f"Starting LLM server: {' '.join(llm_server_command(s))}")
         self.proc = subprocess.Popen(llm_server_command(s), creationflags=HIDDEN,
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # it logs to its own file
+        bound_to_me(self.proc)
         threading.Thread(target=self._wait, args=(self.proc, s["port"]), daemon=True).start()
 
     def _wait(self, proc, port, timeout=180):
@@ -186,7 +257,10 @@ class Server:
         """The server NIA started; any_of_ours: every llama-server of NIA's, even one she didn't start"""
         if self.proc and self.proc.poll() is None:
             self.proc.terminate()
-            self.proc.wait(10)
+            try:
+                self.proc.wait(10)
+            except subprocess.TimeoutExpired:  # an error here once cut the rest of the shutdown short
+                self.proc.kill()
         if any_of_ours:
             ours = bonsai_servers()  # never Ollama's
             for proc in ours:
@@ -271,9 +345,9 @@ class Assistant:
             self.send({"type": "quit"})
             try:
                 self.proc.wait(timeout)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait()
+            except subprocess.TimeoutExpired:  # busy, or stuck: all of it, the real Python under the launcher too
+                logger.info(f"The assistant didn't stop within {timeout}s - ending it")
+                kill_tree(self.proc.pid)
 
     def restart(self):
         self.stop()
@@ -448,6 +522,9 @@ def main():
             if not hub.last_seen and not hub.pages:
                 open_window(url)
         threading.Thread(target=reopen, daemon=True).start()
+    for proc in leftovers():  # two assistants on one microphone would both answer
+        logger.info(f"Ending a leftover from an earlier run: {proc.name()} ({proc.pid})")
+        kill_tree(proc.pid)
     ensure_ollama()
     server.start()
     assistant.start()
@@ -467,6 +544,7 @@ def main():
             pass
     except KeyboardInterrupt:
         logger.info("Stopping (Ctrl+C)")
+    signal.signal(signal.SIGINT, signal.SIG_IGN)  # a second Ctrl+C mustn't cut the shutdown short
     assistant.stop()
     server.stop(any_of_ours=assistant.rebooting)  # a reboot reloads the model even if NIA didn't start it
     httpd.shutdown()
@@ -476,6 +554,7 @@ def main():
         logger.info("Rebooting: handed over to a fresh copy")
     elif window and window.poll() is None:
         window.terminate()
+    logger.info("Stopped everything")
 
 
 if __name__ == "__main__":

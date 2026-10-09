@@ -150,7 +150,9 @@ python nia.py
 behind it, starts the LLM server if it isn't already up (~20 s) and the assistant. When the orb shows
 *Standing by* — with a soft, warm two-note chime as she's ready (*Chime when she's ready* in the settings turns
 it off) — say "Hey Nia", or type into the command line at the bottom. **Closing the window shuts everything
-down**, including the LLM server if NIA started it. Running it again while NIA is up just opens another window
+down**, including the LLM server if NIA started it — even if `nia.py` is killed or its console closed, Windows
+ends the server with it — and the log ends with *Stopped everything*. Anything a crash leaves behind is
+cleaned up the next time she starts. Running it again while NIA is up just opens another window
 onto her. Say "reboot" to restart all of it — see **Rebooting** under [How it works](#how-it-works).
 
 ### The window
