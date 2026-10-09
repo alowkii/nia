@@ -13,9 +13,11 @@ from typing import Literal
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
+from deepagents.middleware.summarization import create_summarization_middleware
 from langchain.agents.middleware import TodoListMiddleware, wrap_model_call, wrap_tool_call
 from langchain_core.exceptions import ContextOverflowError
 from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
@@ -71,6 +73,31 @@ def pc_backend():
     # ponytail: no sandbox - the shell and files are the real PC; the spoken yes is the only guard
     shell = LocalShellBackend(root_dir=Path.home(), virtual_mode=True, inherit_env=True, timeout=60)
     return CompositeBackend(default=shell, routes=drives)
+
+
+def logged_summaries(summarizer, backend):
+    """Deep Agents' summarizer, logged. When the conversation nears Bonsai's context (85% of it, by a rough count
+    of the whole conversation) it saves the older messages to a file and has Bonsai condense them into a summary.
+    That happened at least six times, silently - an extra LLM call on that turn, and a file nobody knew about"""
+    offload, summarize = summarizer._offload_to_backend, summarizer._create_summary
+
+    def offload_logged(where, messages, session_id):
+        path = offload(where, messages, session_id)
+        folder = getattr(getattr(backend, "default", None), "cwd", None)  # the PC's home folder (none in tests)
+        saved = f"; the full text is in {folder / path.lstrip('/') if folder else path}" if path else ""
+        logger.info(f"Summarizing the conversation: it neared Bonsai's context, so {len(messages)} older messages "
+                    f"(~{count_tokens_approximately(messages)} tokens) are being condensed{saved}")
+        return path
+
+    def summarize_logged(messages):
+        started = time.time()
+        summary = summarize(messages)
+        size = count_tokens_approximately([HumanMessage(summary)])
+        logger.info(f"Summarized in {time.time() - started:.1f}s: ~{size} tokens of summary replace them")
+        return summary
+
+    summarizer._offload_to_backend, summarizer._create_summary = offload_logged, summarize_logged
+    return summarizer
 
 
 # Longest tool result the model sees. Deep Agents only offloads results over 20K tokens - more than
@@ -342,15 +369,18 @@ class AssistantModel:
         llm = llm or ChatOpenAI(model=model, base_url=f"http://127.0.0.1:{s['port']}/v1", api_key="none",
                                 profile={"max_input_tokens": s["context"]})
         self.llm = llm
+        backend = backend or pc_backend()
         self.agent = create_deep_agent(
             model=llm,
             tools=self._spotify_tools() + youtube.TOOLS + web.TOOLS + claude.TOOLS + list(extra_tools)
             + (self.memory.tools() if self.memory else []),
             system_prompt=initial_prompt + pc_prompt + self_prompt,
-            backend=backend or pc_backend(),
+            backend=backend,
             interrupt_on={name: True for name in NEEDS_APPROVAL},
             # write_todos: a plan for a multi-step job, worked through step by step (this Deep Agents has none)
-            middleware=[tool_guard, recent_turns(s["history_turns"]), TodoListMiddleware()],
+            # The summarizer under its own name takes the default's place: same settings and position, now logged
+            middleware=[logged_summaries(create_summarization_middleware(llm, backend), backend), tool_guard,
+                        recent_turns(s["history_turns"]), TodoListMiddleware()],
             # The stock sub-agent, plus tool_guard: Deep Agents doesn't pass custom middleware down, so its
             # steps would ignore "stop", skip the result cap and go unlogged. It inherits the tools and approvals
             subagents=[{**GENERAL_PURPOSE_SUBAGENT, "middleware": [tool_guard]}],
