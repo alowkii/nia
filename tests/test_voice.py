@@ -187,6 +187,34 @@ with nia.working():
     assert nia.lines.get_nowait().text == "pause the music"
 assert not nia.busy
 
+# "Stop" while a sentence is still being made (the native call can't be cut short): that sentence never starts
+# playing - before, it was started and stopped at once, a blip - and nothing after it is made
+from voice_assistant import voice_assistant as va
+played, made = [], []
+talker = WakeWordDetector.__new__(WakeWordDetector)
+talker.settings = {**settings.DEFAULTS, "spoken_replies": True, "duck_level": 1}
+talker.interrupted, talker.voice = __import__("threading").Event(), __import__("threading").Lock()
+
+
+class StoppedWhileMaking:
+    def synthesize(self, sentence, speed, volume):
+        made.append(sentence)
+        talker.interrupted.set()  # "Hey Nia, stop" lands while this sentence is being made
+        return np.zeros(2400, dtype=np.float32), 24000
+
+
+talker.tts = StoppedWhileMaking()
+real = va.sd.play, va.sd.stop, va.sd.wait, va.hud
+va.sd.play = lambda *args, **kwargs: played.append(args)
+va.sd.stop = va.sd.wait = lambda *args, **kwargs: None
+va.hud = SimpleNamespace(send=lambda **message: None, speak=lambda *args: None, show=lambda *args: None)
+try:
+    talker.speak("First sentence here. The second is never made. Nor the third.")
+finally:
+    va.sd.play, va.sd.stop, va.sd.wait, va.hud = real
+assert played == [], "a sentence made after the stop was still started"
+assert made == ["First sentence here."], "kept making sentences after the stop"
+
 heard(nia, "the tail of her last sentence", duration=2.0)  # began while she was talking
 assert nia.lines.empty()
 nia.busy_ended = time.time() - 5
