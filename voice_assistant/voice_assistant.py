@@ -687,6 +687,8 @@ class WakeWordDetector:
         maker.start()
         try:
             while (speech := ready.get()) is not None:
+                if self.interrupted.is_set():  # "stop" came while this sentence was being made: never start it
+                    break
                 pcm, rate = speech
                 hud.speak(pcm, rate)
                 sd.play(np.asarray(pcm, dtype=np.float32), rate)
