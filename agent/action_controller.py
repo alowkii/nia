@@ -148,8 +148,7 @@ class SpotifyController:
         playback = self.get_current_playback()
         if not playback or not playback.get("item"):
             return "Nothing is playing right now"
-        state = "playing" if playback.get("is_playing") else "paused"
-        return f"{_describe(playback['item'])}, currently {state}"
+        return _describe(playback["item"]) + ("" if playback.get("is_playing") else " (paused)")
 
     def play_track(self, track_name):
         """Search and play a track"""

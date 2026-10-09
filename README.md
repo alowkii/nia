@@ -65,9 +65,11 @@ instead of an action.
 
 **Manner:** JARVIS from Iron Man — formal, unhurried and dry: *"Very good, sir. The browser stays."*,
 *"I'm afraid Spotify won't play, sir — even after a restart."* No exclamation
-marks or "Enjoy!", and no wit when something has failed. Waking her gets a different greeting
-each time, picked from **Greetings** in the settings panel (`|` between them) plus a few for the
-hour: *"Good morning, sir."* at 8, *"Burning the midnight oil, sir?"* at 2 am. The voice is Kokoro's British
+marks or "Enjoy!", and no wit when something has failed. Waking her after a while gets a greeting,
+picked from **Greetings** in the settings panel (`|` between them) plus a few for the hour: *"Good morning,
+sir."* at 8, *"Burning the midnight oil, sir?"* at 2 am. Called again within half an hour of talking, she
+just answers *"Sir?"* or *"Yes, sir?"*, as someone already in the room would. "Nia, …" with her name first
+wakes her too. The voice is Kokoro's British
 `bm_george`; any American or British Kokoro or Piper voice can be picked in the settings panel
 (`af_heart` was the original). It runs at 1.2× speed ("NIA's speaking speed" in the panel).
 
@@ -77,6 +79,10 @@ window stays open and reloads itself; ~40 s later she's back at *Standing by* wi
 fresh and memory kept. If something of hers is stuck (she keeps mishearing), she may restart just her speech and
 agent on her own (~10 s). Ollama is left running; its models hold no NIA code. "Shut down" or "turn off"
 switches all of NIA off instead, as closing the window does.
+
+**About herself:** "What version are you?", "Where's your code?", "What's planned for you?" — she knows her
+release (from git), her folder and what she runs on, and reads this README and your local `TODO.md` (if you keep one) for the rest,
+without asking first.
 
 Her own voice volume is a tool too: "speak up", "you're too loud", "talk at 50 percent"
 (10-100%; more would only clip). It's saved, so it survives restarts.
@@ -195,7 +201,8 @@ Everything lands in `logs/`:
 
 | File | What's in it |
 |---|---|
-| `nia.log` | Each turn — what was heard or typed (and transcription latency), tool calls with arguments and results, the reply, LLM and speech timings — plus startup, settings changes, and every crash with its full traceback. Rotates at 5 MB, keeping 3 old files. |
+| `nia.log` | Each turn — what was heard or typed (and transcription latency), tool calls with arguments and results (a shell command, its approval decision and its output, as much as NIA saw), the reply, LLM and speech timings — plus each step Claude took (every search, page, edit and command), startup, settings changes, and every crash with its full traceback. Rotates at 5 MB, keeping 3 old files. |
+| `claude/` | Every Claude run, whole: one transcript per question or change (`<time>-ask-<question>.jsonl`, `<time>-build-<request>.jsonl`). |
 | `assistant.out.log` | The hidden assistant's console output — mostly a copy of the above, plus anything a native library prints as it crashes. |
 | `window.log` | The window's script (nia.py): starting and stopping the server and assistant, settings changes. |
 | `test.log` | What the test suites log, kept out of NIA's real log. |

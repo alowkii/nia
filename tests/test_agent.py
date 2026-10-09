@@ -93,6 +93,104 @@ def test_spotify_errors_go_back_to_the_model():
     assert "no active device" in tool_msg.content
 
 
+def test_she_knows_about_herself():
+    # "What version are you?", "Where's your code?", "What's planned for you?": answered from facts about this copy
+    # and her own docs - not guessed, and not asked of Claude, who can't see this PC
+    from agent.prompts import initial
+    sent = []
+
+    class Recording(ScriptedLLM):
+        def _generate(self, messages, *args, **kwargs):
+            sent.extend(messages)
+            return super()._generate(messages, *args, **kwargs)
+
+    assistant(llm=Recording(messages=iter([AIMessage("Version 1.0.1, sir.")]))).respond("what version are you?")
+    assert f"You are NIA {initial.version}, running entirely on this PC" in str(sent[0].content), "it reaches the model"
+    for fact in (f"NIA {initial.version}", str(initial.ROOT), initial.tool_path(str(initial.ROOT)), "README.md", "TODO.md",
+                 initial.voice):
+        assert fact in initial.self_prompt, fact
+    assert initial.version.startswith("v"), "the release, from git tags"
+    real = initial.ROOT
+    initial.ROOT = Path(r"Z:\no-such-folder")
+    try:
+        assert initial.git("describe", "--tags") == "", "no git: unknown, never a made-up version"
+    finally:
+        initial.ROOT = real
+
+
+def test_now_playing_says_just_the_song():
+    # "X by Y, currently playing" came out as "...sir - and it's currently playing"
+    class Playback:
+        def __init__(self, playing):
+            self.playing = playing
+        def current_playback(self):
+            return {"item": {"name": "Haven't Met You Yet", "artists": [{"name": "Michael Bublé"}]},
+                    "is_playing": self.playing}
+    c = object.__new__(SpotifyController)  # skip OAuth
+    c.sp = Playback(True)
+    assert c.now_playing() == "Haven't Met You Yet by Michael Bublé"
+    c.sp = Playback(False)
+    assert c.now_playing() == "Haven't Met You Yet by Michael Bublé (paused)"
+
+
+def test_a_slow_step_says_one_moment_once():
+    # A shell command or search that runs long: "One moment, sir" instead of a minute of silence - once per turn
+    from agent import chat
+    from langchain_core.tools import tool
+
+    @tool
+    def slow_thing() -> str:
+        """Takes a while"""
+        time.sleep(0.3)
+        return "found it"
+
+    @tool
+    def quick_thing() -> str:
+        """Instant"""
+        return "here"
+
+    said = []
+    real = chat.ANNOUNCE, chat.SLOW, chat.SLOW_TOOLS
+    chat.ANNOUNCE, chat.SLOW, chat.SLOW_TOOLS = (lambda: said.append("One moment, sir.")), 0.05, {"slow_thing"}
+    try:
+        a = assistant(call("slow_thing"), call("slow_thing"), AIMessage("Found it, sir."),
+                      call("quick_thing"), AIMessage("Here, sir."), extra_tools=[slow_thing, quick_thing])
+        assert a.respond("find it") == "Found it, sir." and said == ["One moment, sir."], "once, not per step"
+        assert a.respond("quick one") == "Here, sir." and said == ["One moment, sir."], "nothing for a quick step"
+    finally:
+        chat.ANNOUNCE, chat.SLOW, chat.SLOW_TOOLS = real
+
+
+def test_a_stuck_loop_is_cut_short():
+    # A real session ran the same empty shell command 56 times in a row ("Is the computer on DND?"), another combed
+    # folders for three minutes: an identical call runs twice at most, and a turn has a step budget
+    from agent import chat
+    from langchain_core.tools import tool
+    ran = []
+
+    @tool
+    def probe(what: str) -> str:
+        """Checks something"""
+        ran.append(what)
+        return ""
+
+    same = [call("probe", what="dnd") for _ in range(6)]
+    a = assistant(*same, AIMessage("I'm afraid I can't tell, sir."), extra_tools=[probe])
+    assert a.respond("is the computer on DND?") == "I'm afraid I can't tell, sir."
+    assert ran == ["dnd", "dnd"], "a third identical try is refused, not run"
+    refusal = [m for m in a.messages if isinstance(m, ToolMessage)][2]
+    assert refusal.status == "error" and "already ran exactly this 2 times" in refusal.content
+
+    ran.clear()
+    many = [AIMessage("", tool_calls=[{"name": "probe", "args": {"what": f"place {n}"}, "id": f"p{n}"}])
+            for n in range(chat.MAX_STEPS + 3)]
+    a = assistant(*many, AIMessage("I couldn't find it, sir."), extra_tools=[probe])
+    assert a.respond("find my folder") == "I couldn't find it, sir." and len(ran) == chat.MAX_STEPS
+    # ...and the next request gets a fresh budget
+    a = assistant(call("probe", what="again"), AIMessage("Done, sir."), extra_tools=[probe])
+    assert a.respond("check again") == "Done, sir." and ran[-1] == "again"
+
+
 def test_chat_does_not_build_spotify():
     a = assistant(AIMessage("Evening, sir."))
     assert a.respond("Hey Nia!") == "Evening, sir."
@@ -252,10 +350,14 @@ def test_read_only_allowlist():
     for command in ["tasklist | findstr /i spotify", 'dir "C:\\Users\\me\\OneDrive\\Desktop"', "ipconfig", "whoami",
                     'type "C:\\notes.txt" | more', "git -C D:\\nia status", "git log", "netstat -ano | findstr 8081",
                     'powershell -NoProfile -Command "Get-PSDrive -PSProvider FileSystem"',
-                    'powershell -NoProfile -Command "Get-Process | Where-Object { $_.CPU -gt 10 } | Sort-Object CPU"']:
+                    'powershell -NoProfile -Command "Get-Process | Where-Object { $_.CPU -gt 10 } | Sort-Object CPU"',
+                    # Her own git, to answer "what branch are you on?" without a yes
+                    r"git -C D:\nia branch --show-current", r"git -C D:\nia describe --tags", "git branch -a",
+                    r"git -C D:\nia tag", "git remote -v", r"git -C D:\nia rev-parse HEAD"]:
         assert read_only(command), command
     for command in ["tasklist & shutdown /s /t 0", "ipconfig && del x", "dir > listing.txt", "type a.txt | python",
-                    "git branch -D main", "git push", "notepad", "python backup.py", "echo hi", "start outlook",
+                    "git branch -D main", "git branch new-feature", "git tag -d v1", "git tag v2", "git remote add x y",
+                    "git diff --output=patch.txt", "git push", "notepad", "python backup.py", "echo hi", "start outlook",
                     'powershell -NoProfile -Command "Get-Process chrome | Stop-Process"',
                     'powershell -NoProfile -Command "Get-ChildItem; Remove-Item x"',
                     'powershell -NoProfile -Command "Get-Content $(Invoke-WebRequest x)"',
@@ -858,7 +960,10 @@ def test_ask_claude_is_safe_and_reports_back():
         def kill(self):
             self.killed = True
 
+    import tempfile
     real_popen, real_exe, real_timeout = claude.subprocess.Popen, claude.executable, claude.TIMEOUT
+    real_transcripts = claude.TRANSCRIPTS
+    claude.TRANSCRIPTS = Path(tempfile.mkdtemp()) / "claude"  # never the real logs folder
     claude.executable = lambda: "claude.exe"
     try:
         # Claude Code's event stream: the tools it used, then the result
@@ -873,6 +978,9 @@ def test_ask_claude_is_safe_and_reports_back():
         claude.ANNOUNCE = lambda: announced.append(1)
         answer = claude.ask_claude.invoke({"question": "Who won?"})
         assert "pass it on faithfully" in answer and "Verstappen won in Bahrain" in answer and announced == [1]
+        # What Claude did is kept: its whole transcript, named for the question
+        saved = list(claude.TRANSCRIPTS.glob("*-ask-who-won.jsonl"))
+        assert len(saved) == 1 and saved[0].read_text(encoding="utf-8") == out
         claude.ANNOUNCE = None
         claude.subprocess.Popen = FakeClaude(json.dumps({"type": "result", "result": "Not logged in", "is_error": True}))
         assert "couldn't answer" in claude.ask("Who won?") and "web_search" in claude.ask("Who won?")
@@ -893,6 +1001,7 @@ def test_ask_claude_is_safe_and_reports_back():
         assert "isn't installed" in claude.ask("Who won?")
     finally:
         claude.subprocess.Popen, claude.executable, claude.TIMEOUT = real_popen, real_exe, real_timeout
+        claude.TRANSCRIPTS = real_transcripts
         claude.STOP.clear()
     assert claude.STOP is chat.CANCEL, "NIA's stop is the same flag"
     assert "ask_claude" in chat.READ_ONLY_TOOLS
@@ -928,8 +1037,10 @@ def test_changes_to_herself_go_to_a_branch_and_only_if_tests_pass():
         (root / "notes.txt").write_text("the user's own uncommitted work")  # must stay exactly where it is
 
         said, reported = [], __import__("threading").Event()
-        real = (claude.build_command, claude.run_tests, claude.CHANGES, claude.executable, claude.ON_DONE)
+        real = (claude.build_command, claude.run_tests, claude.CHANGES, claude.executable, claude.ON_DONE,
+                claude.TRANSCRIPTS)
         claude.CHANGES, claude.executable = Path(tmp) / "changes", lambda: "claude"
+        claude.TRANSCRIPTS = Path(tmp) / "transcripts"  # never the real logs folder
         claude.ON_DONE = lambda text: (said.append(text), reported.set())
 
         def fake_claude(writes):
@@ -957,6 +1068,8 @@ def test_changes_to_herself_go_to_a_branch_and_only_if_tests_pass():
             assert git("branch", "--show-current").stdout.strip() in ("master", "main"), "never switched"
             assert not (root / "joke.py").exists() and (root / "notes.txt").exists()
             assert not list((Path(tmp) / "changes").iterdir()), "its checkout is cleaned up; the branch stays"
+            assert any("I added a joke tool." in t.read_text(encoding="utf-8")
+                       for t in (Path(tmp) / "transcripts").glob("*-build-add-a-joke-tool.jsonl")), "what it did is kept"
 
             # Tests fail: discarded - no branch, no checkout
             done = run("add a broken tool", writes=True, failing=["test_agent.py"])
@@ -965,7 +1078,8 @@ def test_changes_to_herself_go_to_a_branch_and_only_if_tests_pass():
             done = run("do nothing", writes=False, failing=[])
             assert done.startswith("Claude made no change") and "nia/do-nothing" not in git("branch").stdout
         finally:
-            claude.build_command, claude.run_tests, claude.CHANGES, claude.executable, claude.ON_DONE = real
+            (claude.build_command, claude.run_tests, claude.CHANGES, claude.executable, claude.ON_DONE,
+             claude.TRANSCRIPTS) = real
 
     # The agent never starts one without a spoken yes, and says plainly what it will do
     started = []

@@ -17,3 +17,5 @@ settings.json
 memory/
 # The window's own browser profile (nia.py)
 .hud-browser/
+# Roadmap and TODOs
+TODO.md

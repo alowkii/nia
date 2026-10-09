@@ -1,3 +1,4 @@
+import json
 import logging
 import os
 import re
@@ -27,7 +28,7 @@ from . import approval, claude, web, youtube
 from .server import SERVER_LOG, llm_server_command, llm_up
 from .approval import risks
 from .memory import Memory, note
-from .prompts.initial import author, initial_prompt, pc_prompt
+from .prompts.initial import author, initial_prompt, pc_prompt, self_prompt
 from .action_controller import SpotifyController
 
 logger = logging.getLogger(__name__)
@@ -120,6 +121,50 @@ def quiet_success(messages):
     return bool(results) and all(m.name in QUIET_WHEN_DONE and m.status != "error" for m in results)
 
 
+# A step that runs long - a shell command, a file search - gets "One moment, sir" instead of a minute of silence:
+# once per turn, however many slow steps it takes, and never for a quick one
+ANNOUNCE = None  # set by the voice loop: says it
+SLOW_TOOLS = {"execute", "glob", "grep", "task"}
+SLOW = 2.0  # seconds
+ANNOUNCED = threading.Event()  # said already this turn
+
+
+# Bonsai can get stuck repeating itself: one session ran the same empty command 56 times in a row, another combed
+# folders for three minutes. Each turn gets a step budget, and an identical call is refused after two tries
+MAX_STEPS = 15  # tool calls per turn, not counting plan updates
+MAX_REPEATS = 2  # the same tool with the same arguments
+steps = {"total": 0, "calls": {}}  # this turn's, reset with each new request
+
+
+def loop_check(call):
+    """Why this call shouldn't run, or None: it's a repeat, or the turn is out of steps"""
+    if call["name"] == "write_todos":
+        return None
+    key = (call["name"], json.dumps(call["args"], sort_keys=True, default=str))
+    tries, last = steps["calls"].get(key, (0, ""))
+    if tries >= MAX_REPEATS:
+        return (f"Not run: you already ran exactly this {tries} times this turn, and got: {last[:300] or 'nothing'}. "
+                "Running it again won't change that. Answer with what you have, or tell the user you couldn't find out")
+    if steps["total"] >= MAX_STEPS:
+        return (f"Not run: that's {MAX_STEPS} steps this turn. Stop now and tell the user, in a sentence or two, what "
+                "you found - or that you couldn't find out")
+    steps["total"] += 1
+    steps["calls"][key] = (tries + 1, last)
+    return None
+
+
+def remember_result(call, result):
+    key = (call["name"], json.dumps(call["args"], sort_keys=True, default=str))
+    if key in steps["calls"]:
+        steps["calls"][key] = (steps["calls"][key][0], str(getattr(result, "content", result)))
+
+
+def announce():
+    if ANNOUNCE and not ANNOUNCED.is_set():
+        ANNOUNCED.set()
+        ANNOUNCE()
+
+
 @wrap_tool_call
 def tool_guard(request, handler):
     """Keeps tools from breaking the turn: a failing tool (e.g. Spotify's "No active device") becomes
@@ -132,23 +177,37 @@ def tool_guard(request, handler):
     if REFUSED.is_set() and call["name"] not in READ_ONLY_TOOLS:
         logger.info(f"Blocked {call['name']}({call['args']}) - the user just said no")
         return ToolMessage(f"Not done: {REFUSAL}", tool_call_id=call["id"], name=call["name"], status="error")
+    if why := loop_check(call):
+        logger.info(f"Refused {call['name']}({call['args']}) - {why[:60]}")
+        return ToolMessage(why, tool_call_id=call["id"], name=call["name"], status="error")
     logger.info(f"Tool call: {call['name']}({call['args']})")
     hud.send(tool=call["name"])
     if call["name"] == "write_todos":  # her plan for a multi-step job, shown in the window as she works through it
         hud.send(plan=[{"step": todo.get("content", ""), "status": todo.get("status", "pending")}
                        for todo in call["args"].get("todos", [])])
+    slow = threading.Timer(SLOW, announce) if call["name"] in SLOW_TOOLS else None
+    if slow:
+        slow.daemon = True
+        slow.start()
     try:
         result = handler(request)
     except GraphBubbleUp:  # interrupts and other LangGraph control flow must pass through
         raise
     except Exception as e:
         logger.info(f"Tool error ({call['name']}): {e!r}")
-        return ToolMessage(f"Error: {e!r}", tool_call_id=call["id"], name=call["name"], status="error")
+        error = ToolMessage(f"Error: {e!r}", tool_call_id=call["id"], name=call["name"], status="error")
+        remember_result(call, error)
+        return error
+    finally:
+        if slow:
+            slow.cancel()
     if isinstance(result, ToolMessage) and isinstance(result.content, str) and len(result.content) > MAX_TOOL_CHARS:
         cut = len(result.content) - MAX_TOOL_CHARS
         result.content = (result.content[:MAX_TOOL_CHARS] + f"\n[... {cut} more characters cut to fit your memory. "
                           "Read less at once: a smaller line range, one file at a time, or a narrower search]")
-    logger.info(f"Tool result ({call['name']}): {str(getattr(result, 'content', result))[:500]}")
+    remember_result(call, result)
+    # All of it, up to what the model sees: a shell command's output is the record of what it did
+    logger.info(f"Tool result ({call['name']}): {str(getattr(result, 'content', result))[:MAX_TOOL_CHARS]}")
     return result
 
 
@@ -251,7 +310,7 @@ class AssistantModel:
             model=llm,
             tools=self._spotify_tools() + youtube.TOOLS + web.TOOLS + claude.TOOLS + list(extra_tools)
             + (self.memory.tools() if self.memory else []),
-            system_prompt=initial_prompt + pc_prompt,
+            system_prompt=initial_prompt + pc_prompt + self_prompt,
             backend=backend or pc_backend(),
             interrupt_on={name: True for name in NEEDS_APPROVAL},
             # write_todos: a plan for a multi-step job, worked through step by step (this Deep Agents has none)
@@ -302,6 +361,8 @@ class AssistantModel:
             return "That was more than I can hold at once, sir, so I've cleared our conversation. Try asking about less at a time."
 
     def _respond(self, user_msg):
+        ANNOUNCED.clear()  # a new turn: "One moment" may be said again
+        steps["total"], steps["calls"] = 0, {}  # and a fresh step budget
         if self.pending and time.time() - self.pending[1] >= APPROVAL_EXPIRES:
             # Nobody answered in time: refuse quietly, then treat this as a new request, not as the answer
             logger.info("Approval expired - refused")
