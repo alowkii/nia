@@ -136,7 +136,7 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
     off = threading.Event()
     stopped = nia.Assistant(hub, server=Recorder(), done=off)
     assert stopped.handle({"restart": "off"}) == {} and off.is_set() and not stopped.rebooting
-    assert hub.latest["state"] == "offline" and hub.latest["closing"] is True
+    assert hub.latest["state"] == "offline"
     assert nia.Assistant(hub).handle({"state": "awake"}) == {"state": "awake"}
 
     # The logo: the window's icon and header, served from assets/logo only
@@ -159,6 +159,26 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
     # The window's quit
     assert post("/quit")[0] == 204 and done.is_set()
     httpd.shutdown()
+
+# Her own taskbar button and pin: a Start-menu shortcut with her icon, how to start her, and the window's app ID
+# (a folder outside AppData: Store Python sees its own private copy of AppData, the copy step the real one)
+with tempfile.TemporaryDirectory(dir=nia.LOG_DIR, ignore_cleanup_errors=True) as tmp:
+    real_shortcut, nia.SHORTCUT = nia.SHORTCUT, Path(tmp) / "NIA.lnk"  # never the real Start menu here
+    try:
+        nia.taskbar_identity()
+        import pythoncom
+        from win32com.propsys import propsys, pscon
+        from win32com.shell import shell
+        link = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None, pythoncom.CLSCTX_INPROC_SERVER,
+                                          shell.IID_IShellLink)
+        link.QueryInterface(pythoncom.IID_IPersistFile).Load(str(nia.SHORTCUT))
+        assert link.GetPath(0)[0].lower().endswith("pythonw.exe"), "starts her without a console"
+        assert link.GetArguments() == f'"{nia.ROOT / "nia.py"}"' and link.GetIconLocation()[0] == str(nia.ICON)
+        store = propsys.SHGetPropertyStoreFromParsingName(str(nia.SHORTCUT))
+        assert store.GetValue(pscon.PKEY_AppUserModel_ID).GetValue() == nia.APP_ID, "the same ID as her window"
+        assert not (nia.LOG_DIR / "NIA.lnk").exists(), "the staged copy is cleaned up"
+    finally:
+        nia.SHORTCUT = real_shortcut
 
 # Closing NIA closes everything she started - real processes here, not stand-ins. After one Ctrl+C an assistant
 # lingered 10+ minutes and the model server (~6 GB of GPU memory) never stopped

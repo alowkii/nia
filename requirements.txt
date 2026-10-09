@@ -27,5 +27,10 @@ spotipy==2.25.2
 yt-dlp==2026.8.19
 youtube-transcript-api==1.2.4
 
+# NIA's own window: hud.html in WebView2 (Windows' built-in Edge engine), with her own taskbar button and a
+# Start-menu shortcut (pywin32 sets her app ID on both, so the taskbar shows NIA's icon - not Python's or Edge's)
+pywebview==6.2.1
+pywin32==312
+
 # Config
 python-dotenv==1.2.1

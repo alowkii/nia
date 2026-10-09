@@ -98,7 +98,10 @@ prompt prefix stays identical and llama-server reuses its cache.
 
 ## Requirements
 
-- **Python 3.11** (tested)
+- **Windows 10 or 11** - NIA's window, taskbar button, volume ducking and shutdown handling are Windows-only.
+  Her window is drawn by the **WebView2 runtime**, built into Windows 11 and current Windows 10; if it's
+  missing, get the [Evergreen runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
+- **Python 3.11** (tested) - python.org's or the Microsoft Store's both work
 - **NVIDIA GPU with 8 GB VRAM** for the LLM. Bonsai 2 27B (`PTQ1_0`, 5.95 GB) runs fully on
   the GPU at ~35 tok/s on an RTX 4060 Laptop
 - **[PrismML's llama.cpp fork](https://github.com/PrismML-Eng/llama.cpp/releases)**, since
@@ -116,11 +119,11 @@ git clone https://github.com/alowkii/nia
 cd nia
 
 python -m venv .venv
-.venv\Scripts\activate          # Windows
-# source .venv/bin/activate     # Linux / macOS
-
+.venv\Scripts\activate
 pip install -r requirements.txt
 ```
+
+Or with [uv](https://docs.astral.sh/uv/): `uv venv`, then `uv pip install -r requirements.txt`.
 
 The Moonshine speech model and the Kokoro voice download on first run.
 
@@ -146,7 +149,11 @@ One script runs everything, in one window:
 python nia.py
 ```
 
-(`pythonw nia.py`, or a shortcut to it, runs it without a console.) It opens NIA's window and, hidden
+(Or `uv run -m nia`; `pythonw nia.py` runs it without a console.) **The first run adds NIA to your Start
+menu**, with her own icon and pointing at your copy of the repo and its Python: search "NIA" and choose *Pin to
+taskbar*, or right-click her running window's taskbar button. Either way the pin is NIA's own and starts her
+without a console. Each start refreshes the entry, so it follows the folder if you move it; to remove it,
+delete `NIA.lnk` from `%APPDATA%\Microsoft\Windows\Start Menu\Programs`. It opens NIA's window and, hidden
 behind it, starts the LLM server if it isn't already up (~20 s) and the assistant. When the orb shows
 *Standing by* — with a soft, warm two-note chime as she's ready (*Chime when she's ready* in the settings turns
 it off) — say "Hey Nia", or type into the command line at the bottom. **Closing the window shuts everything
@@ -188,7 +195,8 @@ onto her. Say "reboot" to restart all of it — see **Rebooting** under [How it 
   <br><sub><i>Four of the six themes: arc gold, violet, mint and red alert (cyan and ice white are the others).</i></sub>
 </p>
 
-The window is [hud/hud.html](hud/hud.html) in an Edge app window, served by [nia.py](nia.py) on
+The window is [hud/hud.html](hud/hud.html) in NIA's own window ([pywebview](https://pywebview.flowrl.com/), drawn by
+WebView2 - the Edge engine that's part of Windows - with her name and icon on the taskbar), served by [nia.py](nia.py) on
 `127.0.0.1:8765` and updated live over an event stream. The assistant runs as a hidden child process
 (main.py) joined to it by an authenticated local connection ([utils/hud.py](utils/hud.py)); only that
 window can drive it — a web page can't send its requests. Settings are saved to `settings.json`; the
