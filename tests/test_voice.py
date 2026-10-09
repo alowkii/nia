@@ -5,6 +5,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # NIA's code, one folder up
 
+import os
 import tempfile
 import time
 from types import SimpleNamespace
@@ -268,6 +269,64 @@ for written, spoken in [
     assert in_words(written) == spoken, (written, in_words(written))
 link = "Here: https://youtube.com/watch?v=abc123 - 2 minutes"
 assert in_words(link) == "Here: https://youtube.com/watch?v=abc123 - two minutes", "links are left alone"
+
+# Other apps' volume while she makes a sound - with stand-in apps, never the real mixer. Ducks used to save
+# "originals" each, so one during another restored the lowered level, and one cut short restored nothing: Chrome
+# was left at 9%, and her own voice (which Windows remembers per program) at 2%
+from voice_assistant import voice_assistant as va
+
+
+class Level:
+    def __init__(self, value):
+        self.value = value
+    def GetMasterVolume(self):
+        return self.value
+    def SetMasterVolume(self, value, context):
+        self.value = round(value, 3)
+
+
+apps = {"chrome": SimpleNamespace(ProcessId=7500, Identifier="chrome.exe", SimpleAudioVolume=Level(0.8)),
+        "spotify": SimpleNamespace(ProcessId=11156, Identifier="Spotify.exe", SimpleAudioVolume=Level(1.0)),
+        "dings": SimpleNamespace(ProcessId=0, Identifier="system sounds", SimpleAudioVolume=Level(1.0)),
+        "her": SimpleNamespace(ProcessId=os.getpid(), Identifier="python.exe", SimpleAudioVolume=Level(1.0))}
+levels = lambda: {name: app.SimpleAudioVolume.value for name, app in apps.items()}
+real_utilities = va.AudioUtilities
+va.AudioUtilities = SimpleNamespace(GetAllSessions=lambda: list(apps.values()))
+try:
+    with tempfile.TemporaryDirectory() as tmp:
+        record = Path(tmp) / "quieted.json"
+        quieter = va.Quieter(record)
+        speech = quieter.hold(0.3)  # her voice ducks the apps, not Windows' own sounds
+        assert levels() == {"chrome": 0.24, "spotify": 0.3, "dings": 1.0, "her": 1.0}
+        assert record.exists(), "while anything is lowered, the real volumes are on disk"
+        chime = quieter.hold(0.0, everything=True)  # the chime, during her voice: everything else silent
+        assert levels() == {"chrome": 0.0, "spotify": 0.0, "dings": 0.0, "her": 1.0}, "never her own voice"
+        chime()  # back to the duck her voice still holds - not to the lowered level, as before
+        assert levels() == {"chrome": 0.24, "spotify": 0.3, "dings": 1.0, "her": 1.0}
+        speech()
+        assert levels() == {"chrome": 0.8, "spotify": 1.0, "dings": 1.0, "her": 1.0}, "all back as they were"
+        assert not record.exists()
+
+        # Stopped mid-sound (no release): the next start puts the volumes back from the record
+        quieter.hold(0.3)
+        assert levels()["chrome"] == 0.24
+        va.Quieter(record).put_back()
+        assert levels() == {"chrome": 0.8, "spotify": 1.0, "dings": 1.0, "her": 1.0} and not record.exists()
+
+        # The chime itself: everything else muted while it plays, all put back after
+        real_record, real_play, real_wait = va.QUIETER.record, va.sd.play, va.sd.wait
+        va.QUIETER.record = record
+        during = []
+        va.sd.play = lambda *args, **kwargs: during.append(levels())
+        va.sd.wait = lambda: None
+        try:
+            va.play_chime(0.5)
+        finally:
+            va.QUIETER.record, va.sd.play, va.sd.wait = real_record, real_play, real_wait
+        assert during == [{"chrome": 0.0, "spotify": 0.0, "dings": 0.0, "her": 1.0}], "only the chime is heard"
+        assert levels() == {"chrome": 0.8, "spotify": 1.0, "dings": 1.0, "her": 1.0}
+finally:
+    va.AudioUtilities = real_utilities
 
 # The ready chime: two warm notes rising, 1.6 s, quiet, silent at both ends (no click), nothing shrill
 from voice_assistant.voice_assistant import CHIME_NOTES, chime

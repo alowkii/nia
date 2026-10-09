@@ -1,3 +1,4 @@
+import json
 import os
 import random
 import re
@@ -10,6 +11,7 @@ import unicodedata
 from contextlib import contextmanager
 from datetime import datetime
 from difflib import SequenceMatcher
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.parse import urlsplit
 import numpy as np
@@ -87,8 +89,14 @@ def chime(rate=24000, peak=0.3):
 
 
 def play_chime(volume=1.0, rate=24000):
-    """Play the chime without waiting for it to finish"""
-    sd.play(chime(rate) * volume, rate)
+    """Play the chime with every other sound on the PC muted for it, then put everything back as it was. Waits the
+    1.6 s it lasts: the volumes are put back on the thread that lowered them"""
+    restore = duck(0.0, everything=True)
+    try:
+        sd.play(chime(rate) * volume, rate)
+        sd.wait()
+    finally:
+        restore()
 
 
 def voice_language(voice):
@@ -259,32 +267,101 @@ def speakable(text):
     return re.sub(r"([,.!?;:])(?:\s*,)+", r"\1", text).strip()  # "sir,, the" -> "sir, the"
 
 
-# ponytail: original volumes live only in memory - force-stopping NIA mid-sentence leaves other apps ducked
-# in the Windows mixer; persist them to a file and restore at startup if that bites
-def duck(level):
-    """Turn every other app's volume down to level x its own (Windows mixer); returns a function that restores them"""
-    saved = []
-    for session in AudioUtilities.GetAllSessions():
-        if session.ProcessId in (0, os.getpid()):  # system sounds, and NIA's own voice
-            continue
+class Quieter:
+    """Other apps' volume, lowered while NIA makes a sound and put back after - one for the whole process. Each app's
+    own volume is recorded once, when it's first lowered; it's held as quiet as the quietest of her sounds still
+    playing (the chime mutes everything, her voice ducks the apps), and put back only when none is.
+
+    Each duck used to save "originals" for itself - so one during another saved the lowered volume and restored
+    that, and one cut short (NIA stopped mid-sentence) restored nothing: Chrome was left at 9%, and Windows, which
+    remembers every program's volume, started her own voice at 2%. While anything is lowered, the real volumes are
+    on disk, so the next start puts them back. Apps are found afresh each time, by an identifier that stays the
+    same across restarts (their program), never by holding Windows' audio objects across threads"""
+
+    def __init__(self, record=Path(__file__).resolve().parent.parent / "logs" / "quieted.json"):
+        self.lock, self.record = threading.RLock(), record
+        self.holds = []  # [level, everything] of each of her sounds playing now
+        self.originals = {}  # an app's identifier -> its own volume, from before any of hers
+
+    def _sessions(self):
+        import comtypes
+        comtypes.CoInitialize()  # each thread needs its own: the chime can play from a tool's thread
+        for session in AudioUtilities.GetAllSessions():
+            if session.ProcessId != os.getpid() and session.Identifier:  # never NIA's own voice
+                yield session
+
+    def _apply(self):
+        for session in self._sessions():
+            # System sounds (Windows' dings) only when everything is to be quiet - the chime, not her voice
+            levels = [level for level, everything in self.holds if everything or session.ProcessId != 0]
+            key = session.Identifier
+            try:
+                volume = session.SimpleAudioVolume
+                if levels:
+                    self.originals.setdefault(key, volume.GetMasterVolume())
+                    volume.SetMasterVolume(self.originals[key] * min(levels), None)
+                elif key in self.originals:
+                    volume.SetMasterVolume(self.originals[key], None)
+            except Exception:  # the app closed between listing and setting
+                pass
+        if not self.holds:
+            self.originals.clear()
         try:
-            volume = session.SimpleAudioVolume
-            saved.append((volume, volume.GetMasterVolume()))
-            volume.SetMasterVolume(saved[-1][1] * level, None)
-        except Exception:  # the app closed between listing and ducking
+            if self.originals:
+                self.record.write_text(json.dumps(self.originals))
+            else:
+                self.record.unlink(missing_ok=True)
+        except OSError:
             pass
 
-    def restore():
-        for volume, original in saved:
-            try:
-                volume.SetMasterVolume(original, None)
-            except Exception:
-                pass
-    return restore
+    def hold(self, level, everything=False):
+        """Lower the other apps to level x their own volume (everything: system sounds too) until the returned
+        function is called"""
+        hold = [level, everything]
+        with self.lock:
+            self.holds.append(hold)
+            self._apply()
+
+        def release():
+            with self.lock:
+                self.holds = [h for h in self.holds if h is not hold]
+                self._apply()
+        return release
+
+    def own_voice_full(self):
+        """Her own mixer volume at full - her voice volume setting is what decides how loud she is. Windows remembers
+        each program's volume, and one of hers had been left at 2% by an earlier NIA"""
+        import comtypes
+        comtypes.CoInitialize()
+        for session in AudioUtilities.GetAllSessions():
+            if session.ProcessId == os.getpid():
+                volume = session.SimpleAudioVolume
+                if volume.GetMasterVolume() < 0.99:
+                    logger.info(f"Her own volume in the Windows mixer was {volume.GetMasterVolume():.0%} - set to full")
+                    volume.SetMasterVolume(1.0, None)
+
+    def put_back(self):
+        """At start: volumes a NIA stopped mid-sound left lowered, back as they were"""
+        try:
+            self.originals = json.loads(self.record.read_text())
+        except (OSError, ValueError):
+            return
+        logger.info(f"Putting back the volume of {len(self.originals)} app(s) a stopped NIA had left lowered")
+        with self.lock:
+            self._apply()
+
+
+QUIETER = Quieter()
+
+
+def duck(level, everything=False):
+    """Turn every other app's volume down to level x its own (Windows mixer); returns a function that restores them"""
+    return QUIETER.hold(level, everything)
 
 
 class WakeWordDetector:
     def __init__(self):
+        QUIETER.put_back()  # anything a NIA stopped mid-sound left quiet
         self.awake = False  # after the wake phrase: listening for a command
         self.settings = s = settings.load()
         self.deadline = 0.0  # when being awake times out
@@ -512,6 +589,7 @@ class WakeWordDetector:
         self.idle()
         if s["ready_chime"]:  # she's ready: a soft chime, so you know without looking
             play_chime(s["voice_volume"])
+        QUIETER.own_voice_full()  # once her sound exists in the mixer
 
         try:
             while True:
