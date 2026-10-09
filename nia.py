@@ -57,6 +57,7 @@ FIELDS = [
         ("embedding_model", "Memory embedding model (Ollama; empty = no memory)", "text"),
         ("memory_results", "Memories recalled per turn", "number"),
         ("memory_min_similarity", "Memory match threshold (0-1)", "number"),
+        ("learn_preferences", "Learn my preferences after each conversation", "check"),
         ("history_turns", "Recent exchanges sent to the LLM", "number"),
         ("approval_model", "Approval model (Ollama; empty = always ask)", "text"),
         ("approval_threshold", "Approval threshold (0-1, lower asks more)", "number")]),
@@ -66,9 +67,9 @@ FIELDS = [
 ]
 SERVER_KEYS = {key for key, _, _ in FIELDS[0][1]}
 # Read by the running assistant each time they're used, so they change without a restart
-LIVE_KEYS = {"ready_chime", "claude_effort", "claude_model", "mic_device", "voice_speed", "voice_volume",
-             "max_spoken_words", "greeting", "duck_level", "wake_threshold", "session_timeout", "wake_word",
-             "push_to_talk", "spoken_replies", "hud_theme"}
+LIVE_KEYS = {"learn_preferences", "ready_chime", "claude_effort", "claude_model", "mic_device", "voice_speed",
+             "voice_volume", "max_spoken_words", "greeting", "duck_level", "wake_threshold", "session_timeout",
+             "wake_word", "push_to_talk", "spoken_replies", "hud_theme"}
 VOICES = ["kokoro_bm_fable", "kokoro_bm_george", "kokoro_af_heart"]
 STT_MODELS = ["tiny", "small", "medium"]
 

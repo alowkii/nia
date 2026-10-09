@@ -27,7 +27,7 @@ from utils.hud import hud
 from . import approval, claude, web, youtube
 from .server import SERVER_LOG, llm_server_command, llm_up
 from .approval import risks
-from .memory import Memory, note
+from .memory import Memory, note, preferences_note
 from .prompts.initial import author, initial_prompt, pc_prompt, self_prompt
 from .action_controller import SpotifyController
 
@@ -277,6 +277,33 @@ def approval_question(actions, intent):
     return f"Before I do that: {plan}.{warning} Should I go ahead?"
 
 
+# What LangMem's memory manager is asked to learn from a finished conversation (see learn_preferences)
+LEARN = f"""You keep the list of what NIA, a voice assistant, has learned about how {author} likes things.
+Read the conversation below - what {author} said, and what NIA did ([Did: ...]) - with the preferences already known.
+
+Record only lasting preferences, each as one short standalone sentence about {author}, e.g. "{author} likes Spotify
+at 50 percent volume", "{author} wants short spoken answers, without follow-up questions", "{author} listens to lofi
+in the evening". Evidence that counts: {author} states a preference; corrects or redoes something NIA did (asks for
+quieter, shorter, a different song); or asks for the same thing again in the same way.
+
+Leave out one-off requests, questions, facts about the world, and anything already known. The known preferences
+come with their ids: when the conversation changes one, PATCH that one by its id - never add a second preference
+that contradicts it. When {author} says one is no longer true, REMOVE it by its id. Refer to {author} by name,
+never "he" or "she". If nothing new was shown - most conversations - record nothing."""
+# Tried on Bonsai with a real conversation: firm PATCH / REMOVE wording got the volume rewritten (70 -> 40), a
+# dropped taste removed and a new one added in one pass (~15 s); without it, contradictions were added alongside
+# the old preference, and a second pass (max_steps=2) undid the volume change
+LEARN_KEEP = 40  # messages of a conversation kept to learn from, the latest
+
+
+def did(messages):
+    """The tools this turn called, in plain text - preferences show in what's done ("set_volume(percent=50)") as
+    much as in what's said"""
+    users = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
+    return [f"{c['name']}({', '.join(f'{k}={v!r}' for k, v in c['args'].items())})"
+            for m in messages[users[-1] if users else 0:] for c in getattr(m, "tool_calls", None) or []]
+
+
 def worth_remembering(request):
     """Whether an exchange means anything on its own later. "I guess so" or a sentence cut off at "..." only
     made sense in the moment - recalled weeks later they're noise"""
@@ -302,10 +329,14 @@ class AssistantModel:
         self.memory, self.memory_results, self.memory_min = memory, s["memory_results"], s["memory_min_similarity"]
         self.recent = deque(maxlen=2 * s["history_turns"])  # memory ids of exchanges possibly still in view
         self.request = ""  # the user's request this turn - an approval answer like "yes" isn't worth remembering
+        self.session = []  # this conversation, to learn preferences from when it ends
+        self.preference_manager = None  # LangMem's memory manager, made on first use (tests pass a stand-in)
+        self.turn = threading.Lock()  # a turn and learning never use the LLM at once
         # llama-server ignores the model name and key, but the client requires both. The profile tells
         # Deep Agents the real context size, so it summarizes old turns before overflowing it
         llm = llm or ChatOpenAI(model=model, base_url=f"http://127.0.0.1:{s['port']}/v1", api_key="none",
                                 profile={"max_input_tokens": s["context"]})
+        self.llm = llm
         self.agent = create_deep_agent(
             model=llm,
             tools=self._spotify_tools() + youtube.TOOLS + web.TOOLS + claude.TOOLS + list(extra_tools)
@@ -348,7 +379,8 @@ class AssistantModel:
         """Run one turn, including any tool calls, and return what NIA should say.
         If a PC change needs approval, that's the question; the next call is taken as the answer."""
         try:
-            return self._respond(user_msg)
+            with self.turn:
+                return self._respond(user_msg)
         except Cancelled:
             # Steps already taken stay taken; the dangling call is patched up by Deep Agents next turn
             self.pending = None
@@ -389,7 +421,8 @@ class AssistantModel:
                 if self.memory else []
             for similarity, _, kind, text, _ in hits:
                 logger.info(f"Recalled ({kind}, {similarity:.2f}): {text[:120]}")
-            message = HumanMessage(f"{user_msg}\n\n[{datetime.now():%A %d %B %Y, %H:%M}]{note(hits)}")
+            learned = preferences_note(self.memory.preferences()) if self.memory else ""
+            message = HumanMessage(f"{user_msg}\n\n[{datetime.now():%A %d %B %Y, %H:%M}]{learned}{note(hits)}")
             result = self.agent.invoke({"messages": [message]}, self.config)
 
         # Commands the approval layers clear run straight away; anything else waits for a spoken yes
@@ -408,9 +441,12 @@ class AssistantModel:
             logger.info(f"Awaiting approval for: {actions}")  # the exact commands, for the record
             # The model's text alongside its tool call is its own short account of what it's doing
             intent = result["messages"][-1].content if result["messages"] else ""
-            return approval_question(actions, intent if isinstance(intent, str) else "")
+            question = approval_question(actions, intent if isinstance(intent, str) else "")
+            self.record(user_msg, did(result["messages"]), question)
+            return question
         self.pending = None
         reply = result["messages"][-1].content
+        self.record(user_msg, did(result["messages"]), reply if isinstance(reply, str) else "")
         if self.memory and worth_remembering(self.request) and isinstance(reply, str) and reply:
             # Every finished exchange is searchable later - this is what replaces sending the whole history
             exchange = f"{author} asked: {self.request} | NIA answered: {reply[:300]}"
@@ -421,6 +457,38 @@ class AssistantModel:
             hud.send(nia=reply)  # in the window, for the record
             reply = ""  # the music starting is the answer: nothing to say over it
         return reply
+
+    def record(self, said, done, reply):
+        """One exchange of this conversation, kept to learn from when it ends"""
+        acted = f"[Did: {'; '.join(done)}] " if done else ""
+        self.session += [{"role": "user", "content": said}, {"role": "assistant", "content": acted + reply}]
+        del self.session[:-LEARN_KEEP]
+
+    def learn_preferences(self):
+        """When a conversation ends: what it showed about how the user likes things is learned for next time -
+        LangMem's memory manager, on Bonsai, with what's already known. Learning uses the LLM's one slot, so its
+        cached prompt is warmed again afterwards - unless the user is already talking, whose turn does it anyway"""
+        conversation, self.session = self.session, []
+        if not (self.memory and conversation and settings.load()["learn_preferences"]):
+            return
+        started = time.time()
+        with self.turn:
+            try:
+                if self.preference_manager is None:
+                    from langmem import create_memory_manager
+                    self.preference_manager = create_memory_manager(self.llm, instructions=LEARN, enable_deletes=True)
+                changes = self.memory.learn(self.preference_manager, conversation)
+                for change in changes:
+                    logger.info(f"Preference {change}")
+                logger.info(f"Learned from the conversation in {time.time() - started:.1f}s: "
+                            f"{len(changes) or 'no'} change{'s' if len(changes) != 1 else ''}")
+            except Exception as e:  # learning is extra: never a reason for NIA to fail
+                logger.warning(f"Couldn't learn from the conversation ({e!r})")
+        if self.turn.acquire(blocking=False):
+            try:
+                self.warm_up()
+            finally:
+                self.turn.release()
 
     def _spotify_tools(self):
         sp = self.spotify  # called inside each tool so the client stays lazy
