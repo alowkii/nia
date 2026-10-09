@@ -378,6 +378,10 @@ app the way Windows does (its registered programs, then the Start menu), never b
 with a file if you name one. No approval needed, like opening a website. Windows only (the registry, the Start menu
 and `os.startfile` exist nowhere else); macOS would use `open -a "VLC" movie.mp4`, Linux the app's command on
 PATH or its `.desktop` entry - see *Known limitations*.
+A windowed app is never started through the shell - there it would hold her turn until it's closed (a movie in
+VLC once kept one waiting a minute); she's pointed to `open_app` instead, while console tools like `git` still
+run. And whenever a turn is still going after about 8 seconds - however quick each step - she says *"One moment,
+sir"*, once, rather than going quiet.
 
 NIA can also work on the PC itself. Deep Agents' file tools only accept `/`-style
 paths, so each drive is mounted as a folder — `C:\Users` is `/c/Users`, `D:\nia` is

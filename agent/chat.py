@@ -211,6 +211,33 @@ def remember_result(call, result):
         steps["calls"][key] = (steps["calls"][key][0], str(getattr(result, "content", result)))
 
 
+# A shell command hunting for a program: told on its result that open_app finds installed apps itself. Bonsai
+# ignored the instruction and listed folders for VLC for 90 s, twice
+HUNTING_FOR_A_PROGRAM = re.compile(r"\bwhere\s+\S+|program files|\*\.exe|\\\w+\.exe\b", re.I)
+USE_OPEN_APP = ("\n[To open an installed app - or play a file in one, like a movie in VLC - use open_app: it finds "
+                "the app the way Windows does. Don't search for its program]")
+
+
+def windowed_program(command):
+    """The program a shell command starts, if it's a windowed app (VLC, Notepad) - from the program file's own header
+    (its subsystem: 2 is a window, 3 a console). Started through the shell, such an app holds the command - and her
+    turn - until it's closed: one movie in VLC kept a turn waiting a minute. Console tools (git, 7z) aren't"""
+    match = re.match(r'\s*"([^"]+\.exe)"|\s*(\S+\.exe)\b', command, re.I)
+    if not match:
+        return None
+    program = Path(match.group(1) or match.group(2))
+    try:
+        with open(program, "rb") as f:
+            header = f.read(4096)
+        pe = int.from_bytes(header[0x3C:0x40], "little")
+        if header[:2] == b"MZ" and header[pe:pe + 4] == b"PE\0\0" \
+                and int.from_bytes(header[pe + 0x5C:pe + 0x5E], "little") == 2:
+            return program
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def announce():
     if ANNOUNCE and not ANNOUNCED.is_set():
         ANNOUNCED.set()
@@ -229,6 +256,11 @@ def tool_guard(request, handler):
     if REFUSED.is_set() and call["name"] not in READ_ONLY_TOOLS:
         logger.info(f"Blocked {call['name']}({call['args']}) - the user just said no")
         return ToolMessage(f"Not done: {REFUSAL}", tool_call_id=call["id"], name=call["name"], status="error")
+    if call["name"] == "execute" and (app := windowed_program(str(call["args"].get("command", "")))):
+        logger.info(f"Not run through the shell: {app.name} is a windowed app - pointed to open_app")
+        return ToolMessage(f"Not run: {app.name} is a windowed app - through the shell, it would hold you until it's "
+                           "closed. Use open_app, with the file to open in it", tool_call_id=call["id"],
+                           name=call["name"], status="error")
     if why := loop_check(call):
         logger.info(f"Refused {call['name']}({call['args']}) - {why[:60]}")
         return ToolMessage(why, tool_call_id=call["id"], name=call["name"], status="error")
@@ -257,6 +289,9 @@ def tool_guard(request, handler):
         cut = len(result.content) - MAX_TOOL_CHARS
         result.content = (result.content[:MAX_TOOL_CHARS] + f"\n[... {cut} more characters cut to fit your memory. "
                           "Read less at once: a smaller line range, one file at a time, or a narrower search]")
+    if call["name"] == "execute" and isinstance(result, ToolMessage) and isinstance(result.content, str) \
+            and HUNTING_FOR_A_PROGRAM.search(str(call["args"].get("command", ""))):
+        result.content += USE_OPEN_APP
     remember_result(call, result)
     # All of it, up to what the model sees: a shell command's output is the record of what it did
     logger.info(f"Tool result ({call['name']}): {str(getattr(result, 'content', result))[:MAX_TOOL_CHARS]}")
@@ -551,19 +586,22 @@ class AssistantModel:
 
         @tool
         def now_playing() -> str:
-            """What is playing on Spotify right now, and whether it is paused"""
+            """What music is playing on Spotify right now, and whether it is paused. Music only - not for films
+            or videos"""
             return sp().now_playing()
 
         @tool
         def play(query: str, kind: Literal["track", "playlist", "album"] = "track") -> str:
-            """Search Spotify and play the top hit. query is the name, plus the artist if known.
-            kind is 'album' or 'playlist' when the user says so, otherwise 'track'"""
+            """Search Spotify and play the top hit - music only: a song, an album, a playlist. Never for a film,
+            a video or an episode ("play the movie" is open_app or play_youtube). query is the name, plus the artist
+            if known. kind is 'album' or 'playlist' when the user says so, otherwise 'track'"""
             return {"track": sp().play_track, "playlist": sp().play_playlist, "album": sp().play_album}[kind](query)
 
         @tool
         def play_something(mood: str = "") -> str:
             """Play music when no song, artist or playlist was named: "open Spotify", "play some music",
-            "surprise me", "play something chill". mood is optional, e.g. "chill" or "workout".
+            "surprise me", "play something chill" - music only, never "play the movie". mood is optional, e.g.
+            "chill" or "workout".
             Opens the Spotify app first if it isn't running"""
             return sp().play_something(mood)
 

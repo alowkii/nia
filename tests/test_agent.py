@@ -358,6 +358,57 @@ def test_installed_apps_are_found_the_way_windows_finds_them():
     assert "open_app" not in chat.NEEDS_APPROVAL
 
 
+def test_a_hunt_for_a_program_is_pointed_to_open_app():
+    # Twice NIA listed folders for VLC through the shell (90 s, nine commands) instead of using open_app. A command
+    # that hunts for a program now says, on its result, that open_app finds installed apps itself
+    from langchain_core.tools import tool
+
+    @tool
+    def execute(command: str) -> str:
+        """Runs a shell command"""
+        return "File Not Found"
+
+    hunt = call("execute", command='dir "C:\\Program Files\\VLC" /b')
+    a = assistant(hunt, call("execute", command='dir "D:\\Downloads" /b'), AIMessage("Done, sir."), extra_tools=[execute])
+    a.approval_model = None
+    from agent import approval
+    real = approval.decide
+    approval.decide = lambda action, model, threshold: ("run", "test")  # these commands run without asking here
+    try:
+        a.respond("play a movie in VLC")
+    finally:
+        approval.decide = real
+    results = [m for m in a.messages if isinstance(m, ToolMessage)]
+    assert "use open_app" in results[0].content and results[0].content.startswith("File Not Found")
+    assert "open_app" not in results[1].content, "an ordinary command's result is left alone"
+
+    # A windowed app run through the shell held her turn until it was closed (a movie in VLC: a minute). It's never
+    # run that way - told to use open_app - while console tools still run. Judged from the program file's header
+    from agent import chat
+    import os
+    windows = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    assert chat.windowed_program(f'"{windows / "notepad.exe"}" "D:\\notes.txt"') == windows / "notepad.exe"
+    assert chat.windowed_program(f'{windows / "System32" / "cmd.exe"} /c dir') is None, "a console tool runs"
+    assert chat.windowed_program("git -C D:\\nia status") is None and chat.windowed_program('dir "D:\\x"') is None
+    launched = []
+
+    @tool
+    def execute(command: str) -> str:
+        """Runs a shell command"""
+        launched.append(command)
+        return "ok"
+
+    movie = call("execute", command=f'"{windows / "notepad.exe"}" "D:\\Downloads\\movie.mp4"')
+    a = assistant(movie, AIMessage("I'll use open_app, sir."), extra_tools=[execute])
+    approval.decide = lambda action, model, threshold: ("run", "test")  # cleared to run - and still not run
+    try:
+        a.respond("play the movie")
+    finally:
+        approval.decide = real
+    refused = [m for m in a.messages if isinstance(m, ToolMessage)][0]
+    assert launched == [] and refused.status == "error" and "Use open_app" in refused.content
+
+
 def test_chat_does_not_build_spotify():
     a = assistant(AIMessage("Evening, sir."))
     assert a.respond("Hey Nia!") == "Evening, sir."
