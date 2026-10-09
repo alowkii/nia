@@ -19,6 +19,7 @@ from moonshine_voice import MicTranscriber, ModelArch, TextToSpeech
 from pycaw.pycaw import AudioUtilities
 
 import settings
+import agent.chat as agent_chat
 from agent import claude
 from agent.chat import CANCEL, AssistantModel, ensure_llm_server
 from utils import mics
@@ -41,10 +42,17 @@ TIME_GREETINGS = [
 ]
 
 
-def pick_greeting(greetings, hour, last=None):
-    """A random greeting - one of the setting's ("|" between them) or one for the hour - never the last one said"""
+# Called again soon after talking, she answers like someone already in the room - "Good evening" every time
+# sounded like a bot. A real greeting only after this long without a word
+RECENT = 30 * 60
+ACKS = ["Sir?", "Yes, sir?", "Go ahead, sir.", "I'm listening, sir."]
+
+
+def pick_greeting(greetings, hour, last=None, recent=False):
+    """A random greeting - one of the setting's ("|" between them) or one for the hour - never the last one said;
+    just a short "Sir?" if they were talking a moment ago"""
     by_hour = next((lines for start, lines in reversed(TIME_GREETINGS) if hour >= start), TIME_GREETINGS[-1][1])
-    pool = [g.strip() for g in greetings.split("|") if g.strip()] + by_hour
+    pool = ACKS if recent else [g.strip() for g in greetings.split("|") if g.strip()] + by_hour
     return random.choice([g for g in pool if g != last] or pool)
 
 
@@ -90,7 +98,10 @@ def voice_language(voice):
 # How Moonshine has actually heard the wake phrase (spaces and punctuation dropped): taken as exact matches,
 # so "Heineia" (0.77) wakes her without lowering the threshold for everything - "Hey, nice..." also scores 0.77.
 # Only ones seen in the logs
-SOUNDALIKES = {"heynia": {"heineia", "heinear", "henear", "henia", "hania", "heania", "heaenea"}}
+SOUNDALIKES = {"heynia": {"heineia", "heinear", "henear", "henia", "hania", "heania", "heaenea", "tenia"}}
+# A line that starts with her name is addressed to her, as with a person: "Nia, what's playing?" (it scored 0.67
+# against "Hey Nia" and was ignored). Not "near" or "Mia" - ordinary words that start ordinary sentences
+ADDRESSED = {"nia", "nea", "neah", "niya"}
 
 
 def wake_match(text, phrase):
@@ -101,6 +112,8 @@ def wake_match(text, phrase):
     with music or talk in the room the phrase often lands mid-line, not at the start.
     """
     words = list(re.finditer(r"[a-z']+", text.lower()))
+    if words and words[0].group() in ADDRESSED:
+        return 1.0, text[words[0].end():].lstrip(" ,.!?;:-")
     target = "".join(phrase.lower().split())
     size = len(phrase.split())
     best, end = 0.0, 0
@@ -279,6 +292,8 @@ class WakeWordDetector:
         self.interrupted = threading.Event()  # "stop" heard: speak() cuts the voice off
         self.rest = ""  # the unspoken part of a long answer, said if the user asks her to go on
         self.greeted = None  # the last greeting, so the next one differs
+        self.last_talk = 0.0  # when she last spoke with them: a greeting only after a while
+        self.voice = threading.Lock()  # one sentence at a time, whichever thread speaks
         self.held = False  # the window's mic button is held down (push-to-talk)
         self.quitting = False
         self.restart_after = None  # "assistant", "all" or "off", set by restart_myself during a turn
@@ -304,7 +319,9 @@ class WakeWordDetector:
         logger.info("Starting the LLM server if needed...")
         ensure_llm_server()
         self.assistant = AssistantModel(extra_tools=self._voice_tools())
-        claude.ANNOUNCE = lambda: self.speak("One moment, sir.")  # Claude takes 15-40 s: say so, don't go silent
+        # Claude takes 15-40 s, a shell command or search can take a while: say so once, don't go silent
+        agent_chat.ANNOUNCE = lambda: self.speak("One moment, sir.")
+        claude.ANNOUNCE = agent_chat.announce
         # A change built on a branch in the background: she says how it went, unprompted, on the loop's thread
         claude.ON_DONE = lambda text: self.lines.put(SimpleNamespace(
             control="announce", text=text, duration=0, last_transcription_latency_ms=0))
@@ -604,6 +621,7 @@ class WakeWordDetector:
                 started = time.perf_counter()
                 self.say(reply)
                 logger.info(f"Spoke in {time.perf_counter() - started:.1f}s")
+        self.last_talk = time.time()
         if self.restart_after:  # asked for during the turn: only now, once she's said so
             self.restart()
 
@@ -613,8 +631,10 @@ class WakeWordDetector:
         self.speak(now + (" Shall I go on, sir?" if self.rest else ""))
 
     def greet(self):
-        self.greeted = pick_greeting(self.settings["greeting"], datetime.now().hour, self.greeted)
+        recent = time.time() - self.last_talk < RECENT
+        self.greeted = pick_greeting(self.settings["greeting"], datetime.now().hour, self.greeted, recent)
         self.speak(self.greeted)
+        self.last_talk = time.time()
 
     def speak(self, text):
         """Speak text over ducked app audio. Call inside working(), so "stop" can cut it off.
@@ -624,6 +644,10 @@ class WakeWordDetector:
         never interrupted, never two native calls at once - while this thread plays them with
         sounddevice and, on "stop", just stops playback. The helper finishes its current sentence
         and quits, so a stop in the first second waits for that sentence (under ~1 s)."""
+        with self.voice:  # "One moment" from a slow step's timer and the reply never talk over each other
+            self._speak(text)
+
+    def _speak(self, text):
         hud.send(nia=text)  # the window shows every reply, spoken or not
         if not self.settings["spoken_replies"]:
             logger.info(f"Shown, not spoken: {text}")

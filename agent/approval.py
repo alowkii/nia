@@ -48,7 +48,10 @@ def risks(action):
 READ_ONLY = {"tasklist", "dir", "ipconfig", "systeminfo", "type", "more", "where", "whoami", "hostname", "ver",
              "netstat", "nslookup", "ping", "tree", "getmac", "vol", "findstr", "find"}
 FILTERS = {"findstr", "find", "sort", "more"}
-GIT_READ = {"status", "log", "diff", "show"}
+GIT_READ = {"status", "log", "diff", "show", "describe", "rev-parse", "blame", "shortlog", "ls-files"}
+# These only list when given nothing but listing options - and change things otherwise ("branch -D", "tag -d")
+GIT_LIST = {"branch": {"--show-current", "-a", "-r", "-v", "-vv", "--all", "--list"}, "tag": {"-l", "--list"},
+            "remote": {"-v", "get-url", "origin"}}
 CMD_UNSAFE = re.compile(r"[&;<>^`]|\|\|")
 POWERSHELL = re.compile(r'powershell(?:\.exe)?\s+(?:-NoProfile\s+)?-(?:Command|c)\s+"(.+)"', re.I | re.S)
 PS_UNSAFE = re.compile(r"[;&<>`]|\$\(|@\(|-ComObject|\binvoke|\biex\b|\bstart-|\[", re.I)
@@ -72,7 +75,12 @@ def read_only(command):
         words = stages[0][1:]
         if words[:1] == ["-C"]:
             words = words[2:]
-        if not words or words[0] not in GIT_READ:
+        if not words or any(w.startswith("--output") for w in words):  # git diff --output=x writes a file
+            return False
+        if words[0] in GIT_LIST:
+            if not all(w in GIT_LIST[words[0]] for w in words[1:]):
+                return False
+        elif words[0] not in GIT_READ:
             return False
     elif first not in READ_ONLY:
         return False
