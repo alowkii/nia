@@ -37,6 +37,11 @@ assert wake("I just can't stop loving you Hey Nia, pause the music.") == "pause 
 assert wake("Heinear,") == "" and wake("Heineia,") == "" and wake("He near.") == ""
 assert wake("Heineia, play some Post Malone") == "play some Post Malone"
 assert wake("Heaenea.") == ""  # 0.46 by score: a real miss on 9 Oct
+assert wake("Tenia?") == ""  # 0.73
+# Her name first is enough, as with a person (0.67 against "Hey Nia", and ignored, on 9 Oct)
+assert wake("Nia, do you know where your directory is?") == "do you know where your directory is?"
+assert wake("Nia what's playing") == "what's playing"
+assert wake("Near the end of the day I'm tired") is None, "'near' starts ordinary sentences"
 
 # Not woken
 assert wake("Hey nice to meet you.") is None  # 0.77, just under the default
@@ -136,6 +141,9 @@ assert {"At your service, sir.", "You rang, sir?", "Still up, sir?"} <= set(said
 assert not {"Good morning, sir.", "Good evening, sir."} & set(said)
 assert "Good morning, sir." in {pick_greeting("", 9) for _ in range(50)}
 assert pick_greeting("", 23).startswith(("Still", "Burning", "At this hour"))  # only the hour's lines if none set
+# Called again a few minutes after talking: "Sir?", not "Good evening, sir." as if meeting for the first time
+from voice_assistant.voice_assistant import ACKS
+assert all(pick_greeting("At your service, sir.", 21, recent=True) in ACKS for _ in range(30))
 
 # British voices load with British pronunciation, or Moonshine refuses them
 assert [voice_language(v) for v in ("kokoro_bm_george", "piper_en_GB-alan-medium", "kokoro_af_heart")] == \
@@ -246,6 +254,7 @@ nia.settings = {**settings.DEFAULTS, "spoken_replies": False, "wake_word": False
 nia.lines, nia.interrupted = __import__("queue").Queue(), threading.Event()
 nia.awake, nia.deadline, nia.busy, nia.busy_ended = False, 0.0, False, 0.0
 nia.rest, nia.greeted, nia.held, nia.quitting, nia.restart_after = "", None, False, False, None
+nia.last_talk, nia.voice = 0.0, threading.Lock()
 class StubMic:
     """Records how the microphone is opened"""
     def __init__(self):
@@ -291,6 +300,7 @@ window.send({"type": "text", "text": "Hey Nia"})  # typed her name: the instant 
 seen = events_until(state="awake")
 said = [m["nia"] for m in seen if "nia" in m]
 assert said and "Done" not in said[0] and not any("you" in m for m in seen)
+assert said[0] in ACKS, "called again right after a request: 'Sir?', not a fresh 'Good evening'"
 time.sleep(0.5)  # well after she finished, so these aren't taken for the tail of her own voice
 nia.on_line(SimpleNamespace(text="Uh,", duration=0.3, last_transcription_latency_ms=90))
 assert not window.poll(0.4), "a hesitation gets no reply"

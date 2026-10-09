@@ -15,5 +15,7 @@ voice_samples/
 settings.json
 # Long-term memory (personal: facts and past conversations)
 memory/
-# The window's own browser profile (nia.py)
+# The old Edge window's profile - no longer used, safe to delete
 .hud-browser/
+# Roadmap and TODOs
+TODO.md

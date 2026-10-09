@@ -136,7 +136,7 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
     off = threading.Event()
     stopped = nia.Assistant(hub, server=Recorder(), done=off)
     assert stopped.handle({"restart": "off"}) == {} and off.is_set() and not stopped.rebooting
-    assert hub.latest["state"] == "offline" and hub.latest["closing"] is True
+    assert hub.latest["state"] == "offline"
     assert nia.Assistant(hub).handle({"state": "awake"}) == {"state": "awake"}
 
     # The logo: the window's icon and header, served from assets/logo only
@@ -159,5 +159,98 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
     # The window's quit
     assert post("/quit")[0] == 204 and done.is_set()
     httpd.shutdown()
+
+# Her own taskbar button and pin: a Start-menu shortcut with her icon, how to start her, and the window's app ID
+# (a folder outside AppData: Store Python sees its own private copy of AppData, the copy step the real one)
+with tempfile.TemporaryDirectory(dir=nia.LOG_DIR, ignore_cleanup_errors=True) as tmp:
+    real_shortcut, nia.SHORTCUT = nia.SHORTCUT, Path(tmp) / "NIA.lnk"  # never the real Start menu here
+    try:
+        nia.taskbar_identity()
+        import pythoncom
+        from win32com.propsys import propsys, pscon
+        from win32com.shell import shell
+        link = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None, pythoncom.CLSCTX_INPROC_SERVER,
+                                          shell.IID_IShellLink)
+        link.QueryInterface(pythoncom.IID_IPersistFile).Load(str(nia.SHORTCUT))
+        assert link.GetPath(0)[0].lower().endswith("pythonw.exe"), "starts her without a console"
+        assert link.GetArguments() == f'"{nia.ROOT / "nia.py"}"' and link.GetIconLocation()[0] == str(nia.ICON)
+        store = propsys.SHGetPropertyStoreFromParsingName(str(nia.SHORTCUT))
+        assert store.GetValue(pscon.PKEY_AppUserModel_ID).GetValue() == nia.APP_ID, "the same ID as her window"
+        assert not (nia.LOG_DIR / "NIA.lnk").exists(), "the staged copy is cleaned up"
+    finally:
+        nia.SHORTCUT = real_shortcut
+
+# Closing NIA closes everything she started - real processes here, not stand-ins. After one Ctrl+C an assistant
+# lingered 10+ minutes and the model server (~6 GB of GPU memory) never stopped
+import subprocess
+import sys
+import time
+import psutil
+
+SLEEPER = [sys.executable, "-c", "import time; time.sleep(60)"]
+FAMILY = [sys.executable, "-c", "import subprocess, sys, time; subprocess.Popen([sys.executable, '-c', "
+          "'import time; time.sleep(60)']); time.sleep(60)"]
+
+
+def gone_soon(pid, seconds=10):
+    end = time.time() + seconds
+    while time.time() < end:
+        try:
+            if psutil.Process(pid).status() == psutil.STATUS_ZOMBIE:
+                return True
+        except psutil.NoSuchProcess:
+            return True
+        time.sleep(0.1)
+    return False
+
+
+# kill_tree: the process and everything under it (.venv's python.exe is a launcher with the real Python under it)
+parent = subprocess.Popen(FAMILY)
+for _ in range(100):
+    family = psutil.Process(parent.pid).children(recursive=True)
+    if len(family) >= 2 if "venv" in sys.executable.lower() else family:
+        break
+    time.sleep(0.05)
+family = [parent.pid] + [c.pid for c in psutil.Process(parent.pid).children(recursive=True)]
+nia.kill_tree(parent.pid)
+assert all(gone_soon(pid) for pid in family), "the whole tree, not just the top"
+
+# bound_to_me: a process that owns a server dies abruptly - no cleanup at all - and the server goes with it
+owner = subprocess.Popen([sys.executable, "-c", f"""
+import os, subprocess, sys
+sys.path.insert(0, {str(nia.ROOT)!r})
+import nia
+server = subprocess.Popen({SLEEPER!r})
+nia.bound_to_me(server)
+print(server.pid, flush=True)
+os._exit(0)  # like a closed console or Task Manager
+"""], stdout=subprocess.PIPE, text=True, cwd=nia.ROOT)
+server_pid = int(owner.stdout.readline())
+owner.wait(30)
+try:
+    assert gone_soon(server_pid), "the server outlived the NIA that started it"
+finally:
+    nia.kill_tree(server_pid)
+
+# leftovers: an assistant whose nia.py is gone is found; one with a living parent (run by hand) is left alone
+with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+    (Path(tmp) / "main.py").write_text("import time; time.sleep(60)")
+    real_root, nia.ROOT = nia.ROOT, Path(tmp).resolve()
+    kept = subprocess.Popen([sys.executable, "main.py"], cwd=tmp)  # its parent - this test - is alive
+    gone_parent = subprocess.Popen([sys.executable, "-c", "import subprocess, sys; "
+                                    "print(subprocess.Popen([sys.executable, 'main.py']).pid, flush=True)"],
+                                   cwd=tmp, stdout=subprocess.PIPE, text=True)
+    orphan_pid = int(gone_parent.stdout.readline())
+    gone_parent.wait(30)
+    try:
+        time.sleep(1)  # the launchers start their real Pythons
+        found = [proc.pid for proc in nia.leftovers()]
+        assert orphan_pid in found, "an assistant whose parent is gone"
+        assert kept.pid not in found, "never one with a living parent"
+        assert not any(c.pid in found for c in psutil.Process(kept.pid).children()), "nor its real Python"
+    finally:
+        nia.ROOT = real_root
+        nia.kill_tree(orphan_pid)
+        nia.kill_tree(kept.pid)
 
 print("ok")

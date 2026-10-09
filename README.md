@@ -65,9 +65,11 @@ instead of an action.
 
 **Manner:** JARVIS from Iron Man — formal, unhurried and dry: *"Very good, sir. The browser stays."*,
 *"I'm afraid Spotify won't play, sir — even after a restart."* No exclamation
-marks or "Enjoy!", and no wit when something has failed. Waking her gets a different greeting
-each time, picked from **Greetings** in the settings panel (`|` between them) plus a few for the
-hour: *"Good morning, sir."* at 8, *"Burning the midnight oil, sir?"* at 2 am. The voice is Kokoro's British
+marks or "Enjoy!", and no wit when something has failed. Waking her after a while gets a greeting,
+picked from **Greetings** in the settings panel (`|` between them) plus a few for the hour: *"Good morning,
+sir."* at 8, *"Burning the midnight oil, sir?"* at 2 am. Called again within half an hour of talking, she
+just answers *"Sir?"* or *"Yes, sir?"*, as someone already in the room would. "Nia, …" with her name first
+wakes her too. The voice is Kokoro's British
 `bm_george`; any American or British Kokoro or Piper voice can be picked in the settings panel
 (`af_heart` was the original). It runs at 1.2× speed ("NIA's speaking speed" in the panel).
 
@@ -77,6 +79,10 @@ window stays open and reloads itself; ~40 s later she's back at *Standing by* wi
 fresh and memory kept. If something of hers is stuck (she keeps mishearing), she may restart just her speech and
 agent on her own (~10 s). Ollama is left running; its models hold no NIA code. "Shut down" or "turn off"
 switches all of NIA off instead, as closing the window does.
+
+**About herself:** "What version are you?", "Where's your code?", "What's planned for you?" — she knows her
+release (from git), her folder and what she runs on, and reads this README and your local `TODO.md` (if you keep one) for the rest,
+without asking first.
 
 Her own voice volume is a tool too: "speak up", "you're too loud", "talk at 50 percent"
 (10-100%; more would only clip). It's saved, so it survives restarts.
@@ -92,7 +98,10 @@ prompt prefix stays identical and llama-server reuses its cache.
 
 ## Requirements
 
-- **Python 3.11** (tested)
+- **Windows 10 or 11** - NIA's window, taskbar button, volume ducking and shutdown handling are Windows-only.
+  Her window is drawn by the **WebView2 runtime**, built into Windows 11 and current Windows 10; if it's
+  missing, get the [Evergreen runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
+- **Python 3.11** (tested) - python.org's or the Microsoft Store's both work
 - **NVIDIA GPU with 8 GB VRAM** for the LLM. Bonsai 2 27B (`PTQ1_0`, 5.95 GB) runs fully on
   the GPU at ~35 tok/s on an RTX 4060 Laptop
 - **[PrismML's llama.cpp fork](https://github.com/PrismML-Eng/llama.cpp/releases)**, since
@@ -110,11 +119,11 @@ git clone https://github.com/alowkii/nia
 cd nia
 
 python -m venv .venv
-.venv\Scripts\activate          # Windows
-# source .venv/bin/activate     # Linux / macOS
-
+.venv\Scripts\activate
 pip install -r requirements.txt
 ```
+
+Or with [uv](https://docs.astral.sh/uv/): `uv venv`, then `uv pip install -r requirements.txt`.
 
 The Moonshine speech model and the Kokoro voice download on first run.
 
@@ -140,11 +149,17 @@ One script runs everything, in one window:
 python nia.py
 ```
 
-(`pythonw nia.py`, or a shortcut to it, runs it without a console.) It opens NIA's window and, hidden
+(Or `uv run -m nia`; `pythonw nia.py` runs it without a console.) **The first run adds NIA to your Start
+menu**, with her own icon and pointing at your copy of the repo and its Python: search "NIA" and choose *Pin to
+taskbar*, or right-click her running window's taskbar button. Either way the pin is NIA's own and starts her
+without a console. Each start refreshes the entry, so it follows the folder if you move it; to remove it,
+delete `NIA.lnk` from `%APPDATA%\Microsoft\Windows\Start Menu\Programs`. It opens NIA's window and, hidden
 behind it, starts the LLM server if it isn't already up (~20 s) and the assistant. When the orb shows
 *Standing by* — with a soft, warm two-note chime as she's ready (*Chime when she's ready* in the settings turns
 it off) — say "Hey Nia", or type into the command line at the bottom. **Closing the window shuts everything
-down**, including the LLM server if NIA started it. Running it again while NIA is up just opens another window
+down**, including the LLM server if NIA started it — even if `nia.py` is killed or its console closed, Windows
+ends the server with it — and the log ends with *Stopped everything*. Anything a crash leaves behind is
+cleaned up the next time she starts. Running it again while NIA is up just opens another window
 onto her. Say "reboot" to restart all of it — see **Rebooting** under [How it works](#how-it-works).
 
 ### The window
@@ -180,7 +195,8 @@ onto her. Say "reboot" to restart all of it — see **Rebooting** under [How it 
   <br><sub><i>Four of the six themes: arc gold, violet, mint and red alert (cyan and ice white are the others).</i></sub>
 </p>
 
-The window is [hud/hud.html](hud/hud.html) in an Edge app window, served by [nia.py](nia.py) on
+The window is [hud/hud.html](hud/hud.html) in NIA's own window ([pywebview](https://pywebview.flowrl.com/), drawn by
+WebView2 - the Edge engine that's part of Windows - with her name and icon on the taskbar), served by [nia.py](nia.py) on
 `127.0.0.1:8765` and updated live over an event stream. The assistant runs as a hidden child process
 (main.py) joined to it by an authenticated local connection ([utils/hud.py](utils/hud.py)); only that
 window can drive it — a web page can't send its requests. Settings are saved to `settings.json`; the
@@ -195,7 +211,8 @@ Everything lands in `logs/`:
 
 | File | What's in it |
 |---|---|
-| `nia.log` | Each turn — what was heard or typed (and transcription latency), tool calls with arguments and results, the reply, LLM and speech timings — plus startup, settings changes, and every crash with its full traceback. Rotates at 5 MB, keeping 3 old files. |
+| `nia.log` | Each turn — what was heard or typed (and transcription latency), tool calls with arguments and results (a shell command, its approval decision and its output, as much as NIA saw), the reply, LLM and speech timings — plus each step Claude took (every search, page, edit and command), startup, settings changes, and every crash with its full traceback. Rotates at 5 MB, keeping 3 old files. |
+| `claude/` | Every Claude run, whole: one transcript per question or change (`<time>-ask-<question>.jsonl`, `<time>-build-<request>.jsonl`). |
 | `assistant.out.log` | The hidden assistant's console output — mostly a copy of the above, plus anything a native library prints as it crashes. |
 | `window.log` | The window's script (nia.py): starting and stopping the server and assistant, settings changes. |
 | `test.log` | What the test suites log, kept out of NIA's real log. |

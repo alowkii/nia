@@ -68,6 +68,22 @@ def tool_calls(out):
             if isinstance(block, dict) and block.get("type") == "tool_use"]
 
 
+def record(kind, about, out):
+    """What Claude did, kept: one log line per step (each search, page, edit, command) and its whole transcript
+    in logs/claude - so a change it built, or an answer it gave, can be checked afterwards"""
+    for block in tool_calls(out):
+        step = json.dumps(block.get("input"), ensure_ascii=False)[:300]
+        logger.info(f"Claude {kind} step: {block.get('name')} {step}")
+    try:
+        TRANSCRIPTS.mkdir(parents=True, exist_ok=True)
+        words = "-".join(re.findall(r"[a-z0-9]+", about.lower())[:6]) or kind
+        path = TRANSCRIPTS / f"{time.strftime('%Y%m%d-%H%M%S')}-{kind}-{words}.jsonl"
+        path.write_text(out or "", encoding="utf-8")
+        logger.info(f"Claude's full transcript: {path}")
+    except OSError as e:  # a full disk mustn't lose the answer itself
+        logger.warning(f"Couldn't save Claude's transcript: {e}")
+
+
 def clean_env():
     """The environment without any parent Claude Code session's markers, so the call is a session of its own"""
     return {k: v for k, v in os.environ.items() if not (k.startswith("CLAUDE_") or k == "CLAUDECODE")}
@@ -96,6 +112,7 @@ def ask(question):
             return f"Claude didn't answer within {TIMEOUT} seconds - try web_search instead"
         reader.join(0.2)
     out, err = getattr(proc, "answer", ("", ""))
+    record("ask", question, out)
     result = next((event for event in events(out) if event.get("type") == "result"), None)
     if result is None:
         logger.warning(f"Claude Code failed ({proc.returncode}): {(err or out)[:300]}")
@@ -123,6 +140,7 @@ def ask_claude(question: str) -> str:
 # ---- Changing herself, on a branch: Claude Code builds the change in a separate checkout, never the running code
 
 ROOT = Path(__file__).resolve().parent.parent
+TRANSCRIPTS = ROOT / "logs" / "claude"  # every Claude run, whole (logs/ is never committed)
 CHANGES = ROOT.parent / "nia-changes"  # where each change is built, one checkout per branch
 PYTHON = Path(sys.executable).with_name("python.exe").as_posix()  # pythonw has no console for the tests
 BUILD_TIMEOUT = 20 * 60  # a coding job takes minutes, not seconds
@@ -175,6 +193,8 @@ def run_tests(folder):
                                   timeout=TEST_TIMEOUT, creationflags=subprocess.CREATE_NO_WINDOW)
             if done.returncode != 0:
                 failed.append(suite.name)
+                output = (done.stdout + done.stderr).decode("utf-8", "replace")
+                logger.info(f"{suite.name} failed on the change - its last lines:\n{output[-1500:]}")
         except subprocess.TimeoutExpired:
             failed.append(f"{suite.name} (timed out)")
     return failed
@@ -205,6 +225,7 @@ def _build(request, root, branch):
         proc = subprocess.run(build_command(request), cwd=folder, env=clean_env(), capture_output=True, text=True,
                               encoding="utf-8", errors="replace", timeout=BUILD_TIMEOUT, stdin=subprocess.DEVNULL,
                               creationflags=subprocess.CREATE_NO_WINDOW)
+        record("build", request, proc.stdout)
         result = next((e for e in events(proc.stdout) if e.get("type") == "result"), {})
         summary = str(result.get("result") or "").strip()
         logger.info(f"Claude finished in {time.time() - started:.0f}s ({len(tool_calls(proc.stdout))} tool calls, "
@@ -221,7 +242,9 @@ def _build(request, root, branch):
              "NIA. Every test passed; not merged - for review.")
         _git(root, "worktree", "remove", "--force", str(folder))  # the branch stays
         _done(f"Done, sir. {summary} Every test passed. It's on the branch {branch}, ready for you to review and merge.")
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
+        out = e.stdout.decode("utf-8", "replace") if isinstance(e.stdout, bytes) else e.stdout
+        record("build", request, out or "")  # what it got through before the time ran out
         _discard(root, folder, branch)
         _done(f"Claude didn't finish within {BUILD_TIMEOUT // 60} minutes, sir, so I've discarded it.")
     except Exception as e:  # never leave a half-made checkout behind

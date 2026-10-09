@@ -1,6 +1,6 @@
 """NIA in one window. Run: python nia.py  (or pythonw nia.py for no console at all)
 
-Opens the HUD (hud/hud.html) in an Edge app window and runs everything behind it, hidden: the LLM server
+Opens the HUD (hud/hud.html) in NIA's own window and runs everything behind it, hidden: the LLM server
 (llama-server + Bonsai, GPU) and the assistant (main.py: mic, speech, agent) as child processes. The window
 shows what NIA is doing, takes typed commands, and holds every setting. Closing it shuts everything down.
 Starting it again while NIA runs just opens another window onto her.
@@ -9,7 +9,6 @@ import json
 import os
 import queue
 import secrets
-import shutil
 import subprocess
 import sys
 import threading
@@ -32,10 +31,8 @@ logger = logging.getLogger("nia")
 ROOT = Path(__file__).resolve().parent
 PAGE = ROOT / "hud" / "hud.html"
 PORT = 8765  # 8080 is httpd's, 8081 the LLM server's
-PROFILE = ROOT / ".hud-browser"  # the window's own browser profile
 HIDDEN = subprocess.CREATE_NO_WINDOW
 PYTHON = str(Path(sys.executable).with_name("python.exe"))  # pythonw has no stdout for the child to log to
-WINDOW_GONE = 5  # seconds with no page connected before NIA takes the window as closed
 
 # The settings panel: (section, [(key, label, kind)]); kind is text | number | check | voice | stt
 FIELDS = [
@@ -108,7 +105,6 @@ class Hub:
         self.pages = set()
         self.lock = threading.Lock()
         self.latest = {"state": "booting", "server": "loading"}
-        self.last_seen = None  # when a page was last connected; None until the first one
 
     def send(self, **message):
         with self.lock:
@@ -128,6 +124,76 @@ def bonsai_servers():
         except (psutil.Error, OSError):
             pass
     return found
+
+
+def kill_tree(pid):
+    """A process and everything under it - .venv's python.exe is only a launcher; the real Python runs as its child,
+    and killing the launcher alone left her running"""
+    try:
+        root = psutil.Process(pid)
+        family = root.children(recursive=True) + [root]
+    except psutil.Error:
+        return
+    for proc in family:
+        try:
+            proc.kill()
+        except psutil.Error:
+            pass
+    psutil.wait_procs(family, timeout=10)
+
+
+def leftovers():
+    """NIA processes an earlier run left behind: an assistant (main.py here) or a model server whose parent is gone -
+    after a crash or a closed console. Never one with a living parent, such as a python main.py run by hand"""
+    def orphan(proc):
+        parent = proc.parent()
+        return parent is None or parent.create_time() > proc.create_time()  # its pid reused by something newer
+    found, servers = [], {proc.pid for proc in bonsai_servers()}
+    for proc in psutil.process_iter(["name", "cmdline", "cwd"]):
+        try:
+            assistant = ((proc.info["name"] or "").lower().startswith("python")
+                         and (proc.info["cmdline"] or [""])[-1] == "main.py"
+                         and proc.info["cwd"] and Path(proc.info["cwd"]).resolve() == ROOT)
+            if (assistant or proc.pid in servers) and orphan(proc):
+                found.append(proc)
+        except (psutil.Error, OSError):
+            pass
+    return found
+
+
+JOBS = []  # kept for as long as nia.py runs: when Windows closes a job, it ends what's in it; also the console handler
+
+
+def bound_to_me(proc):
+    """Windows ends proc when nia.py ends, however that happens - Ctrl+C, a closed console, a crash, Task Manager.
+    A model server holding ~6 GB of GPU memory was left running after a Ctrl+C cut a shutdown short"""
+    if os.name != "nt":
+        return
+    import ctypes
+    from ctypes import wintypes
+
+    class Basic(ctypes.Structure):  # JOBOBJECT_BASIC_LIMIT_INFORMATION
+        _fields_ = [("user_time", ctypes.c_int64), ("job_time", ctypes.c_int64), ("flags", wintypes.DWORD),
+                    ("min_ws", ctypes.c_size_t), ("max_ws", ctypes.c_size_t), ("processes", wintypes.DWORD),
+                    ("affinity", ctypes.c_size_t), ("priority", wintypes.DWORD), ("scheduling", wintypes.DWORD)]
+
+    class Extended(ctypes.Structure):  # JOBOBJECT_EXTENDED_LIMIT_INFORMATION
+        _fields_ = [("basic", Basic), ("io", ctypes.c_ulonglong * 6), ("process_memory", ctypes.c_size_t),
+                    ("job_memory", ctypes.c_size_t), ("peak_process", ctypes.c_size_t), ("peak_job", ctypes.c_size_t)]
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateJobObjectW.restype = wintypes.HANDLE
+    kernel32.SetInformationJobObject.argtypes = [wintypes.HANDLE, ctypes.c_int, ctypes.c_void_p, wintypes.DWORD]
+    kernel32.AssignProcessToJobObject.argtypes = [wintypes.HANDLE, wintypes.HANDLE]
+    job = kernel32.CreateJobObjectW(None, None)
+    limits = Extended()
+    limits.basic.flags = 0x2000  # JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
+    if not (job and kernel32.SetInformationJobObject(job, 9, ctypes.byref(limits), ctypes.sizeof(limits))  # 9: extended
+            and kernel32.AssignProcessToJobObject(job, int(proc._handle))):
+        logger.warning(f"Couldn't tie the LLM server to NIA (error {ctypes.get_last_error()}) - "
+                       "if NIA is killed, end llama-server yourself")
+        return
+    JOBS.append(job)
 
 
 def ensure_ollama():
@@ -167,6 +233,7 @@ class Server:
         logger.info(f"Starting LLM server: {' '.join(llm_server_command(s))}")
         self.proc = subprocess.Popen(llm_server_command(s), creationflags=HIDDEN,
                                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # it logs to its own file
+        bound_to_me(self.proc)
         threading.Thread(target=self._wait, args=(self.proc, s["port"]), daemon=True).start()
 
     def _wait(self, proc, port, timeout=180):
@@ -186,7 +253,10 @@ class Server:
         """The server NIA started; any_of_ours: every llama-server of NIA's, even one she didn't start"""
         if self.proc and self.proc.poll() is None:
             self.proc.terminate()
-            self.proc.wait(10)
+            try:
+                self.proc.wait(10)
+            except subprocess.TimeoutExpired:  # an error here once cut the rest of the shutdown short
+                self.proc.kill()
         if any_of_ours:
             ours = bonsai_servers()  # never Ollama's
             for proc in ours:
@@ -240,8 +310,7 @@ class Assistant:
             self.rebooting = what == "all"
             logger.info("She asked for a reboot - restarting all of NIA" if self.rebooting
                         else "Asked to shut down - stopping all of NIA")
-            self.hub.send(**({"state": "booting", "rebooting": True} if self.rebooting
-                             else {"state": "offline", "closing": True}))  # the page closes its window
+            self.hub.send(**({"state": "booting", "rebooting": True} if self.rebooting else {"state": "offline"}))
             self.done.set()
         elif what:
             logger.info(f"She asked to be restarted ({what})")
@@ -271,9 +340,9 @@ class Assistant:
             self.send({"type": "quit"})
             try:
                 self.proc.wait(timeout)
-            except subprocess.TimeoutExpired:
-                self.proc.kill()
-                self.proc.wait()
+            except subprocess.TimeoutExpired:  # busy, or stuck: all of it, the real Python under the launcher too
+                logger.info(f"The assistant didn't stop within {timeout}s - ending it")
+                kill_tree(self.proc.pid)
 
     def restart(self):
         self.stop()
@@ -348,7 +417,6 @@ def handler(hub, assistant, server, done):
             finally:
                 with hub.lock:
                     hub.pages.discard(page)
-                    hub.last_seen = time.time()
 
         def do_POST(self):
             # A web page can't send this header to localhost without a CORS preflight, which is never answered
@@ -409,26 +477,102 @@ class HudServer(ThreadingHTTPServer):
     allow_reuse_address = False  # on Windows it would let a second NIA bind the same port instead of failing
 
 
-def open_window(url):
-    """An Edge app window (no browser bars) with its own profile; a normal tab if there's no Edge or Chrome"""
-    browser = next((p for p in (shutil.which("msedge"),
-                                r"C:\Program Files (x86)\Microsoft\Edge\Application\msedge.exe",
-                                r"C:\Program Files\Microsoft\Edge\Application\msedge.exe",
-                                r"C:\Program Files\Google\Chrome\Application\chrome.exe") if p and Path(p).exists()),
-                   None)
-    if not browser:
-        webbrowser.open(url)
-        return None
-    return subprocess.Popen([browser, f"--app={url}", "--start-maximized", f"--user-data-dir={PROFILE}",
-                             "--no-first-run", "--no-default-browser-check"])
+# Her own taskbar button and pin - NIA's name and icon, not Python's or Edge's: the window carries this app ID, and so
+# does a Start-menu shortcut with her icon and how to start her, which is what Windows shows and pins
+APP_ID = "NIA.Assistant"
+ICON = LOGO / "nia.ico"  # her app icon, 16-256 px: the Start menu and a high-DPI taskbar want the large sizes
+SHORTCUT = Path(os.getenv("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "NIA.lnk"
+
+
+def taskbar_identity():
+    """This process's windows are NIA's, and the Start-menu shortcut that pins them is (re)made - kept pointing at
+    wherever this copy of NIA lives"""
+    import ctypes
+    ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
+    try:
+        import pythoncom
+        from win32com.propsys import propsys, pscon
+        from win32com.shell import shell
+        pythoncom.CoInitialize()
+        link = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None, pythoncom.CLSCTX_INPROC_SERVER,
+                                          shell.IID_IShellLink)
+        link.SetPath(str(Path(sys.executable).with_name("pythonw.exe")))  # no console
+        link.SetArguments(f'"{ROOT / "nia.py"}"')
+        link.SetWorkingDirectory(str(ROOT))
+        link.SetIconLocation(str(ICON), 0)
+        link.SetDescription("NIA - Next-gen Intelligence Agent")
+        store = link.QueryInterface(propsys.IID_IPropertyStore)
+        store.SetValue(pscon.PKEY_AppUserModel_ID, propsys.PROPVARIANTType(APP_ID))
+        store.Commit()
+        # Made here, then copied by another process: Store-installed Python's own writes to AppData land in a
+        # private copy only it can see - the Start menu never showed her. A child process writes to the real one
+        staged = LOG_DIR / "NIA.lnk"
+        link.QueryInterface(pythoncom.IID_IPersistFile).Save(str(staged), 0)
+        copied = subprocess.run(["cmd", "/c", "copy", "/y", str(staged), str(SHORTCUT)], capture_output=True,
+                                text=True, creationflags=HIDDEN)
+        staged.unlink(missing_ok=True)
+        if copied.returncode:
+            raise OSError(copied.stdout.strip() or copied.stderr.strip())
+    except Exception as e:  # a missing shortcut costs only the pin's icon
+        logger.warning(f"Couldn't make the Start-menu shortcut ({e!r}) - the window still works")
+
+
+def own_button(window):
+    """NIA's app ID, name, icon and how to start her, on the window itself - checked before the process's own ID,
+    which Store-installed Python overrides with its own (her button showed Python's icon until this)"""
+    try:
+        import pythoncom
+        from win32com.propsys import propsys, pscon
+        pythoncom.CoInitialize()
+        store = propsys.SHGetPropertyStoreForWindow(int(window.native.Handle.ToInt64()), propsys.IID_IPropertyStore)
+        for key, value in ((pscon.PKEY_AppUserModel_ID, APP_ID),
+                           (pscon.PKEY_AppUserModel_RelaunchCommand,
+                            f'"{Path(sys.executable).with_name("pythonw.exe")}" "{ROOT / "nia.py"}"'),
+                           (pscon.PKEY_AppUserModel_RelaunchDisplayNameResource, "NIA"),
+                           (pscon.PKEY_AppUserModel_RelaunchIconResource, f"{ICON},0")):
+            store.SetValue(key, propsys.PROPVARIANTType(value))
+        store.Commit()
+    except Exception as e:  # costs only the icon on the taskbar
+        logger.warning(f"Couldn't give the window NIA's taskbar button ({e!r})")
+
+
+def make_window(url):
+    """hud.html in NIA's own window - the same Edge engine (WebView2, part of Windows) without Edge's window"""
+    import webview
+    window = webview.create_window("NIA", url, maximized=True, background_color="#03070A", min_size=(960, 600))
+    window.events.shown += lambda: own_button(window)
+    return window
+
+
+def show_windows():
+    """Until every window is closed - on this thread, which must be the main one"""
+    import webview
+    webview.start(icon=str(ICON))
+
+
+def on_console_close(done, stopped):
+    """Ctrl+C, or the console window closed: shut down properly. Python's own Ctrl+C never fires while the window's
+    loop runs in .NET; and a closed console ends the process ~5 s after this returns, so wait for the shutdown"""
+    import ctypes
+    from ctypes import wintypes
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.DWORD)
+    def handle(event):
+        logger.info("Stopping (Ctrl+C)" if event in (0, 1) else "Stopping (the console was closed)")
+        done.set()
+        stopped.wait(4.5)
+        return True
+    ctypes.windll.kernel32.SetConsoleCtrlHandler(handle, True)
+    JOBS.append(handle)  # kept alive while nia.py runs: a collected callback would crash the process
 
 
 def main():
     url = f"http://127.0.0.1:{PORT}"
-    hub, done = Hub(), threading.Event()
+    hub, done, stopped = Hub(), threading.Event(), threading.Event()
     server = Server(hub)
     assistant = Assistant(hub, server, done)
-    rebooted = os.environ.pop("NIA_REBOOT", None)  # started by a reboot: the window is already open
+    taskbar_identity()
+    rebooted = os.environ.pop("NIA_REBOOT", None)
     for attempt in range(20 if rebooted else 1):  # after a reboot, the old copy may still be letting go of the port
         try:
             httpd = HudServer(("127.0.0.1", PORT), handler(hub, assistant, server, done))
@@ -436,47 +580,45 @@ def main():
         except OSError:
             if attempt == 19 or not rebooted:  # NIA is already running: just show her
                 logger.info("NIA is already running - opening another window onto her")
-                open_window(url)
+                make_window(url)
+                show_windows()
                 return
             time.sleep(0.5)
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     logger.info(f"NIA's window: {url}")
-    window = None if rebooted else open_window(url)
-    if rebooted:
-        def reopen():  # the old window reconnects within a few seconds; if it was closed meanwhile, open one
-            time.sleep(15)
-            if not hub.last_seen and not hub.pages:
-                open_window(url)
-        threading.Thread(target=reopen, daemon=True).start()
+    on_console_close(done, stopped)
+    window = make_window(url)
+
+    def closed():  # by you - or by close_when_done below, after something else asked her to stop
+        if not done.is_set():
+            logger.info("Window closed - shutting down")
+        done.set()
+    window.events.closed += closed
+    for proc in leftovers():  # two assistants on one microphone would both answer
+        logger.info(f"Ending a leftover from an earlier run: {proc.name()} ({proc.pid})")
+        kill_tree(proc.pid)
     ensure_ollama()
     server.start()
     assistant.start()
 
-    def window_closed():  # no page connected for a while: the window was closed
-        while not done.is_set():
-            time.sleep(1)
-            with hub.lock:
-                gone = not hub.pages and hub.last_seen and time.time() - hub.last_seen > WINDOW_GONE
-            if gone:
-                logger.info("Window closed - shutting down")
-                done.set()
-    threading.Thread(target=window_closed, daemon=True).start()
-
-    try:
-        while not done.wait(0.5):  # a plain wait() can't be interrupted by Ctrl+C on Windows
+    def close_when_done():  # quit, shut down, reboot, Ctrl+C: the window goes, which ends show_windows
+        done.wait()
+        try:
+            window.destroy()
+        except Exception:  # already closed
             pass
-    except KeyboardInterrupt:
-        logger.info("Stopping (Ctrl+C)")
+    threading.Thread(target=close_when_done, daemon=True).start()
+    show_windows()
+    done.set()
     assistant.stop()
     server.stop(any_of_ours=assistant.rebooting)  # a reboot reloads the model even if NIA didn't start it
     httpd.shutdown()
     httpd.server_close()  # frees the port for the new copy
-    if assistant.rebooting:  # a fresh copy of this script, which reloads all of NIA's code; the window stays
+    if assistant.rebooting:  # a fresh copy of this script, which reloads all of NIA's code
         subprocess.Popen([sys.executable, *sys.argv], cwd=ROOT, env={**os.environ, "NIA_REBOOT": "1"})
         logger.info("Rebooting: handed over to a fresh copy")
-    elif window and window.poll() is None:
-        window.terminate()
-
+    logger.info("Stopped everything")
+    stopped.set()
 
 if __name__ == "__main__":
     main()

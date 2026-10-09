@@ -607,7 +607,6 @@ let rebooting = false, lost = false;
 events.addEventListener('message', (e) => {
   const m = JSON.parse(e.data);
   if (m.rebooting) rebooting = true;
-  if (m.closing) window.close();  // she was asked to shut down: the window goes with her
 });
 events.onerror = () => { lost = true; mode = rebooting ? 'booting' : 'offline'; error = null; render(); };
 events.onopen = () => { if (lost) location.reload(); };
