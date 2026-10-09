@@ -34,5 +34,8 @@ youtube-transcript-api==1.2.4
 pywebview==6.2.1
 pywin32==312
 
+# Numbers as words in everything she says ("forty percent", "twenty twenty-six")
+num2words==0.5.14
+
 # Config
 python-dotenv==1.2.1

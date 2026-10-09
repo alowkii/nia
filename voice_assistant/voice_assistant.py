@@ -24,6 +24,7 @@ from agent import claude
 from agent.chat import CANCEL, AssistantModel, ensure_llm_server
 from utils import mics
 from utils.hud import hud
+from utils.words import in_words
 
 # Set logging
 from utils.logger import logging
@@ -656,6 +657,7 @@ class WakeWordDetector:
         never interrupted, never two native calls at once - while this thread plays them with
         sounddevice and, on "stop", just stops playback. The helper finishes its current sentence
         and quits, so a stop in the first second waits for that sentence (under ~1 s)."""
+        text = in_words(text)  # numbers as words - heard and shown the same: "fifty percent", never "50%"
         with self.voice:  # "One moment" from a slow step's timer and the reply never talk over each other
             self._speak(text)
 
