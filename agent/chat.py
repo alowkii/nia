@@ -115,8 +115,12 @@ def recent_turns(turns):
 QUIET_WHEN_DONE = {"play", "play_something", "resume", "skip", "pause"}
 
 
-def quiet_success(messages):
-    """Whether this turn only started, changed or paused the music - and every one of those worked"""
+def quiet_success(messages, reply):
+    """Whether this turn only started, changed or paused the music - and every one of those worked - and the reply
+    has nothing else to say. A question needs hearing: "Paused it, sir. What would you like to watch on YouTube?"
+    went unspoken, and the user was left waiting"""
+    if "?" in reply:
+        return False
     users = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
     results = [m for m in messages[users[-1] if users else 0:] if isinstance(m, ToolMessage)]
     return bool(results) and all(m.name in QUIET_WHEN_DONE and m.status != "error" for m in results)
@@ -453,7 +457,7 @@ class AssistantModel:
             exchange = f"{author} asked: {self.request} | NIA answered: {reply[:300]}"
             if (memory_id := self.memory.add(exchange, "exchange")) is not None:
                 self.recent.append(memory_id)
-        if isinstance(reply, str) and reply and quiet_success(result["messages"]):
+        if isinstance(reply, str) and reply and quiet_success(result["messages"], reply):
             logger.info(f"Done quietly - shown, not said: {reply!r}")
             hud.send(nia=in_words(reply))  # in the window, for the record - numbers as words, as she'd say them
             reply = ""  # the music starting is the answer: nothing to say over it

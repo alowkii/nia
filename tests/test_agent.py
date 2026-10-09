@@ -79,6 +79,10 @@ def test_tools_reach_spotify():
         quiet = tool_call.tool_calls[0]["name"] in ("play", "play_something", "skip")
         assert a.respond("do it") == ("" if quiet else "Done, sir."), tool_call.tool_calls
         assert a._spotify.calls == [expected], (tool_call.tool_calls, a._spotify.calls)
+    # ...but a reply that asks something is said: this one went unspoken, and the user was left waiting
+    asks = "Paused it, sir. What would you like to watch on YouTube?"
+    a = assistant(call("pause"), AIMessage(asks), spotify=FakeSpotify())
+    assert a.respond("why don't you pause it and let's use youtube") == asks
 
 
 def test_spotify_errors_go_back_to_the_model():
