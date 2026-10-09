@@ -187,6 +187,34 @@ with nia.working():
     assert nia.lines.get_nowait().text == "pause the music"
 assert not nia.busy
 
+# "Stop" while a sentence is still being made (the native call can't be cut short): that sentence never starts
+# playing - before, it was started and stopped at once, a blip - and nothing after it is made
+from voice_assistant import voice_assistant as va
+played, made = [], []
+talker = WakeWordDetector.__new__(WakeWordDetector)
+talker.settings = {**settings.DEFAULTS, "spoken_replies": True, "duck_level": 1}
+talker.interrupted, talker.voice = __import__("threading").Event(), __import__("threading").Lock()
+
+
+class StoppedWhileMaking:
+    def synthesize(self, sentence, speed, volume):
+        made.append(sentence)
+        talker.interrupted.set()  # "Hey Nia, stop" lands while this sentence is being made
+        return np.zeros(2400, dtype=np.float32), 24000
+
+
+talker.tts = StoppedWhileMaking()
+real = va.sd.play, va.sd.stop, va.sd.wait, va.hud
+va.sd.play = lambda *args, **kwargs: played.append(args)
+va.sd.stop = va.sd.wait = lambda *args, **kwargs: None
+va.hud = SimpleNamespace(send=lambda **message: None, speak=lambda *args: None, show=lambda *args: None)
+try:
+    talker.speak("First sentence here. The second is never made. Nor the third.")
+finally:
+    va.sd.play, va.sd.stop, va.sd.wait, va.hud = real
+assert played == [], "a sentence made after the stop was still started"
+assert made == ["First sentence here."], "kept making sentences after the stop"
+
 heard(nia, "the tail of her last sentence", duration=2.0)  # began while she was talking
 assert nia.lines.empty()
 nia.busy_ended = time.time() - 5
@@ -205,14 +233,20 @@ with tempfile.TemporaryDirectory() as tmp:
     nia = WakeWordDetector.__new__(WakeWordDetector)  # skip mic, models and LLM
     nia.settings, nia.tts = settings.load(), StubTTS()
     set_volume, change_volume, *_ = nia._voice_tools()  # then restart_myself and shut_down_myself
+    from voice_assistant import voice_assistant as va
+    chimed, real_chime = [], va.play_chime
+    va.play_chime = chimed.append  # recorded, never played
     assert set_volume.invoke({"percent": 50}) == "Your voice volume is now 50%"
     assert nia.tts.level == 0.5 and settings.load()["voice_volume"] == 0.5
+    assert chimed == [0.5], "she says nothing about it (a minor action), so the chime plays at the new level"
     assert change_volume.invoke({"step": 25}) == "Your voice volume is now 75%"
     assert nia.tts.level == 0.75 and settings.load()["voice_volume"] == 0.75
     assert "maximum" in change_volume.invoke({"step": 100})  # capped, and says so
     assert nia.tts.level == 1.0
     change_volume.invoke({"step": -500})
     assert nia.tts.level == 0.1  # never silent
+    assert chimed == [0.5, 0.75, 1.0, 0.1]
+    va.play_chime = real_chime
 
 # Numbers always as words - heard and shown the same ("50 percent" and "fifty percent" both came out before)
 from utils.words import in_words

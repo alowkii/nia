@@ -64,6 +64,10 @@ def assistant(*replies, spotify=None, extra_tools=(), approval_model=None, memor
 
 
 def test_tools_reach_spotify():
+    from agent import chat
+    # "I don't want it to reply when setting the volume, changing the music and stuff": all quiet when they work
+    assert {"set_volume", "change_volume", "shuffle", "repeat", "add_to_queue", "set_voice_volume",
+            "change_voice_volume", "play", "pause", "skip"} <= chat.QUIET_WHEN_DONE
     cases = [
         (call("play", query="Back in Black", kind="album"), ("play_album", ("Back in Black",))),
         (call("play", query="Highway to Hell"), ("play_track", ("Highway to Hell",))),
@@ -75,14 +79,26 @@ def test_tools_reach_spotify():
     ]
     for tool_call, expected in cases:
         a = assistant(tool_call, AIMessage("Done, sir."), spotify=FakeSpotify())
-        # Music that starts or changes answers for itself: she says nothing ("only then reply anything")
-        quiet = tool_call.tool_calls[0]["name"] in ("play", "play_something", "skip")
+        # Minor actions answer for themselves - the music, the volume: she says nothing ("only then reply anything")
+        quiet = tool_call.tool_calls[0]["name"] in chat.QUIET_WHEN_DONE
         assert a.respond("do it") == ("" if quiet else "Done, sir."), tool_call.tool_calls
         assert a._spotify.calls == [expected], (tool_call.tool_calls, a._spotify.calls)
     # ...but a reply that asks something is said: this one went unspoken, and the user was left waiting
     asks = "Paused it, sir. What would you like to watch on YouTube?"
     a = assistant(call("pause"), AIMessage(asks), spotify=FakeSpotify())
     assert a.respond("why don't you pause it and let's use youtube") == asks
+    # ...and so is the rest of a request with several parts: the volume goes unmentioned, the search is answered
+    from langchain_core.tools import tool
+
+    @tool
+    def web_search(query: str) -> str:
+        """Searches the web"""
+        return "Canberra is the capital of Australia"
+
+    both = AIMessage("", tool_calls=[{"name": "set_volume", "args": {"percent": 30}, "id": "v"},
+                                     {"name": "web_search", "args": {"query": "capital of Australia"}, "id": "w"}])
+    a = assistant(both, AIMessage("Canberra, sir."), spotify=FakeSpotify(), extra_tools=[web_search])
+    assert a.respond("turn it down to 30 and what's the capital of Australia") == "Canberra, sir."
 
 
 def test_spotify_errors_go_back_to_the_model():
@@ -292,6 +308,54 @@ def test_she_learns_preferences_from_a_conversation():
         finally:
             settings.PATH = real_path
             m.db.close()
+
+
+def test_installed_apps_are_found_the_way_windows_finds_them():
+    # "Play one of the movies in VLC": VLC was in C:\Program Files (x86)\VideoLAN\VLC, but NIA guessed folders
+    # ("...\VLC media player", `where vlc.exe`) until her steps ran out. open_app asks Windows instead: its registered
+    # apps, then the Start menu. Here a stand-in Start menu and player - nothing real is opened
+    import tempfile
+    import pythoncom
+    from win32com.shell import shell
+    from agent import apps
+
+    with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent.parent / "logs",
+                                     ignore_cleanup_errors=True) as tmp:
+        tmp = Path(tmp)
+        player, movie = tmp / "player" / "fakeplayer.exe", tmp / "movies" / "The Founder (2016).mp4"
+        for path in (player, movie):
+            path.parent.mkdir()
+            path.write_bytes(b"")
+        menu = tmp / "Start Menu"
+        menu.mkdir()
+        for name in ("Fake Player", "Fake Player - reset preferences"):  # the plain one is preferred
+            link = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None, pythoncom.CLSCTX_INPROC_SERVER,
+                                              shell.IID_IShellLink)
+            link.SetPath(str(player if name == "Fake Player" else tmp / "player" / "missing.exe"))
+            link.QueryInterface(pythoncom.IID_IPersistFile).Save(str(menu / f"{name}.lnk"), 0)
+
+        opened = []
+        real = apps.START_MENUS, apps.registered, apps.os.startfile
+        apps.START_MENUS, apps.registered = [menu], lambda name: None  # only the stand-in Start menu
+        apps.os.startfile = lambda program, arguments="": opened.append((Path(program), arguments))
+        try:
+            assert apps.find_app("fake player") == player and apps.find_app("Fake Player.exe") == player
+            # A file-tool path is turned into the Windows one and opened in the app
+            tool_path = "/" + str(movie)[0].lower() + str(movie)[2:].replace("\\", "/")
+            assert apps.open_app.invoke({"app": "Fake Player", "file": tool_path}) == \
+                "Opened The Founder (2016).mp4 in fakeplayer"
+            assert opened == [(player, f'"{movie}"')]
+            assert apps.open_app.invoke({"app": "Fake Player"}) == "Opened fakeplayer" and opened[-1][1] == ""
+            # Plain answers when it can't: no such file, no such app
+            assert apps.open_app.invoke({"app": "Fake Player", "file": str(tmp / "nope.mp4")}).startswith(
+                "Not opened: there's no file")
+            assert "doesn't seem to be installed" in apps.open_app.invoke({"app": "Some Other Player"})
+            assert len(opened) == 2, "nothing opened when it couldn't be"
+        finally:
+            apps.START_MENUS, apps.registered, apps.os.startfile = real
+    # It's one of NIA's tools, and needs no approval - like opening a website
+    from agent import chat
+    assert "open_app" not in chat.NEEDS_APPROVAL
 
 
 def test_chat_does_not_build_spotify():
@@ -654,7 +718,7 @@ def test_extra_tools_reach_the_agent():
         return "ok"
 
     a = assistant(call("set_voice_volume", percent=60), AIMessage("Quieter now, sir."), extra_tools=[set_voice_volume])
-    assert a.respond("talk at 60 percent") == "Quieter now, sir."
+    assert a.respond("talk at 60 percent") == "", "a minor action: done without a word (the chime plays the level)"
     assert heard == [60]
 
 
@@ -696,6 +760,56 @@ def test_long_tool_results_are_cut_to_fit():
     a.respond("what's in the big file?")
     result = next(m for m in a.messages if isinstance(m, ToolMessage))
     assert len(result.content) < chat.MAX_TOOL_CHARS + 300 and "cut to fit" in result.content
+
+
+def test_summarizing_counts_only_what_the_model_is_sent():
+    # Deep Agents condenses the conversation when its rough count nears 85% of Bonsai's context. It counted the
+    # whole conversation - before NIA's own trimming to recent turns - and so condensed history Bonsai was never
+    # going to see: six times in real use, silently. It now counts what's sent, and says when it summarizes
+    import logging
+    from langchain_core.messages import SystemMessage
+    from agent import chat
+
+    def run(turns, words):
+        seen = []
+
+        class Collect(logging.Handler):
+            def emit(self, record):
+                seen.append(record.getMessage())
+
+        log = logging.getLogger("agent.chat")
+        handler, level = Collect(), log.level
+        log.addHandler(handler)
+        log.setLevel(logging.INFO)
+        try:
+            # NIA's real context size: her instructions and tools alone count as ~9,000 tokens
+            llm = ScriptedLLM(messages=iter([AIMessage(f"Noted, sir. {n}") for n in range(60)]),
+                              profile={"max_input_tokens": 16384})
+            a = AssistantModel(llm=llm, backend=StateBackend(), memory=False)
+            for _ in range(turns):
+                a.respond("Here's a note to keep. " + "lorem ipsum dolor sit amet " * words)
+        finally:
+            log.removeHandler(handler)
+            log.setLevel(level)
+        return ([m for m in seen if m.startswith("Summarizing the conversation")],
+                [m for m in seen if m.startswith("Summarized in")])
+
+    # Sixteen ordinary turns: the whole conversation passes the trigger at turn 13, what's sent never does
+    started, done = run(16, 60)
+    assert started == [] and done == [], "condensed history the model wasn't going to see"
+    # Turns so long that even the recent ones don't fit: condensed - and logged
+    started, done = run(6, 150)
+    assert len(started) == 1 and "older messages" in started[0] and "tokens) are being condensed" in started[0]
+    assert len(done) == 1 and "tokens of summary replace them" in done[0]
+
+    # The trimming both use keeps a leading system message
+    many = [SystemMessage("rules")] + [HumanMessage(f"turn {n}") for n in range(12)]
+    kept = chat.recent(many, 4)
+    assert kept[0].content == "rules" and [m.content for m in kept[1:]] == [f"turn {n}" for n in range(5, 12)]
+    assert chat.recent(many[:5], 4) == many[:5], "nothing cut while it's short"
+    # Its files - each summarized conversation, large tool results - go in NIA's logs/, not the home folder
+    assert chat.pc_backend().artifacts_root == chat.tool_path(str(chat.ARTIFACTS))
+    assert chat.ARTIFACTS == Path(chat.__file__).resolve().parent.parent / "logs"
 
 
 def test_context_overflow_starts_a_fresh_conversation():

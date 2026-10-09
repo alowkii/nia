@@ -13,9 +13,11 @@ from typing import Literal
 from deepagents import create_deep_agent
 from deepagents.backends import CompositeBackend, FilesystemBackend, LocalShellBackend
 from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
+from deepagents.middleware.summarization import create_summarization_middleware
 from langchain.agents.middleware import TodoListMiddleware, wrap_model_call, wrap_tool_call
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import HumanMessage, ToolMessage
+from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
 from langgraph.checkpoint.memory import InMemorySaver
@@ -25,11 +27,11 @@ from langgraph.types import Command
 import settings
 from utils.hud import hud
 from utils.words import in_words
-from . import approval, claude, web, youtube
+from . import approval, apps, claude, web, youtube
 from .server import SERVER_LOG, llm_server_command, llm_up
 from .approval import risks
 from .memory import Memory, note, preferences_note
-from .prompts.initial import author, initial_prompt, pc_prompt, self_prompt
+from .prompts.initial import author, initial_prompt, pc_prompt, self_prompt, tool_path
 from .action_controller import SpotifyController
 
 logger = logging.getLogger(__name__)
@@ -62,6 +64,9 @@ def ensure_llm_server(timeout=180):
     logger.info(f"LLM server up after {time.time() - started:.1f}s")
 
 
+ARTIFACTS = Path(__file__).resolve().parent.parent / "logs"
+
+
 def pc_backend():
     """The real PC for the file and shell tools. Deep Agents' file tools only take /-style paths
     (they reject C:\\...), so each drive is mounted as /c/, /d/, ...; anything else is under the
@@ -70,7 +75,34 @@ def pc_backend():
               for letter in "CDEFGHIJ" if Path(f"{letter}:\\").exists()}
     # ponytail: no sandbox - the shell and files are the real PC; the spoken yes is the only guard
     shell = LocalShellBackend(root_dir=Path.home(), virtual_mode=True, inherit_env=True, timeout=60)
-    return CompositeBackend(default=shell, routes=drives)
+    # Deep Agents' own files - each summarized conversation, large tool results - go in NIA's logs/, not the home
+    # folder, where six conversations had been left
+    return CompositeBackend(default=shell, routes=drives, artifacts_root=tool_path(str(ARTIFACTS)))
+
+
+def logged_summaries(summarizer, backend):
+    """Deep Agents' summarizer, logged. When the conversation nears Bonsai's context (85% of it, by a rough count
+    of the whole conversation) it saves the older messages to a file and has Bonsai condense them into a summary.
+    That happened at least six times, silently - an extra LLM call on that turn, and a file nobody knew about"""
+    offload, summarize = summarizer._offload_to_backend, summarizer._create_summary
+
+    def offload_logged(where, messages, session_id):
+        path = offload(where, messages, session_id)
+        folder = getattr(getattr(backend, "default", None), "cwd", None)  # the PC's home folder (none in tests)
+        saved = f"; the full text is in {approval.windows_path(path) if folder else path}" if path else ""
+        logger.info(f"Summarizing the conversation: it neared Bonsai's context, so {len(messages)} older messages "
+                    f"(~{count_tokens_approximately(messages)} tokens) are being condensed{saved}")
+        return path
+
+    def summarize_logged(messages):
+        started = time.time()
+        summary = summarize(messages)
+        size = count_tokens_approximately([HumanMessage(summary)])
+        logger.info(f"Summarized in {time.time() - started:.1f}s: ~{size} tokens of summary replace them")
+        return summary
+
+    summarizer._offload_to_backend, summarizer._create_summary = offload_logged, summarize_logged
+    return summarizer
 
 
 # Longest tool result the model sees. Deep Agents only offloads results over 20K tokens - more than
@@ -95,24 +127,39 @@ class Cancelled(Exception):
     """The user said stop while NIA was working"""
 
 
+def recent(messages, turns):
+    """The recent exchanges - between `turns` and 2 x `turns` of them - with a leading system message kept. Cuts
+    in steps (at 2x, back to 1x) rather than every turn, because each cut changes the prompt's opening and costs
+    llama-server its cache; and always at a user message, so a tool call never loses its result"""
+    users = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
+    if len(users) <= 2 * turns:
+        return messages
+    keep_from = users[-(turns + (len(users) - 1) % turns)]  # the step boundary, stable for `turns` turns
+    return (messages[:1] if isinstance(messages[0], SystemMessage) else []) + messages[keep_from:]
+
+
 def recent_turns(turns):
-    """Middleware: only recent exchanges reach the model - between `turns` and 2 x `turns` of them. Older
-    ones stay in the saved conversation, and the memory search brings back whichever matter. Cuts in
-    steps (at 2x, back to 1x) rather than every turn, because each cut changes the prompt's opening and
-    costs llama-server its cache; and always at a user message, so a tool call never loses its result"""
+    """Middleware: only recent exchanges reach the model. Older ones stay in the saved conversation, and the
+    memory search brings back whichever matter"""
     @wrap_model_call
     def keep_recent_turns(request, handler):
-        users = [i for i, m in enumerate(request.messages) if isinstance(m, HumanMessage)]
-        if len(users) > 2 * turns:
-            keep_from = users[-(turns + (len(users) - 1) % turns)]  # the step boundary, stable for `turns` turns
-            request = request.override(messages=request.messages[keep_from:])
-        return handler(request)
+        return handler(request.override(messages=recent(request.messages, turns)))
     return keep_recent_turns
 
 
-# Spotify actions whose result you hear: when they work, the music answers - she says nothing. Only a failure
-# gets words ("When checked and if it's not working only then reply anything")
-QUIET_WHEN_DONE = {"play", "play_something", "resume", "skip", "pause"}
+def counting_what_is_sent(turns):
+    """A token count for the summarizer that counts only what NIA's trimming lets through. It runs before the
+    trimming and counted the whole conversation, so it condensed history the model was never going to see"""
+    def count(messages, tools=None):
+        return count_tokens_approximately(recent(list(messages), turns), tools=tools)
+    return count
+
+
+# Minor actions whose result you hear - the music, the volume, her own voice: when they work, that answers - she
+# says nothing. Only a failure or a question gets words ("When checked and if it's not working only then reply
+# anything"; "I don't want it to reply when setting the volume, changing the music and stuff even as done")
+QUIET_WHEN_DONE = {"play", "play_something", "resume", "skip", "pause", "set_volume", "change_volume", "shuffle",
+                   "repeat", "add_to_queue", "set_voice_volume", "change_voice_volume"}
 
 
 def quiet_success(messages, reply):
@@ -342,15 +389,19 @@ class AssistantModel:
         llm = llm or ChatOpenAI(model=model, base_url=f"http://127.0.0.1:{s['port']}/v1", api_key="none",
                                 profile={"max_input_tokens": s["context"]})
         self.llm = llm
+        backend = backend or pc_backend()
         self.agent = create_deep_agent(
             model=llm,
-            tools=self._spotify_tools() + youtube.TOOLS + web.TOOLS + claude.TOOLS + list(extra_tools)
+            tools=self._spotify_tools() + youtube.TOOLS + web.TOOLS + claude.TOOLS + apps.TOOLS + list(extra_tools)
             + (self.memory.tools() if self.memory else []),
             system_prompt=initial_prompt + pc_prompt + self_prompt,
-            backend=backend or pc_backend(),
+            backend=backend,
             interrupt_on={name: True for name in NEEDS_APPROVAL},
             # write_todos: a plan for a multi-step job, worked through step by step (this Deep Agents has none)
-            middleware=[tool_guard, recent_turns(s["history_turns"]), TodoListMiddleware()],
+            # The summarizer under its own name takes the default's place: same settings and position, now logged
+            middleware=[logged_summaries(create_summarization_middleware(
+                llm, backend, token_counter=counting_what_is_sent(s["history_turns"])), backend), tool_guard,
+                recent_turns(s["history_turns"]), TodoListMiddleware()],
             # The stock sub-agent, plus tool_guard: Deep Agents doesn't pass custom middleware down, so its
             # steps would ignore "stop", skip the result cap and go unlogged. It inherits the tools and approvals
             subagents=[{**GENERAL_PURPOSE_SUBAGENT, "middleware": [tool_guard]}],

@@ -214,7 +214,7 @@ Everything lands in `logs/`:
 
 | File | What's in it |
 |---|---|
-| `nia.log` | Each turn — what was heard or typed (and transcription latency), tool calls with arguments and results (a shell command, its approval decision and its output, as much as NIA saw), the reply, LLM and speech timings — plus each step Claude took (every search, page, edit and command), startup, settings changes, and every crash with its full traceback. Rotates at 5 MB, keeping 3 old files. |
+| `nia.log` | Each turn — what was heard or typed (and transcription latency), tool calls with arguments and results (a shell command, its approval decision and its output, as much as NIA saw), the reply, LLM and speech timings — plus each step Claude took (every search, page, edit and command), each time the conversation is summarized to fit Bonsai's context (how much, how long, and where the full text went - `logs/conversation_history/`), startup, settings changes, and every crash with its full traceback. Rotates at 5 MB, keeping 3 old files. |
 | `claude/` | Every Claude run, whole: one transcript per question or change (`<time>-ask-<question>.jsonl`, `<time>-build-<request>.jsonl`). |
 | `assistant.out.log` | The hidden assistant's console output — mostly a copy of the above, plus anything a native library prints as it crashes. |
 | `window.log` | The window's script (nia.py): starting and stopping the server and assistant, settings changes. |
@@ -250,7 +250,9 @@ opened app isn't ready yet (a 404), she retries once.
 After every play she waits up to 15 s for the music to really start: a stuck Spotify app accepts
 commands but loads nothing. If this PC's app still plays nothing, she restarts it and tries once more on her
 own (never twice within 10 minutes). When the music starts she says nothing — it is the answer; her reply only
-appears in the window. Only if it still won't play does she speak up. When the
+appears in the window. The same goes for every minor action you can hear the result of: Spotify or her own
+volume, shuffle, repeat, queueing, pausing, skipping. When you ask for several things at once, she answers only
+about the others. Only if it still won't play does she speak up. When the
 login expires ("Refresh token expired"), use **Spotify login** in the settings panel.
 
 ### YouTube
@@ -351,12 +353,15 @@ embedding model** in the settings panel to turn memory off. EmbeddingGemma was p
 granite-embedding and nomic-embed-text because it alone separated relevant memories (similarity ≥ 0.29)
 from off-topic questions (≤ 0.16) on a test set.
 
-Most of each request is fixed, though: NIA's instructions and ~30 tool definitions are ~5.3K tokens
-every turn, cached by llama-server. Memory bounds the part that grows, not that.
+Most of each request is fixed, though: NIA's instructions and tool definitions are ~10K tokens every turn
+(measured by llama-server), cached by llama-server. Memory and the recent-turns cut bound the part that grows,
+not that. When even the recent turns would overfill Bonsai's context (85% of it, by a rough count of what's
+actually sent), the older part is condensed into a summary - logged in `nia.log`, with the full text kept in
+`logs/conversation_history/`.
 
 ### Her own voice
 
-"Speak up", "you're too loud", "talk at 50 percent" set her voice volume (see above).
+"Speak up", "you're too loud", "talk at 50 percent" set her voice volume (see above) - without a word: her chime plays at the new level, so you hear it.
 
 Adding a new capability means a `@tool` function the model can call — Spotify's are in
 `_spotify_tools()` in [`agent/chat.py`](agent/chat.py), YouTube's in
@@ -364,6 +369,12 @@ Adding a new capability means a `@tool` function the model can call — Spotify'
 model sees, so the docstring is the prompt.
 
 ### Your PC
+
+**Apps:** "open VLC", "play this movie in VLC", "open Notepad" - [open_app](agent/apps.py) finds an installed
+app the way Windows does (its registered programs, then the Start menu), never by guessing folders, and opens it,
+with a file if you name one. No approval needed, like opening a website. Windows only (the registry, the Start menu
+and `os.startfile` exist nowhere else); macOS would use `open -a "VLC" movie.mp4`, Linux the app's command on
+PATH or its `.desktop` entry - see *Known limitations*.
 
 NIA can also work on the PC itself. Deep Agents' file tools only accept `/`-style
 paths, so each drive is mounted as a folder — `C:\Users` is `/c/Users`, `D:\nia` is
@@ -478,6 +489,20 @@ scripts/openthai-cpu.Modelfile      builds the approval model for Ollama
 ```
 
 ## Known limitations
+
+- **Windows only.** Several parts use what only Windows has, so NIA doesn't run on Linux or macOS as it is:
+
+  | Part | On Windows | What Linux / macOS would need |
+  |---|---|---|
+  | Her window, taskbar button, Start-menu entry | pywebview on WebView2 (.NET), app IDs via `pywin32` | pywebview's GTK/Qt (Linux) or Cocoa (macOS) backend; a `.desktop` file or an app bundle |
+  | Opening apps (`open_app`) | registered apps, the Start menu, `os.startfile` | `open -a "App" file` on macOS; the app's command on PATH or its `.desktop` entry on Linux |
+  | Turning other apps down while she speaks | the volume mixer (`pycaw`) | PulseAudio / PipeWire (Linux), CoreAudio (macOS) |
+  | Ending the model server with her | a job object | a process group, or `prctl(PR_SET_PDEATHSIG)` on Linux |
+  | Ctrl+C and a closed console | a console control handler | ordinary signals |
+  | Her shell and paths | `cmd.exe`, `C:\...` (`/c/...` in the file tools) | bash or zsh, `/home/...`, and prompt rules to match |
+  | Install | `pywin32` (Windows-only) | without it |
+
+  The language model (llama-server), speech (Moonshine) and the agent itself are cross-platform.
 
 - **No speaker verification.** A check that commands came from your voice (Resemblyzer)
   added too much latency per command and was removed. Anyone within earshot can issue commands.
