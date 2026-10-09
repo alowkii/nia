@@ -94,8 +94,9 @@ def voice_language(voice):
 
 
 # How Moonshine has actually heard the wake phrase (spaces and punctuation dropped): taken as exact matches,
-# so "Heineia" (0.77) wakes her without lowering the threshold for everything - "Hey, nice..." also scores 0.77
-SOUNDALIKES = {"heynia": {"heineia", "heinear", "henear", "henia", "hania", "heania"}}  # only ones seen in the logs
+# so "Heineia" (0.77) wakes her without lowering the threshold for everything - "Hey, nice..." also scores 0.77.
+# Only ones seen in the logs
+SOUNDALIKES = {"heynia": {"heineia", "heinear", "henear", "henia", "hania", "heania", "heaenea"}}
 
 
 def wake_match(text, phrase):
@@ -291,7 +292,7 @@ class WakeWordDetector:
         self.greeted = None  # the last greeting, so the next one differs
         self.held = False  # the window's mic button is held down (push-to-talk)
         self.quitting = False
-        self.restart_after = None  # "assistant" or "all", set by restart_myself during a turn
+        self.restart_after = None  # "assistant", "all" or "off", set by restart_myself during a turn
 
         # Everything the voice loop acts on arrives here: lines heard (on_line), and from the window
         # typed text, mic presses and "quit" (command) - so all state changes happen on the loop's thread
@@ -357,20 +358,32 @@ class WakeWordDetector:
             mishearing, a tool keeps failing): whole_system=False restarts just your speech and agent (~10 s).
             The conversation starts fresh; memory stays"""
             self.restart_after = "all" if whole_system else "assistant"
-            return ("Restarting right after this reply. Tell the user in a few words - back in about "
-                    f"{40 if whole_system else 10} seconds")
+            return ("Restarting right after this reply - it's happening, so don't ask whether to. Tell the user in "
+                    f"a few words: back in about {40 if whole_system else 10} seconds")
 
-        return [set_voice_volume, change_voice_volume, restart_myself]
+        @tool
+        def shut_down_myself() -> str:
+            """Switch yourself - the NIA system - off completely, right after this reply: your window, the language
+            model, speech and agent. For "shut down", "shut down the system", "turn off", "power down", "switch off"
+            or "quit": these always mean you, never the PC. Only when the computer is named ("shut down the computer
+            system", "...the PC", "...the laptop") is it the machine: that's the shell's shutdown /s /t 0 instead.
+            Not a restart (that's restart_myself), and not "stop" (that only stops what you're doing). They start
+            you again by running nia.py"""
+            self.restart_after = "off"
+            return "Shutting down right after this reply - it's happening, so don't ask whether to. Say goodbye briefly"
+
+        return [set_voice_volume, change_voice_volume, restart_myself, shut_down_myself]
 
     def restart(self):
-        """Hand over to a fresh copy of herself: nia.py's window restarts her (and the language model, if asked);
-        run on her own, she starts a new copy and quits"""
+        """Hand over to a fresh copy of herself - or, for "off", switch off: nia.py's window carries either out
+        for all of NIA; run on her own, she starts a new copy (unless switching off) and quits"""
         what, self.restart_after = self.restart_after, None
-        logger.info(f"Restarting myself ({what})")
+        logger.info("Shutting down, as asked" if what == "off" else f"Restarting myself ({what})")
         if hud.conn:
             hud.send(restart=what)
         else:
-            subprocess.Popen([sys.executable, *sys.argv], creationflags=subprocess.CREATE_NEW_CONSOLE)
+            if what != "off":
+                subprocess.Popen([sys.executable, *sys.argv], creationflags=subprocess.CREATE_NEW_CONSOLE)
             self.lines.put(None)
 
     def on_line(self, line):

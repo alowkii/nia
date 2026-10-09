@@ -132,6 +132,11 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
     assert child.handle({"restart": "all"}) == {}
     assert reboot.is_set() and child.rebooting and restarted == [1]
     assert hub.latest["rebooting"] is True, "the page shows booting, not offline, while nia.py is away"
+    # ...or shut down: main() stops everything, starts no new copy, and the page closes its own window
+    off = threading.Event()
+    stopped = nia.Assistant(hub, server=Recorder(), done=off)
+    assert stopped.handle({"restart": "off"}) == {} and off.is_set() and not stopped.rebooting
+    assert hub.latest["state"] == "offline" and hub.latest["closing"] is True
     assert nia.Assistant(hub).handle({"state": "awake"}) == {"state": "awake"}
 
     # The logo: the window's icon and header, served from assets/logo only
