@@ -596,7 +596,13 @@ class WakeWordDetector:
         except KeyboardInterrupt:
             logger.info("Stopping (Ctrl+C)")
         finally:
+            # Out within 10 s, whatever a native library's thread is still doing - one kept her running 10+ minutes
+            # after NIA closed, still listening to the microphone
+            leave = threading.Timer(10, lambda: (logger.info("Exiting without finishing cleanup"), os._exit(0)))
+            leave.daemon = True
+            leave.start()
             self.cleanup()
+            leave.cancel()  # cleaned up: main.py exits at once from here
 
     def handle_command(self, text, line):
         if getattr(line, "control", None) == "text":
