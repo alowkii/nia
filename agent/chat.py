@@ -413,6 +413,20 @@ def did(messages):
             for m in messages[users[-1] if users else 0:] for c in getattr(m, "tool_calls", None) or []]
 
 
+# What a reply that failed says. "I'm afraid" alone isn't one - she says it politely about good news too
+FAILED = re.compile(r"\b(couldn't|could not|can't find|cannot find|wasn't able|was not able|unable to|isn't installed|"
+                    r"not installed|doesn't seem to be|no \w+(?: \w+)? tool|went wrong|gone round in circles)\b", re.I)
+
+
+def went_wrong(messages, reply):
+    """Whether this turn failed - a tool error, or a reply saying so. Such a turn isn't kept as a memory: "I'm having
+    trouble finding VLC... it isn't installed" was recalled as fact the next night, and she told the user so without
+    even looking"""
+    users = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
+    errors = [m for m in messages[users[-1] if users else 0:] if isinstance(m, ToolMessage) and m.status == "error"]
+    return bool(errors) or bool(FAILED.search(reply))
+
+
 def worth_remembering(request):
     """Whether an exchange means anything on its own later. "I guess so" or a sentence cut off at "..." only
     made sense in the moment - recalled weeks later they're noise"""
@@ -570,7 +584,8 @@ class AssistantModel:
         self.pending = None
         reply = result["messages"][-1].content
         self.record(user_msg, did(result["messages"]), reply if isinstance(reply, str) else "")
-        if self.memory and worth_remembering(self.request) and isinstance(reply, str) and reply:
+        if self.memory and worth_remembering(self.request) and isinstance(reply, str) and reply \
+                and not went_wrong(result["messages"], reply):
             # Every finished exchange is searchable later - this is what replaces sending the whole history
             exchange = f"{author} asked: {self.request} | NIA answered: {reply[:300]}"
             if (memory_id := self.memory.add(exchange, "exchange")) is not None:

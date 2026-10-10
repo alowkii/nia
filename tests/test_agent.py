@@ -355,6 +355,10 @@ def test_installed_apps_are_found_the_way_windows_finds_them():
             assert apps.play_video.invoke({"file": str(movie), "player": "Fake Player"}) == \
                 "Opened The Founder (2016).mp4 in fakeplayer"
             assert opened[-1] == (player, f'"{movie}"')
+            # The same film asked for again a moment later isn't opened twice ("pick one", then "play the movie")
+            assert "already playing" in apps.play_video.invoke({"file": str(movie), "player": "Fake Player"})
+            assert len(opened) == 3, "not a second copy"
+            apps.last_video.update(path=None, when=0.0)
             assert "VLC doesn't seem to be installed" in apps.play_video.invoke({"file": str(movie)}), "VLC by default"
         finally:
             apps.START_MENUS, apps.registered, apps.os.startfile = real
@@ -436,6 +440,41 @@ def test_a_hunt_for_a_program_is_pointed_to_open_app():
         approval.decide = real
     refused = [m for m in a.messages if isinstance(m, ToolMessage)][0]
     assert launched == [] and refused.status == "error" and "Use open_app" in refused.content
+
+
+def test_a_failed_turn_is_not_remembered():
+    # "I'm having trouble finding VLC... it isn't installed" was kept as a past exchange - and the next night she
+    # recalled it as fact, telling the user VLC wasn't installed without even looking. A failed turn isn't kept
+    import tempfile
+    from langchain_core.tools import tool
+    from agent import chat
+    from agent.memory import Memory
+
+    @tool
+    def find_player(player: str) -> str:
+        """Finds a player"""
+        raise RuntimeError("no such player")
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        m = Memory("stub", Path(tmp) / "memory.sqlite", embed=word_embed)
+        saved = lambda: [text for _, kind, text, _ in m.rows if kind == "exchange"]
+        # A tool failed in the turn
+        a = assistant(call("find_player", player="vlc"), AIMessage("Here's what I found, sir."),
+                      extra_tools=[find_player], memory=m)
+        a.respond("play the movie in the player please")
+        # The reply says it failed
+        a = assistant(AIMessage("I'm having trouble finding VLC, sir - it isn't installed."), memory=m)
+        a.respond("play one of the four movies on VLC")
+        assert saved() == [], "neither failed turn is kept"
+        # A turn that worked is kept - including one that's polite about bad news
+        a = assistant(AIMessage("I'm afraid it's raining in Mumbai, sir."), memory=m)
+        a.respond("what's the weather like in Mumbai")
+        assert len(saved()) == 1 and "raining" in saved()[0]
+        m.db.close()
+    for reply in ("I couldn't find it.", "I wasn't able to open it.", "There's no video player tool available to me.",
+                  "I'm afraid I've gone round in circles on that, sir"):
+        assert chat.FAILED.search(reply), reply
+    assert not chat.FAILED.search("I'm afraid the shop closes at nine, sir."), "polite, not a failure"
 
 
 def test_chat_does_not_build_spotify():

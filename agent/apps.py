@@ -3,6 +3,7 @@ C:\Program Files (x86)\VideoLAN\VLC, yet NIA tried "...\VLC media player" (its S
 `where vlc.exe` (which only searches PATH) and nine more guesses, and ran out of steps. Windows keeps both answers:
 the App Paths registry key that the Run box uses, and the Start menu's shortcuts."""
 import os
+import time
 from pathlib import Path
 
 from langchain_core.tools import tool
@@ -72,12 +73,23 @@ def open_app(app: str, file: str = "") -> str:
     return f"Opened {path.name} in {program.stem}" if path else f"Opened {program.stem}"
 
 
+# "Pick one for tonight" sometimes started the movie, and "play the movie" then opened a second copy
+REOPEN_AFTER = 120  # seconds
+last_video = {"path": None, "when": 0.0}
+
+
 @tool
 def play_video(file: str, player: str = "VLC") -> str:
     """Play a movie or video file from the PC - "play a movie", "play the movie", "watch The Founder" - in a video
     player: VLC unless the user names another. file is the video's full path (a file-tool path like /d/x.mp4 is
     fine) - find it first, e.g. with glob. No approval needed. For YouTube use play_youtube; for music, Spotify"""
-    return open_app.invoke({"app": player, "file": file})
+    path = windows_path(file)
+    if path == last_video["path"] and time.time() - last_video["when"] < REOPEN_AFTER:
+        return f"{path.name} is already playing - opened a moment ago. Don't open it again"
+    result = open_app.invoke({"app": player, "file": file})
+    if result.startswith("Opened"):
+        last_video.update(path=path, when=time.time())
+    return result
 
 
 # play_video by its own name: "play a movie" didn't lead Bonsai to open_app - "there's no video player tool available
