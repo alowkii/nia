@@ -231,7 +231,8 @@ class SpotifyController:
         """Nudge volume by step percent (negative to lower), clamped to 0-100"""
         current = self.get_current_playback()
         if not current or not current.get('device'):
-            return "No active device found to change volume"
+            # An error, not a result: as one it was taken for success, and a volume change that failed went unsaid
+            raise RuntimeError("No active device found to change volume")
         current_volume = current['device']['volume_percent']
         new_volume = max(0, min(current_volume + step, 100))
         self.sp.volume(new_volume)
