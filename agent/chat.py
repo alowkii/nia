@@ -127,6 +127,11 @@ class Cancelled(Exception):
     """The user said stop while NIA was working"""
 
 
+class GoingInCircles(Exception):
+    """Refused calls kept coming back - a refusal alone never stopped Bonsai, which re-sent one refused command every
+    4.5 s for over a minute - so the turn is ended instead"""
+
+
 def recent(messages, turns):
     """The recent exchanges - between `turns` and 2 x `turns` of them - with a leading system message kept. Cuts
     in steps (at 2x, back to 1x) rather than every turn, because each cut changes the prompt's opening and costs
@@ -185,7 +190,16 @@ ANNOUNCED = threading.Event()  # said already this turn
 # folders for three minutes. Each turn gets a step budget, and an identical call is refused after two tries
 MAX_STEPS = 15  # tool calls per turn, not counting plan updates
 MAX_REPEATS = 2  # the same tool with the same arguments
-steps = {"total": 0, "calls": {}}  # this turn's, reset with each new request
+MAX_REFUSALS = 4  # refused calls in one turn; the next ends it
+steps = {"total": 0, "calls": {}, "refused": 0}  # this turn's, reset with each new request
+
+
+def refusal(why):
+    """A refused call's answer - counted, since a refused call that's simply sent again would loop forever"""
+    steps["refused"] += 1
+    if steps["refused"] > MAX_REFUSALS:
+        raise GoingInCircles
+    return why
 
 
 def loop_check(call):
@@ -195,11 +209,12 @@ def loop_check(call):
     key = (call["name"], json.dumps(call["args"], sort_keys=True, default=str))
     tries, last = steps["calls"].get(key, (0, ""))
     if tries >= MAX_REPEATS:
-        return (f"Not run: you already ran exactly this {tries} times this turn, and got: {last[:300] or 'nothing'}. "
-                "Running it again won't change that. Answer with what you have, or tell the user you couldn't find out")
+        got = last[:300] or "nothing"
+        return refusal(f"Not run: you already ran exactly this {tries} times this turn, and got: {got}. Running it "
+                       "again won't change that. Answer with what you have, or tell the user you couldn't find out")
     if steps["total"] >= MAX_STEPS:
-        return (f"Not run: that's {MAX_STEPS} steps this turn. Stop now and tell the user, in a sentence or two, what "
-                "you found - or that you couldn't find out")
+        return refusal(f"Not run: that's {MAX_STEPS} steps this turn. Stop now and tell the user, in a sentence or "
+                       "two, what you found - or that you couldn't find out")
     steps["total"] += 1
     steps["calls"][key] = (tries + 1, last)
     return None
@@ -211,11 +226,11 @@ def remember_result(call, result):
         steps["calls"][key] = (steps["calls"][key][0], str(getattr(result, "content", result)))
 
 
-# A shell command hunting for a program: told on its result that open_app finds installed apps itself. Bonsai
-# ignored the instruction and listed folders for VLC for 90 s, twice
+# A shell command hunting for a program isn't run: open_app finds installed apps itself. Bonsai ignored the
+# instruction, then a note on each result (five times in one turn), and listed folders for VLC for minutes
 HUNTING_FOR_A_PROGRAM = re.compile(r"\bwhere\s+\S+|program files|\*\.exe|\\\w+\.exe\b", re.I)
-USE_OPEN_APP = ("\n[To open an installed app - or play a file in one, like a movie in VLC - use open_app: it finds "
-                "the app the way Windows does. Don't search for its program]")
+USE_OPEN_APP = ("Not run: don't search for an app's program - play_video plays a movie or video file in VLC, and "
+                "open_app opens any installed app (with a file to open in it); both find the app the way Windows does")
 
 
 def windowed_program(command):
@@ -238,6 +253,18 @@ def windowed_program(command):
     return None
 
 
+def not_for_the_shell(action):
+    """Why a shell command shouldn't run at all - a hunt for an app's program, or a windowed app launched - or None.
+    Settled before approval: such a command once reached the user as "I'll run where. Should I go ahead?" """
+    command = str(action["args"].get("command", "")) if action["name"] == "execute" else ""
+    if command and (app := windowed_program(command)):
+        return (f"Not run: {app.name} is a windowed app - through the shell, it would hold you until it's closed. "
+                "Use open_app, with the file to open in it")
+    if command and HUNTING_FOR_A_PROGRAM.search(command):
+        return USE_OPEN_APP
+    return None
+
+
 def announce():
     if ANNOUNCE and not ANNOUNCED.is_set():
         ANNOUNCED.set()
@@ -256,11 +283,9 @@ def tool_guard(request, handler):
     if REFUSED.is_set() and call["name"] not in READ_ONLY_TOOLS:
         logger.info(f"Blocked {call['name']}({call['args']}) - the user just said no")
         return ToolMessage(f"Not done: {REFUSAL}", tool_call_id=call["id"], name=call["name"], status="error")
-    if call["name"] == "execute" and (app := windowed_program(str(call["args"].get("command", "")))):
-        logger.info(f"Not run through the shell: {app.name} is a windowed app - pointed to open_app")
-        return ToolMessage(f"Not run: {app.name} is a windowed app - through the shell, it would hold you until it's "
-                           "closed. Use open_app, with the file to open in it", tool_call_id=call["id"],
-                           name=call["name"], status="error")
+    if why := not_for_the_shell(call):  # a sub-agent's shell calls don't pass the approval step's check
+        logger.info(f"Not run: {why[:70]} | {call['args']}")
+        return ToolMessage(refusal(why), tool_call_id=call["id"], name=call["name"], status="error")
     if why := loop_check(call):
         logger.info(f"Refused {call['name']}({call['args']}) - {why[:60]}")
         return ToolMessage(why, tool_call_id=call["id"], name=call["name"], status="error")
@@ -289,9 +314,6 @@ def tool_guard(request, handler):
         cut = len(result.content) - MAX_TOOL_CHARS
         result.content = (result.content[:MAX_TOOL_CHARS] + f"\n[... {cut} more characters cut to fit your memory. "
                           "Read less at once: a smaller line range, one file at a time, or a narrower search]")
-    if call["name"] == "execute" and isinstance(result, ToolMessage) and isinstance(result.content, str) \
-            and HUNTING_FOR_A_PROGRAM.search(str(call["args"].get("command", ""))):
-        result.content += USE_OPEN_APP
     remember_result(call, result)
     # All of it, up to what the model sees: a shell command's output is the record of what it did
     logger.info(f"Tool result ({call['name']}): {str(getattr(result, 'content', result))[:MAX_TOOL_CHARS]}")
@@ -476,6 +498,10 @@ class AssistantModel:
             # Steps already taken stay taken; the dangling call is patched up by Deep Agents next turn
             self.pending = None
             return ""
+        except GoingInCircles:
+            logger.info(f"Ended the turn: {MAX_REFUSALS + 1} calls refused - it was going in circles")
+            self.pending = None
+            return "I'm afraid I've gone round in circles on that, sir, and couldn't finish it."
         except ContextOverflowError:
             # Even summarizing couldn't fit it; every later turn would fail the same way, so start over
             logger.exception("Context overflow - starting a fresh conversation")
@@ -485,7 +511,7 @@ class AssistantModel:
 
     def _respond(self, user_msg):
         ANNOUNCED.clear()  # a new turn: "One moment" may be said again
-        steps["total"], steps["calls"] = 0, {}  # and a fresh step budget
+        steps["total"], steps["calls"], steps["refused"] = 0, {}, 0  # and a fresh step budget
         if self.pending and time.time() - self.pending[1] >= APPROVAL_EXPIRES:
             # Nobody answered in time: refuse quietly, then treat this as a new request, not as the answer
             logger.info("Approval expired - refused")
@@ -519,12 +545,18 @@ class AssistantModel:
         # Commands the approval layers clear run straight away; anything else waits for a spoken yes
         while result.get("__interrupt__"):
             actions = result["__interrupt__"][0].value["action_requests"]
-            verdicts = [approval.decide(a, self.approval_model, self.approval_threshold) for a in actions]
-            for action, (verdict, why) in zip(actions, verdicts):
-                logger.info(f"Approval check: {verdict} - {why} | {action['name']}({action['args']})")
-            if not all(verdict == "run" for verdict, _ in verdicts):
+            decisions = []
+            for action in actions:
+                if why := not_for_the_shell(action):  # never put to the user: she's told what to use instead
+                    logger.info(f"Refused before approval: {why[:70]} | {action['name']}({action['args']})")
+                    decisions.append({"type": "reject", "message": refusal(why)})
+                    continue
+                verdict, reason = approval.decide(action, self.approval_model, self.approval_threshold)
+                logger.info(f"Approval check: {verdict} - {reason} | {action['name']}({action['args']})")
+                decisions.append({"type": "approve"} if verdict == "run" else None)
+            if None in decisions:
                 break
-            result = self.agent.invoke(Command(resume={"decisions": [{"type": "approve"}] * len(actions)}), self.config)
+            result = self.agent.invoke(Command(resume={"decisions": decisions}), self.config)
 
         if result.get("__interrupt__"):
             actions = result["__interrupt__"][0].value["action_requests"]

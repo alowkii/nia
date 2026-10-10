@@ -351,6 +351,11 @@ def test_installed_apps_are_found_the_way_windows_finds_them():
                 "Not opened: there's no file")
             assert "doesn't seem to be installed" in apps.open_app.invoke({"app": "Some Other Player"})
             assert len(opened) == 2, "nothing opened when it couldn't be"
+            # "Play a movie": play_video, named for what's asked - open_app's name didn't lead Bonsai to it
+            assert apps.play_video.invoke({"file": str(movie), "player": "Fake Player"}) == \
+                "Opened The Founder (2016).mp4 in fakeplayer"
+            assert opened[-1] == (player, f'"{movie}"')
+            assert "VLC doesn't seem to be installed" in apps.play_video.invoke({"file": str(movie)}), "VLC by default"
         finally:
             apps.START_MENUS, apps.registered, apps.os.startfile = real
     # It's one of NIA's tools, and needs no approval - like opening a website
@@ -359,28 +364,52 @@ def test_installed_apps_are_found_the_way_windows_finds_them():
 
 
 def test_a_hunt_for_a_program_is_pointed_to_open_app():
-    # Twice NIA listed folders for VLC through the shell (90 s, nine commands) instead of using open_app. A command
-    # that hunts for a program now says, on its result, that open_app finds installed apps itself
+    # NIA kept listing folders for VLC through the shell instead of using open_app - ignoring the instruction, then a
+    # note on each result. A command that hunts for a program isn't run: she's told open_app finds apps itself
     from langchain_core.tools import tool
+    ran = []
 
     @tool
     def execute(command: str) -> str:
         """Runs a shell command"""
+        ran.append(command)
         return "File Not Found"
 
     hunt = call("execute", command='dir "C:\\Program Files\\VLC" /b')
     a = assistant(hunt, call("execute", command='dir "D:\\Downloads" /b'), AIMessage("Done, sir."), extra_tools=[execute])
     a.approval_model = None
     from agent import approval
-    real = approval.decide
-    approval.decide = lambda action, model, threshold: ("run", "test")  # these commands run without asking here
+    real, asked = approval.decide, []
+    approval.decide = lambda action, model, threshold: asked.append(action["args"]["command"]) or ("run", "test")
     try:
         a.respond("play a movie in VLC")
     finally:
         approval.decide = real
+    assert asked == ['dir "D:\Downloads" /b'], "a hunt is refused before approval - never put to the user"
     results = [m for m in a.messages if isinstance(m, ToolMessage)]
-    assert "use open_app" in results[0].content and results[0].content.startswith("File Not Found")
-    assert "open_app" not in results[1].content, "an ordinary command's result is left alone"
+    assert results[0].status == "error" and "play_video plays a movie" in results[0].content
+    assert ran == ['dir "D:\\Downloads" /b'], "the hunt never ran; an ordinary command did"
+
+    # The same refused command sent again and again - every 4.5 s for minutes, in a real session - ends the turn
+    from agent import chat
+    command = 'dir /b "C:\\Program Files (x86)\\VideoLAN\\VLC"'
+    again = [AIMessage("", tool_calls=[{"name": "execute", "args": {"command": command}, "id": f"again{n}"}])
+             for n in range(20)]  # each a new message, as the model's are - one message repeated would be merged
+    a = assistant(*again, AIMessage("never reached"), extra_tools=[execute])
+    approval.decide = lambda action, model, threshold: ("run", "test")
+    try:
+        reply = a.respond("can you play a movie")
+    finally:
+        approval.decide = real
+    assert reply == "I'm afraid I've gone round in circles on that, sir, and couldn't finish it."
+    assert len([m for m in a.messages if isinstance(m, ToolMessage)]) == chat.MAX_REFUSALS, "refused, then stopped"
+    # ...and the next request starts with a clean slate
+    a = assistant(call("execute", command='dir "D:\\Downloads" /b'), AIMessage("Here, sir."), extra_tools=[execute])
+    approval.decide = lambda action, model, threshold: ("run", "test")
+    try:
+        assert a.respond("what's in my downloads") == "Here, sir."
+    finally:
+        approval.decide = real
 
     # A windowed app run through the shell held her turn until it was closed (a movie in VLC: a minute). It's never
     # run that way - told to use open_app - while console tools still run. Judged from the program file's header

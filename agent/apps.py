@@ -72,4 +72,14 @@ def open_app(app: str, file: str = "") -> str:
     return f"Opened {path.name} in {program.stem}" if path else f"Opened {program.stem}"
 
 
-TOOLS = [open_app]
+@tool
+def play_video(file: str, player: str = "VLC") -> str:
+    """Play a movie or video file from the PC - "play a movie", "play the movie", "watch The Founder" - in a video
+    player: VLC unless the user names another. file is the video's full path (a file-tool path like /d/x.mp4 is
+    fine) - find it first, e.g. with glob. No approval needed. For YouTube use play_youtube; for music, Spotify"""
+    return open_app.invoke({"app": player, "file": file})
+
+
+# play_video by its own name: "play a movie" didn't lead Bonsai to open_app - "there's no video player tool available
+# to me" - the way "play on YouTube" leads to play_youtube
+TOOLS = [play_video, open_app]
