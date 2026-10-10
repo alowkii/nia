@@ -127,6 +127,11 @@ class Cancelled(Exception):
     """The user said stop while NIA was working"""
 
 
+class GoingInCircles(Exception):
+    """Refused calls kept coming back - a refusal alone never stopped Bonsai, which re-sent one refused command every
+    4.5 s for over a minute - so the turn is ended instead"""
+
+
 def recent(messages, turns):
     """The recent exchanges - between `turns` and 2 x `turns` of them - with a leading system message kept. Cuts
     in steps (at 2x, back to 1x) rather than every turn, because each cut changes the prompt's opening and costs
@@ -185,7 +190,16 @@ ANNOUNCED = threading.Event()  # said already this turn
 # folders for three minutes. Each turn gets a step budget, and an identical call is refused after two tries
 MAX_STEPS = 15  # tool calls per turn, not counting plan updates
 MAX_REPEATS = 2  # the same tool with the same arguments
-steps = {"total": 0, "calls": {}}  # this turn's, reset with each new request
+MAX_REFUSALS = 4  # refused calls in one turn; the next ends it
+steps = {"total": 0, "calls": {}, "refused": 0}  # this turn's, reset with each new request
+
+
+def refusal(why):
+    """A refused call's answer - counted, since a refused call that's simply sent again would loop forever"""
+    steps["refused"] += 1
+    if steps["refused"] > MAX_REFUSALS:
+        raise GoingInCircles
+    return why
 
 
 def loop_check(call):
@@ -195,11 +209,12 @@ def loop_check(call):
     key = (call["name"], json.dumps(call["args"], sort_keys=True, default=str))
     tries, last = steps["calls"].get(key, (0, ""))
     if tries >= MAX_REPEATS:
-        return (f"Not run: you already ran exactly this {tries} times this turn, and got: {last[:300] or 'nothing'}. "
-                "Running it again won't change that. Answer with what you have, or tell the user you couldn't find out")
+        got = last[:300] or "nothing"
+        return refusal(f"Not run: you already ran exactly this {tries} times this turn, and got: {got}. Running it "
+                       "again won't change that. Answer with what you have, or tell the user you couldn't find out")
     if steps["total"] >= MAX_STEPS:
-        return (f"Not run: that's {MAX_STEPS} steps this turn. Stop now and tell the user, in a sentence or two, what "
-                "you found - or that you couldn't find out")
+        return refusal(f"Not run: that's {MAX_STEPS} steps this turn. Stop now and tell the user, in a sentence or "
+                       "two, what you found - or that you couldn't find out")
     steps["total"] += 1
     steps["calls"][key] = (tries + 1, last)
     return None
@@ -209,6 +224,45 @@ def remember_result(call, result):
     key = (call["name"], json.dumps(call["args"], sort_keys=True, default=str))
     if key in steps["calls"]:
         steps["calls"][key] = (steps["calls"][key][0], str(getattr(result, "content", result)))
+
+
+# A shell command hunting for a program isn't run: open_app finds installed apps itself. Bonsai ignored the
+# instruction, then a note on each result (five times in one turn), and listed folders for VLC for minutes
+HUNTING_FOR_A_PROGRAM = re.compile(r"\bwhere\s+\S+|program files|\*\.exe|\\\w+\.exe\b", re.I)
+USE_OPEN_APP = ("Not run: don't search for an app's program - play_video plays a movie or video file in VLC, and "
+                "open_app opens any installed app (with a file to open in it); both find the app the way Windows does")
+
+
+def windowed_program(command):
+    """The program a shell command starts, if it's a windowed app (VLC, Notepad) - from the program file's own header
+    (its subsystem: 2 is a window, 3 a console). Started through the shell, such an app holds the command - and her
+    turn - until it's closed: one movie in VLC kept a turn waiting a minute. Console tools (git, 7z) aren't"""
+    match = re.match(r'\s*"([^"]+\.exe)"|\s*(\S+\.exe)\b', command, re.I)
+    if not match:
+        return None
+    program = Path(match.group(1) or match.group(2))
+    try:
+        with open(program, "rb") as f:
+            header = f.read(4096)
+        pe = int.from_bytes(header[0x3C:0x40], "little")
+        if header[:2] == b"MZ" and header[pe:pe + 4] == b"PE\0\0" \
+                and int.from_bytes(header[pe + 0x5C:pe + 0x5E], "little") == 2:
+            return program
+    except (OSError, ValueError):
+        pass
+    return None
+
+
+def not_for_the_shell(action):
+    """Why a shell command shouldn't run at all - a hunt for an app's program, or a windowed app launched - or None.
+    Settled before approval: such a command once reached the user as "I'll run where. Should I go ahead?" """
+    command = str(action["args"].get("command", "")) if action["name"] == "execute" else ""
+    if command and (app := windowed_program(command)):
+        return (f"Not run: {app.name} is a windowed app - through the shell, it would hold you until it's closed. "
+                "Use open_app, with the file to open in it")
+    if command and HUNTING_FOR_A_PROGRAM.search(command):
+        return USE_OPEN_APP
+    return None
 
 
 def announce():
@@ -229,6 +283,9 @@ def tool_guard(request, handler):
     if REFUSED.is_set() and call["name"] not in READ_ONLY_TOOLS:
         logger.info(f"Blocked {call['name']}({call['args']}) - the user just said no")
         return ToolMessage(f"Not done: {REFUSAL}", tool_call_id=call["id"], name=call["name"], status="error")
+    if why := not_for_the_shell(call):  # a sub-agent's shell calls don't pass the approval step's check
+        logger.info(f"Not run: {why[:70]} | {call['args']}")
+        return ToolMessage(refusal(why), tool_call_id=call["id"], name=call["name"], status="error")
     if why := loop_check(call):
         logger.info(f"Refused {call['name']}({call['args']}) - {why[:60]}")
         return ToolMessage(why, tool_call_id=call["id"], name=call["name"], status="error")
@@ -356,6 +413,20 @@ def did(messages):
             for m in messages[users[-1] if users else 0:] for c in getattr(m, "tool_calls", None) or []]
 
 
+# What a reply that failed says. "I'm afraid" alone isn't one - she says it politely about good news too
+FAILED = re.compile(r"\b(couldn't|could not|can't find|cannot find|wasn't able|was not able|unable to|isn't installed|"
+                    r"not installed|doesn't seem to be|no \w+(?: \w+)? tool|went wrong|gone round in circles)\b", re.I)
+
+
+def went_wrong(messages, reply):
+    """Whether this turn failed - a tool error, or a reply saying so. Such a turn isn't kept as a memory: "I'm having
+    trouble finding VLC... it isn't installed" was recalled as fact the next night, and she told the user so without
+    even looking"""
+    users = [i for i, m in enumerate(messages) if isinstance(m, HumanMessage)]
+    errors = [m for m in messages[users[-1] if users else 0:] if isinstance(m, ToolMessage) and m.status == "error"]
+    return bool(errors) or bool(FAILED.search(reply))
+
+
 def worth_remembering(request):
     """Whether an exchange means anything on its own later. "I guess so" or a sentence cut off at "..." only
     made sense in the moment - recalled weeks later they're noise"""
@@ -441,6 +512,10 @@ class AssistantModel:
             # Steps already taken stay taken; the dangling call is patched up by Deep Agents next turn
             self.pending = None
             return ""
+        except GoingInCircles:
+            logger.info(f"Ended the turn: {MAX_REFUSALS + 1} calls refused - it was going in circles")
+            self.pending = None
+            return "I'm afraid I've gone round in circles on that, sir, and couldn't finish it."
         except ContextOverflowError:
             # Even summarizing couldn't fit it; every later turn would fail the same way, so start over
             logger.exception("Context overflow - starting a fresh conversation")
@@ -450,7 +525,7 @@ class AssistantModel:
 
     def _respond(self, user_msg):
         ANNOUNCED.clear()  # a new turn: "One moment" may be said again
-        steps["total"], steps["calls"] = 0, {}  # and a fresh step budget
+        steps["total"], steps["calls"], steps["refused"] = 0, {}, 0  # and a fresh step budget
         if self.pending and time.time() - self.pending[1] >= APPROVAL_EXPIRES:
             # Nobody answered in time: refuse quietly, then treat this as a new request, not as the answer
             logger.info("Approval expired - refused")
@@ -484,12 +559,18 @@ class AssistantModel:
         # Commands the approval layers clear run straight away; anything else waits for a spoken yes
         while result.get("__interrupt__"):
             actions = result["__interrupt__"][0].value["action_requests"]
-            verdicts = [approval.decide(a, self.approval_model, self.approval_threshold) for a in actions]
-            for action, (verdict, why) in zip(actions, verdicts):
-                logger.info(f"Approval check: {verdict} - {why} | {action['name']}({action['args']})")
-            if not all(verdict == "run" for verdict, _ in verdicts):
+            decisions = []
+            for action in actions:
+                if why := not_for_the_shell(action):  # never put to the user: she's told what to use instead
+                    logger.info(f"Refused before approval: {why[:70]} | {action['name']}({action['args']})")
+                    decisions.append({"type": "reject", "message": refusal(why)})
+                    continue
+                verdict, reason = approval.decide(action, self.approval_model, self.approval_threshold)
+                logger.info(f"Approval check: {verdict} - {reason} | {action['name']}({action['args']})")
+                decisions.append({"type": "approve"} if verdict == "run" else None)
+            if None in decisions:
                 break
-            result = self.agent.invoke(Command(resume={"decisions": [{"type": "approve"}] * len(actions)}), self.config)
+            result = self.agent.invoke(Command(resume={"decisions": decisions}), self.config)
 
         if result.get("__interrupt__"):
             actions = result["__interrupt__"][0].value["action_requests"]
@@ -503,7 +584,8 @@ class AssistantModel:
         self.pending = None
         reply = result["messages"][-1].content
         self.record(user_msg, did(result["messages"]), reply if isinstance(reply, str) else "")
-        if self.memory and worth_remembering(self.request) and isinstance(reply, str) and reply:
+        if self.memory and worth_remembering(self.request) and isinstance(reply, str) and reply \
+                and not went_wrong(result["messages"], reply):
             # Every finished exchange is searchable later - this is what replaces sending the whole history
             exchange = f"{author} asked: {self.request} | NIA answered: {reply[:300]}"
             if (memory_id := self.memory.add(exchange, "exchange")) is not None:
@@ -551,19 +633,22 @@ class AssistantModel:
 
         @tool
         def now_playing() -> str:
-            """What is playing on Spotify right now, and whether it is paused"""
+            """What music is playing on Spotify right now, and whether it is paused. Music only - not for films
+            or videos"""
             return sp().now_playing()
 
         @tool
         def play(query: str, kind: Literal["track", "playlist", "album"] = "track") -> str:
-            """Search Spotify and play the top hit. query is the name, plus the artist if known.
-            kind is 'album' or 'playlist' when the user says so, otherwise 'track'"""
+            """Search Spotify and play the top hit - music only: a song, an album, a playlist. Never for a film,
+            a video or an episode ("play the movie" is open_app or play_youtube). query is the name, plus the artist
+            if known. kind is 'album' or 'playlist' when the user says so, otherwise 'track'"""
             return {"track": sp().play_track, "playlist": sp().play_playlist, "album": sp().play_album}[kind](query)
 
         @tool
         def play_something(mood: str = "") -> str:
             """Play music when no song, artist or playlist was named: "open Spotify", "play some music",
-            "surprise me", "play something chill". mood is optional, e.g. "chill" or "workout".
+            "surprise me", "play something chill" - music only, never "play the movie". mood is optional, e.g.
+            "chill" or "workout".
             Opens the Spotify app first if it isn't running"""
             return sp().play_something(mood)
 

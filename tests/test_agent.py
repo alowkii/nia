@@ -351,11 +351,130 @@ def test_installed_apps_are_found_the_way_windows_finds_them():
                 "Not opened: there's no file")
             assert "doesn't seem to be installed" in apps.open_app.invoke({"app": "Some Other Player"})
             assert len(opened) == 2, "nothing opened when it couldn't be"
+            # "Play a movie": play_video, named for what's asked - open_app's name didn't lead Bonsai to it
+            assert apps.play_video.invoke({"file": str(movie), "player": "Fake Player"}) == \
+                "Opened The Founder (2016).mp4 in fakeplayer"
+            assert opened[-1] == (player, f'"{movie}"')
+            # The same film asked for again a moment later isn't opened twice ("pick one", then "play the movie")
+            assert "already playing" in apps.play_video.invoke({"file": str(movie), "player": "Fake Player"})
+            assert len(opened) == 3, "not a second copy"
+            apps.last_video.update(path=None, when=0.0)
+            assert "VLC doesn't seem to be installed" in apps.play_video.invoke({"file": str(movie)}), "VLC by default"
         finally:
             apps.START_MENUS, apps.registered, apps.os.startfile = real
     # It's one of NIA's tools, and needs no approval - like opening a website
     from agent import chat
     assert "open_app" not in chat.NEEDS_APPROVAL
+
+
+def test_a_hunt_for_a_program_is_pointed_to_open_app():
+    # NIA kept listing folders for VLC through the shell instead of using open_app - ignoring the instruction, then a
+    # note on each result. A command that hunts for a program isn't run: she's told open_app finds apps itself
+    from langchain_core.tools import tool
+    ran = []
+
+    @tool
+    def execute(command: str) -> str:
+        """Runs a shell command"""
+        ran.append(command)
+        return "File Not Found"
+
+    hunt = call("execute", command='dir "C:\\Program Files\\VLC" /b')
+    a = assistant(hunt, call("execute", command='dir "D:\\Downloads" /b'), AIMessage("Done, sir."), extra_tools=[execute])
+    a.approval_model = None
+    from agent import approval
+    real, asked = approval.decide, []
+    approval.decide = lambda action, model, threshold: asked.append(action["args"]["command"]) or ("run", "test")
+    try:
+        a.respond("play a movie in VLC")
+    finally:
+        approval.decide = real
+    assert asked == ['dir "D:\Downloads" /b'], "a hunt is refused before approval - never put to the user"
+    results = [m for m in a.messages if isinstance(m, ToolMessage)]
+    assert results[0].status == "error" and "play_video plays a movie" in results[0].content
+    assert ran == ['dir "D:\\Downloads" /b'], "the hunt never ran; an ordinary command did"
+
+    # The same refused command sent again and again - every 4.5 s for minutes, in a real session - ends the turn
+    from agent import chat
+    command = 'dir /b "C:\\Program Files (x86)\\VideoLAN\\VLC"'
+    again = [AIMessage("", tool_calls=[{"name": "execute", "args": {"command": command}, "id": f"again{n}"}])
+             for n in range(20)]  # each a new message, as the model's are - one message repeated would be merged
+    a = assistant(*again, AIMessage("never reached"), extra_tools=[execute])
+    approval.decide = lambda action, model, threshold: ("run", "test")
+    try:
+        reply = a.respond("can you play a movie")
+    finally:
+        approval.decide = real
+    assert reply == "I'm afraid I've gone round in circles on that, sir, and couldn't finish it."
+    assert len([m for m in a.messages if isinstance(m, ToolMessage)]) == chat.MAX_REFUSALS, "refused, then stopped"
+    # ...and the next request starts with a clean slate
+    a = assistant(call("execute", command='dir "D:\\Downloads" /b'), AIMessage("Here, sir."), extra_tools=[execute])
+    approval.decide = lambda action, model, threshold: ("run", "test")
+    try:
+        assert a.respond("what's in my downloads") == "Here, sir."
+    finally:
+        approval.decide = real
+
+    # A windowed app run through the shell held her turn until it was closed (a movie in VLC: a minute). It's never
+    # run that way - told to use open_app - while console tools still run. Judged from the program file's header
+    from agent import chat
+    import os
+    windows = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+    assert chat.windowed_program(f'"{windows / "notepad.exe"}" "D:\\notes.txt"') == windows / "notepad.exe"
+    assert chat.windowed_program(f'{windows / "System32" / "cmd.exe"} /c dir') is None, "a console tool runs"
+    assert chat.windowed_program("git -C D:\\nia status") is None and chat.windowed_program('dir "D:\\x"') is None
+    launched = []
+
+    @tool
+    def execute(command: str) -> str:
+        """Runs a shell command"""
+        launched.append(command)
+        return "ok"
+
+    movie = call("execute", command=f'"{windows / "notepad.exe"}" "D:\\Downloads\\movie.mp4"')
+    a = assistant(movie, AIMessage("I'll use open_app, sir."), extra_tools=[execute])
+    approval.decide = lambda action, model, threshold: ("run", "test")  # cleared to run - and still not run
+    try:
+        a.respond("play the movie")
+    finally:
+        approval.decide = real
+    refused = [m for m in a.messages if isinstance(m, ToolMessage)][0]
+    assert launched == [] and refused.status == "error" and "Use open_app" in refused.content
+
+
+def test_a_failed_turn_is_not_remembered():
+    # "I'm having trouble finding VLC... it isn't installed" was kept as a past exchange - and the next night she
+    # recalled it as fact, telling the user VLC wasn't installed without even looking. A failed turn isn't kept
+    import tempfile
+    from langchain_core.tools import tool
+    from agent import chat
+    from agent.memory import Memory
+
+    @tool
+    def find_player(player: str) -> str:
+        """Finds a player"""
+        raise RuntimeError("no such player")
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        m = Memory("stub", Path(tmp) / "memory.sqlite", embed=word_embed)
+        saved = lambda: [text for _, kind, text, _ in m.rows if kind == "exchange"]
+        # A tool failed in the turn
+        a = assistant(call("find_player", player="vlc"), AIMessage("Here's what I found, sir."),
+                      extra_tools=[find_player], memory=m)
+        a.respond("play the movie in the player please")
+        # The reply says it failed
+        a = assistant(AIMessage("I'm having trouble finding VLC, sir - it isn't installed."), memory=m)
+        a.respond("play one of the four movies on VLC")
+        assert saved() == [], "neither failed turn is kept"
+        # A turn that worked is kept - including one that's polite about bad news
+        a = assistant(AIMessage("I'm afraid it's raining in Mumbai, sir."), memory=m)
+        a.respond("what's the weather like in Mumbai")
+        assert len(saved()) == 1 and "raining" in saved()[0]
+        m.db.close()
+    for reply in ("I couldn't find it.", "I wasn't able to open it.", "There's no video player tool available to me.",
+                  "I'm afraid I've gone round in circles on that, sir"):
+        assert chat.FAILED.search(reply), reply
+    assert not chat.FAILED.search("I'm afraid the shop closes at nine, sir."), "polite, not a failure"
 
 
 def test_chat_does_not_build_spotify():

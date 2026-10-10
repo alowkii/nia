@@ -221,7 +221,7 @@ Everything lands in `logs/`:
 | `claude/` | Every Claude run, whole: one transcript per question or change (`<time>-ask-<question>.jsonl`, `<time>-build-<request>.jsonl`). |
 | `assistant.out.log` | The hidden assistant's console output — mostly a copy of the above, plus anything a native library prints as it crashes. |
 | `window.log` | The window's script (nia.py): starting and stopping the server and assistant, settings changes. |
-| `test.log` | What the test suites log, kept out of NIA's real log. |
+| `test.log` | What the test suites - and any other script that isn't NIA herself - log, kept out of NIA's real log. |
 | `llama-server.log` | The LLM server's own output: model loading, per-request token speeds, errors. Rewritten each time the server starts. |
 
 If she crashes, the window shows *Offline · stopped unexpectedly*; tap the mic to restart her.
@@ -342,7 +342,9 @@ NIA remembers across restarts, and only what's relevant reaches the LLM ([agent/
   "forget that I…" removes one. The review takes ~15 s of the LLM after you've stopped talking, and she warms her
   prompt cache again afterwards; switch it off with **Learn my preferences** in the settings panel.
 - **Past exchanges** — every finished turn worth keeping is saved too (not "I guess so", or a sentence cut off at
-  "..."), and a search returns one of each: the same question asked five times comes back once.
+  "..."), and a search returns one of each: the same question asked five times comes back once. A turn that
+  failed - a tool error, or a reply saying she couldn't - isn't kept: a failed "VLC isn't installed" was once
+  recalled as fact the next night.
 - **Recall by meaning** — each message is embedded with [EmbeddingGemma](https://ollama.com/library/embeddinggemma)
   (on the CPU through Ollama, ~25 ms) and the few most similar memories — at most 4, only above the
   match threshold — are attached to it. An off-topic message gets none.
@@ -378,6 +380,17 @@ app the way Windows does (its registered programs, then the Start menu), never b
 with a file if you name one. No approval needed, like opening a website. Windows only (the registry, the Start menu
 and `os.startfile` exist nowhere else); macOS would use `open -a "VLC" movie.mp4`, Linux the app's command on
 PATH or its `.desktop` entry - see *Known limitations*.
+**Movies and videos:** "can you play a movie?", "play The Founder" - [play_video](agent/apps.py) plays a video file
+from the PC in VLC (or a player you name), the way `play_youtube` plays YouTube; "play" for a film never goes to
+Spotify, which is for music. Asked for the same film again within a couple of minutes, she doesn't open a second
+copy; and picking a film for you isn't playing it - she says what she chose and waits.
+
+The shell is never used to look for an app's program (`where vlc.exe`, listing `Program Files`) or to start a windowed
+app - there it would hold her turn until the app is closed (a movie in VLC once kept one waiting a minute). Such a
+command is turned down before it ever reaches you as a question, with the tool to use instead; console tools like
+`git` still run. A turn that keeps sending refused commands is ended - *"I'm afraid I've gone round in circles on
+that, sir"* - after a few. And whenever a turn is still going after about 8 seconds, however quick each step, she
+says *"One moment, sir"*, once, rather than going quiet.
 
 NIA can also work on the PC itself. Deep Agents' file tools only accept `/`-style
 paths, so each drive is mounted as a folder — `C:\Users` is `/c/Users`, `D:\nia` is

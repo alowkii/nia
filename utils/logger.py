@@ -8,10 +8,12 @@ from pathlib import Path
 LOG_DIR = Path(__file__).resolve().parent.parent / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
-# One file per kind of process: the tests' fake turns must never land in NIA's real log, and the window (nia.py)
-# runs alongside the assistant - two processes rotating one file fails on Windows
+# One file per kind of process: the window (nia.py) runs alongside the assistant - two processes rotating one file
+# fails on Windows - and only NIA's own turns go in nia.log: her assistant (main.py) and a typed session
+# (scripts/text_chat.py). Tests and anything else - one live test's turns landed in the real log - go in test.log
 _script = Path(sys.argv[0]).stem if sys.argv and sys.argv[0] else ""
-LOG_FILE = LOG_DIR / ("window.log" if _script == "nia" else "test.log" if _script.startswith("test_") else "nia.log")
+LOG_FILE = LOG_DIR / ("window.log" if _script == "nia" else
+                      "nia.log" if _script in ("main", "text_chat") else "test.log")
 
 logging.basicConfig(
     level=logging.INFO,
