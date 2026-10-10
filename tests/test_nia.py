@@ -253,4 +253,12 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         nia.kill_tree(orphan_pid)
         nia.kill_tree(kept.pid)
 
+# Only NIA's own turns go in nia.log: her assistant and a typed session. A live test's turns once landed there
+for script, log_file in (("main", "nia.log"), ("text_chat", "nia.log"), ("nia", "window.log"),
+                         ("test_agent", "test.log"), ("live_play_test", "test.log"), ("scratch", "test.log")):
+    chosen = subprocess.run([sys.executable, "-c", f"import sys; sys.argv = [{script + '.py'!r}]; "
+                             "sys.path.insert(0, '.'); import utils.logger as l; print(l.LOG_FILE.name)"],
+                            cwd=nia.ROOT, capture_output=True, text=True).stdout.strip()
+    assert chosen == log_file, (script, chosen)
+
 print("ok")
