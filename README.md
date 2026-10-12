@@ -31,6 +31,18 @@ Say **"Hey Nia"**, then talk — or say it all at once: "Hey Nia, play some lofi
 
 Everything but the LLM runs on the CPU, so the GPU is left to Bonsai alone.
 
+**Fast and slow, like *Thinking, Fast and Slow*.** Routine commands she knows by heart: "pause the music", "next
+song", "volume to 70", "speak up", "what's playing?". These are *reflexes* (System 1, [agent/reflexes.py](agent/reflexes.py)):
+they run their tool straight away, with no LLM, in about the time Spotify takes to answer. Through Bonsai they took
+3-4 s. Everything else goes to Bonsai (System 2), and so does anything a reflex isn't sure of. The whole sentence
+must be the command, give or take "please", "can you", her name or "on Spotify". A second request ("...and play
+lofi"), a "don't", a "later", an unknown phrasing or a cut-off "and" goes to Bonsai. A miss only costs the usual few
+seconds; a wrong match would do the wrong thing. If a reflex fails (Spotify isn't responding), Bonsai takes over
+from the error. A reflex is written into the conversation as if Bonsai had done it, so "play it again" afterwards
+still makes sense, and it counts towards what she learns about you. The same idea runs through the rest of NIA:
+cheap checks first, the slow model only when needed. Wake-word and stop matching are string checks. A shell command
+is cleared by rules first, then by a small decision model, and only then put to you.
+
 One Moonshine listener runs all the time. Its voice-activity detection only runs the
 model while someone is speaking, so idle cost is under 1% CPU. Each finished utterance
 drives a two-state machine ([voice_assistant/voice_assistant.py](voice_assistant/voice_assistant.py)):
@@ -228,7 +240,8 @@ If she crashes, the window shows *Offline · stopped unexpectedly*; tap the mic 
 
 ## What it can do
 
-Ask in plain language; the model maps it to a tool.
+Ask in plain language; the model maps it to a tool. The commonest Spotify and voice commands skip the model
+altogether (see *Fast and slow* above).
 
 ### Spotify
 
@@ -488,6 +501,7 @@ hud/hud.html                        the window itself (HUD, settings panel)
 voice_assistant/voice_assistant.py  state machine, STT, TTS, the ready chime
 agent/chat.py                       Deep Agent, PC backend, approvals, Spotify tools
 agent/approval.py                   which PC commands run without asking
+agent/reflexes.py                   commands known by heart, run without the LLM
 agent/action_controller.py          Spotify operations (and re-login: python -m agent.action_controller)
 agent/youtube.py, agent/web.py      YouTube tools; web search and page reading
 agent/claude.py                     asking Claude Code, and building changes to herself on a branch

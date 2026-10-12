@@ -477,6 +477,110 @@ def test_a_failed_turn_is_not_remembered():
     assert not chat.FAILED.search("I'm afraid the shop closes at nine, sir."), "polite, not a failure"
 
 
+def test_known_commands_are_reflexes():
+    # System 1: "Pause the music" took 3-4 s through Bonsai for a reply nobody heard. Each phrasing here is one the
+    # user really said (from nia.log), and Bonsai chose the same tool - except "what's playing?", where it skipped
+    from agent.reflexes import match
+    cases = {
+        "Pause the music": ("pause", {}), "Pause, Spotify, bro.": ("pause", {}),
+        "stop the music": ("pause", {}), "Resume the music please": ("resume", {}),
+        "Keep playing the music though.": ("resume", {}), "skip this song": ("skip", {"direction": "next"}),
+        "Just go to the next song": ("skip", {"direction": "next"}), "Next song on spotify": ("skip", {"direction": "next"}),
+        "Change it to next one please": ("skip", {"direction": "next"}),
+        "go back to the previous song": ("skip", {"direction": "previous"}),
+        "Put the volume to full bra.": ("set_volume", {"percent": 100}),
+        "Spotify volume to 70": ("set_volume", {"percent": 70}),
+        "Decrease the volume to 75.": ("set_volume", {"percent": 75}),
+        "Decrease the volume for Spotify to 75%.": ("set_volume", {"percent": 75}),
+        "Can you lower down the volume to 50?": ("set_volume", {"percent": 50}),
+        "Turn up the volume": ("change_volume", {"step": 10}),
+        "Decrease the volume on Spotify.": ("change_volume", {"step": -10}),
+        "Turn up your volume.": ("change_voice_volume", {"step": 25}), "speak up": ("change_voice_volume", {"step": 25}),
+        "You're too loud": ("change_voice_volume", {"step": -25}),
+        "Increase your volume to full": ("set_voice_volume", {"percent": 100}),
+        "what's playing?": ("now_playing", {}), "Can you tell me what's playing right now?": ("now_playing", {}),
+        "What's playing on Spotify right now?": ("now_playing", {}),
+    }
+    for said, expected in cases.items():
+        assert match(said) == expected, (said, match(said))
+    # Anything more, less sure, or not quite these goes to Bonsai: a second request, a "don't", a "later", a
+    # cut-off "and", another app, another target - a miss costs 3 s, a wrong match does the wrong thing
+    for said in ("Don't pause the music", "Pause the music in five minutes", "pause the music and play lofi",
+                 "Turn up your volume and", "Go to the next album", "Play on full volume", "skip the intro",
+                 "Decrease the volume of spotify 250", "What's playing on Libre Wolf right now?", "play",
+                 "Play whatever was playing before.", "what's your volume", "stop", "Nia", "",
+                 "Hey, it's not playing yet.", "Can you play whatever was playing on Spotify?", "set the volume"):
+        assert match(said) is None, (said, match(said))
+
+
+def test_a_reflex_needs_no_llm_and_bonsai_sees_it():
+    from langchain_core.tools import tool
+    from agent import chat
+    voice = []
+
+    @tool
+    def change_voice_volume(step: int) -> str:
+        """Her own voice"""
+        voice.append(step)
+        return f"Your voice volume is now {50 + step}%"
+
+    # No scripted replies before the third turn: any call to the LLM in the first two would fail the test
+    a = assistant(AIMessage("Playing it again, sir."), spotify=FakeSpotify(), extra_tools=[change_voice_volume])
+    a.llm.messages = iter([])
+    assert a.respond("Pause the music, bro") == "", "a minor action that worked says nothing"
+    assert a.respond("speak up") == "" and voice == [25]
+    assert a._spotify.calls == [("pause", ())]
+    # In the conversation as if Bonsai had done it - so "play it again" next still makes sense
+    kinds = [type(m).__name__ for m in a.messages]
+    assert kinds == ["HumanMessage", "AIMessage", "ToolMessage", "AIMessage"] * 2, kinds
+    assert a.messages[0].content.startswith("Pause the music, bro\n\n["), "with the time, like any request"
+    assert a.messages[1].tool_calls[0]["name"] == "pause"
+    assert "[Did: pause()]" in a.session[1]["content"], "and learned from, like any turn"
+    a.llm.messages = iter([AIMessage("Playing it again, sir.")])
+    assert a.respond("play it again, the one I paused") == "Playing it again, sir."
+    assert len(a.messages) == 10, "Bonsai's turn follows on from the reflexes"
+    # What's playing is a question: that's said
+    a = assistant(spotify=FakeSpotify())
+    a.llm.messages = iter([])
+    assert a.respond("what's playing?") == "did now_playing, sir."
+    assert chat.heard("Thunderstruck by AC/DC (paused)") == "Thunderstruck by AC/DC, sir - paused."
+    assert chat.heard("Nothing is playing right now") == "Nothing's playing right now, sir."
+    # Without her voice tools (a typed session), a voice command isn't a reflex: Bonsai answers
+    a = assistant(AIMessage("I can't change my voice here, sir."), spotify=FakeSpotify())
+    assert a.respond("speak up") == "I can't change my voice here, sir."
+
+
+def test_a_failed_reflex_goes_to_bonsai():
+    # System 2 checks System 1: if the tool fails, Bonsai takes over - it sees the error, so it can say so or fix it
+    import tempfile
+    from agent.memory import Memory
+
+    class StuckSpotify(FakeSpotify):
+        def __getattribute__(self, name):
+            if name == "pause":
+                raise RuntimeError("Spotify isn't responding")
+            return super().__getattribute__(name)
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        m = Memory("stub", Path(tmp) / "memory.sqlite", embed=word_embed)
+        a = assistant(AIMessage("I'm afraid Spotify isn't responding, sir."), spotify=StuckSpotify(), memory=m)
+        assert a.respond("please pause the music now") == "I'm afraid Spotify isn't responding, sir.", \
+            "a failure is said, never swallowed as a quiet minor action"
+        kinds = [type(m).__name__ for m in a.messages]
+        assert kinds == ["HumanMessage", "AIMessage", "ToolMessage", "AIMessage"], kinds
+        assert a.messages[2].status == "error" and "isn't responding" in a.messages[2].content
+        assert not [r for r in m.rows if r[1] == "exchange"], "a failed turn isn't remembered"
+        m.db.close()
+    # Spotify with no device used to "succeed" at a volume change - and the failure went unsaid
+    c = object.__new__(SpotifyController)
+    c.sp = type("NoDevice", (), {"current_playback": lambda self: None})()
+    try:
+        c.change_volume(10)
+        raise AssertionError("no device, yet the volume changed")
+    except RuntimeError as e:
+        assert "No active device" in str(e)
+
+
 def test_chat_does_not_build_spotify():
     a = assistant(AIMessage("Evening, sir."))
     assert a.respond("Hey Nia!") == "Evening, sir."

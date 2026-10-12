@@ -16,7 +16,7 @@ from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 from deepagents.middleware.summarization import create_summarization_middleware
 from langchain.agents.middleware import TodoListMiddleware, wrap_model_call, wrap_tool_call
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
@@ -27,7 +27,7 @@ from langgraph.types import Command
 import settings
 from utils.hud import hud
 from utils.words import in_words
-from . import approval, apps, claude, web, youtube
+from . import approval, apps, claude, reflexes, web, youtube
 from .server import SERVER_LOG, llm_server_command, llm_up
 from .approval import risks
 from .memory import Memory, note, preferences_note
@@ -427,6 +427,20 @@ def went_wrong(messages, reply):
     return bool(errors) or bool(FAILED.search(reply))
 
 
+def heard(song):
+    """What's playing, as she says it - from now_playing's "X by Y", "X by Y (paused)" or "Nothing is playing..." """
+    if song.startswith("Nothing"):
+        return "Nothing's playing right now, sir."
+    if song.endswith(" (paused)"):
+        return f"{song.removesuffix(' (paused)')}, sir - paused."
+    return f"{song}, sir."
+
+
+def when():
+    """The current date and time, as each request carries it"""
+    return f"[{datetime.now():%A %d %B %Y, %H:%M}]"
+
+
 def worth_remembering(request):
     """Whether an exchange means anything on its own later. "I guess so" or a sentence cut off at "..." only
     made sense in the moment - recalled weeks later they're noise"""
@@ -461,10 +475,12 @@ class AssistantModel:
                                 profile={"max_input_tokens": s["context"]})
         self.llm = llm
         backend = backend or pc_backend()
+        tools = self._spotify_tools() + youtube.TOOLS + web.TOOLS + claude.TOOLS + apps.TOOLS + list(extra_tools) \
+            + (self.memory.tools() if self.memory else [])
+        self.tools = {t.name: t for t in tools}  # for reflexes, which call them directly
         self.agent = create_deep_agent(
             model=llm,
-            tools=self._spotify_tools() + youtube.TOOLS + web.TOOLS + claude.TOOLS + apps.TOOLS + list(extra_tools)
-            + (self.memory.tools() if self.memory else []),
+            tools=tools,
             system_prompt=initial_prompt + pc_prompt + self_prompt,
             backend=backend,
             interrupt_on={name: True for name in NEEDS_APPROVAL},
@@ -505,9 +521,14 @@ class AssistantModel:
     def respond(self, user_msg):
         """Run one turn, including any tool calls, and return what NIA should say.
         If a PC change needs approval, that's the question; the next call is taken as the answer."""
+        tried = []
+        if not self.pending and (known := reflexes.match(user_msg)) and known[0] in self.tools:
+            reply, tried = self.reflex(user_msg, *known)
+            if reply is not None:
+                return reply
         try:
             with self.turn:
-                return self._respond(user_msg)
+                return self._respond(user_msg, tried)
         except Cancelled:
             # Steps already taken stay taken; the dangling call is patched up by Deep Agents next turn
             self.pending = None
@@ -523,7 +544,35 @@ class AssistantModel:
             self.pending = None
             return "That was more than I can hold at once, sir, so I've cleared our conversation. Try asking about less at a time."
 
-    def _respond(self, user_msg):
+    def reflex(self, user_msg, name, args):
+        """System 1: a command known by heart (see reflexes), run straight away - no LLM, so it needn't wait for one
+        that's busy learning either. It goes into the conversation as if Bonsai had done it, so "play it again"
+        afterwards still makes sense. Returns (what to say, None) - or, if the tool failed, (None, the attempt) for
+        Bonsai to take over from, error and all"""
+        started = time.perf_counter()
+        call = {"name": name, "args": args, "id": f"reflex-{time.time_ns()}"}
+        logger.info(f"Reflex: {name}({args}) - no LLM")
+        hud.send(tool=name)
+        try:
+            result, status = str(self.tools[name].invoke(args)), "success"
+        except Exception as e:
+            result, status = f"Error: {e!r}", "error"
+        logger.info(f"Tool result ({name}): {result[:MAX_TOOL_CHARS]}")
+        tried = [AIMessage("", tool_calls=[call]), ToolMessage(result, tool_call_id=call["id"], name=name, status=status)]
+        if status == "error":
+            logger.info(f"Reflex failed after {time.perf_counter() - started:.1f}s - over to the LLM")
+            return None, tried
+        reply = heard(result) if name == "now_playing" else ""  # the rest are minor actions: they speak for themselves
+        self.agent.update_state(self.config, {"messages": [HumanMessage(f"{user_msg}\n\n{when()}"), *tried,
+                                                           AIMessage(reply or "Done, sir.")]}, as_node="model")
+        self.record(user_msg, did(tried), reply)
+        if not reply:
+            hud.send(nia=in_words(result))  # in the window, for the record
+        logger.info(f"Reflex done in {time.perf_counter() - started:.1f}s")
+        return reply, None
+
+    def _respond(self, user_msg, tried=()):
+        """tried: a reflex's failed attempt at this request, for Bonsai to see and pick up from"""
         ANNOUNCED.clear()  # a new turn: "One moment" may be said again
         steps["total"], steps["calls"], steps["refused"] = 0, {}, 0  # and a fresh step budget
         if self.pending and time.time() - self.pending[1] >= APPROVAL_EXPIRES:
@@ -553,8 +602,8 @@ class AssistantModel:
             for similarity, _, kind, text, _ in hits:
                 logger.info(f"Recalled ({kind}, {similarity:.2f}): {text[:120]}")
             learned = preferences_note(self.memory.preferences()) if self.memory else ""
-            message = HumanMessage(f"{user_msg}\n\n[{datetime.now():%A %d %B %Y, %H:%M}]{learned}{note(hits)}")
-            result = self.agent.invoke({"messages": [message]}, self.config)
+            message = HumanMessage(f"{user_msg}\n\n{when()}{learned}{note(hits)}")
+            result = self.agent.invoke({"messages": [message, *tried]}, self.config)
 
         # Commands the approval layers clear run straight away; anything else waits for a spoken yes
         while result.get("__interrupt__"):
