@@ -2,6 +2,8 @@ import json
 import logging
 import os
 import re
+import shlex
+import shutil
 import subprocess
 import threading
 import time
@@ -16,7 +18,7 @@ from deepagents.middleware.subagents import GENERAL_PURPOSE_SUBAGENT
 from deepagents.middleware.summarization import create_summarization_middleware
 from langchain.agents.middleware import TodoListMiddleware, wrap_model_call, wrap_tool_call
 from langchain_core.exceptions import ContextOverflowError
-from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
+from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.messages.utils import count_tokens_approximately
 from langchain_core.tools import tool
 from langchain_openai import ChatOpenAI
@@ -26,8 +28,9 @@ from langgraph.types import Command
 
 import settings
 from utils.hud import hud
+from utils.system import NEW_CONSOLE, WINDOWS
 from utils.words import in_words
-from . import approval, apps, claude, web, youtube
+from . import approval, apps, claude, reflexes, web, youtube
 from .server import SERVER_LOG, llm_server_command, llm_up
 from .approval import risks
 from .memory import Memory, note, preferences_note
@@ -56,7 +59,7 @@ def ensure_llm_server(timeout=180):
         logger.info("Waiting for nia.py's LLM server...")
     else:
         logger.info(f"Starting LLM server: {' '.join(llm_server_command(s))}")
-        subprocess.Popen(llm_server_command(s), creationflags=subprocess.CREATE_NEW_CONSOLE)
+        subprocess.Popen(llm_server_command(s), **NEW_CONSOLE)
     while not llm_up(s["port"]):
         if time.time() - started > timeout:
             raise RuntimeError(f"llama-server did not come up on port {s['port']} - see {SERVER_LOG}")
@@ -67,12 +70,21 @@ def ensure_llm_server(timeout=180):
 ARTIFACTS = Path(__file__).resolve().parent.parent / "logs"
 
 
+# Linux folders the file tools never reach: the kernel's live views, where a search (grep -r /proc) never ends
+NOT_FILES = {"proc", "sys", "dev"}
+
+
 def pc_backend():
     """The real PC for the file and shell tools. Deep Agents' file tools only take /-style paths
-    (they reject C:\\...), so each drive is mounted as /c/, /d/, ...; anything else is under the
-    home folder. The shell runs in the home folder and takes normal Windows paths."""
-    drives = {f"/{letter.lower()}/": FilesystemBackend(root_dir=f"{letter}:\\", virtual_mode=True)
-              for letter in "CDEFGHIJ" if Path(f"{letter}:\\").exists()}
+    (they reject C:\\...), so on Windows each drive is mounted as /c/, /d/, ...; on Linux each top-level
+    folder is mounted as itself, so /home/x is /home/x. Anything else is under the home folder. The shell
+    runs in the home folder and takes the PC's own paths."""
+    if WINDOWS:
+        drives = {f"/{letter.lower()}/": FilesystemBackend(root_dir=f"{letter}:\\", virtual_mode=True)
+                  for letter in "CDEFGHIJ" if Path(f"{letter}:\\").exists()}
+    else:
+        drives = {f"/{top.name}/": FilesystemBackend(root_dir=top, virtual_mode=True)
+                  for top in Path("/").iterdir() if top.is_dir() and not top.is_symlink() and top.name not in NOT_FILES}
     # ponytail: no sandbox - the shell and files are the real PC; the spoken yes is the only guard
     shell = LocalShellBackend(root_dir=Path.home(), virtual_mode=True, inherit_env=True, timeout=60)
     # Deep Agents' own files - each summarized conversation, large tool results - go in NIA's logs/, not the home
@@ -89,7 +101,7 @@ def logged_summaries(summarizer, backend):
     def offload_logged(where, messages, session_id):
         path = offload(where, messages, session_id)
         folder = getattr(getattr(backend, "default", None), "cwd", None)  # the PC's home folder (none in tests)
-        saved = f"; the full text is in {approval.windows_path(path) if folder else path}" if path else ""
+        saved = f"; the full text is in {approval.pc_path(path) if folder else path}" if path else ""
         logger.info(f"Summarizing the conversation: it neared Bonsai's context, so {len(messages)} older messages "
                     f"(~{count_tokens_approximately(messages)} tokens) are being condensed{saved}")
         return path
@@ -108,6 +120,11 @@ def logged_summaries(summarizer, backend):
 # Longest tool result the model sees. Deep Agents only offloads results over 20K tokens - more than
 # Bonsai's whole context - so a few files read at once overflowed it
 MAX_TOOL_CHARS = 3000  # ~750 tokens
+
+# Each step's conversation is saved before the next step starts. LangGraph's default ("async") saves in the background,
+# each save holding a worker thread while it waits for the one before: on a 2-CPU machine (6 workers) a quick run of
+# tool calls left every worker waiting on a save queued behind them, and the turn hung for good (found by CI)
+DURABILITY = "sync"
 
 # Set by the voice layer when the user says "stop" mid-turn: the next tool call ends the turn
 CANCEL = threading.Event()
@@ -228,15 +245,28 @@ def remember_result(call, result):
 
 # A shell command hunting for a program isn't run: open_app finds installed apps itself. Bonsai ignored the
 # instruction, then a note on each result (five times in one turn), and listed folders for VLC for minutes
-HUNTING_FOR_A_PROGRAM = re.compile(r"\bwhere\s+\S+|program files|\*\.exe|\\\w+\.exe\b", re.I)
+HUNTING_FOR_A_PROGRAM = re.compile(r"\bwhere\s+\S+|program files|\*\.exe|\\\w+\.exe\b|"  # Windows; then Linux
+                                   r"\b(which|whereis)\s+\S+|\bcommand\s+-v\b|share/applications\b|\.desktop\b", re.I)
 USE_OPEN_APP = ("Not run: don't search for an app's program - play_video plays a movie or video file in VLC, and "
-                "open_app opens any installed app (with a file to open in it); both find the app the way Windows does")
+                "open_app opens any installed app (with a file to open in it); both find the app the way the system "
+                "does")
 
 
 def windowed_program(command):
-    """The program a shell command starts, if it's a windowed app (VLC, Notepad) - from the program file's own header
-    (its subsystem: 2 is a window, 3 a console). Started through the shell, such an app holds the command - and her
-    turn - until it's closed: one movie in VLC kept a turn waiting a minute. Console tools (git, 7z) aren't"""
+    """The program a shell command starts, if it's a windowed app (VLC, Notepad) - on Windows from the program file's
+    own header (its subsystem: 2 is a window, 3 a console); on Linux, a program the launcher lists as an app that
+    doesn't run in a terminal. Started through the shell, such an app holds the command - and her turn - until it's
+    closed: one movie in VLC kept a turn waiting a minute. Console tools (git, 7z, btop) aren't"""
+    if not WINDOWS:
+        try:
+            first = shlex.split(command)[:1]
+        except ValueError:
+            return None
+        found = shutil.which(first[0]) if first else None
+        if found and any(apps.entry_program(e) == Path(found).resolve() for e in apps.desktop_entries()
+                         if not e["terminal"]):
+            return Path(found)
+        return None
     match = re.match(r'\s*"([^"]+\.exe)"|\s*(\S+\.exe)\b', command, re.I)
     if not match:
         return None
@@ -322,12 +352,13 @@ def tool_guard(request, handler):
 
 # Plain words for everyday commands, when the model doesn't say what it's doing
 COMMON_COMMANDS = [
-    (r"\b(tasklist|get-process)\b", "check which programs are running"),
+    (r"\b(tasklist|get-process|ps|pgrep)\b", "check which programs are running"),
     (r"\b(dir|ls|get-childitem|gci)\b", "list a folder"),
-    (r"\b(type|cat|get-content|gc)\b", "read a file"),
-    (r"\b(ipconfig|ping|tracert|nslookup|test-connection)\b", "check the network"),
-    (r"\b(systeminfo|get-computerinfo|wmic|get-ciminstance)\b", "look up system information"),
-    (r"^\s*start\s", "open something"),
+    (r"\b(type|cat|get-content|gc|head|tail)\b", "read a file"),
+    (r"\b(ipconfig|ping|tracert|nslookup|test-connection|ip\s+a(ddr)?|nmcli)\b", "check the network"),
+    (r"\b(systeminfo|get-computerinfo|wmic|get-ciminstance|uname|lscpu|neofetch|fastfetch)\b",
+     "look up system information"),
+    (r"^\s*(start|xdg-open)\s", "open something"),
 ]
 
 
@@ -365,6 +396,8 @@ def describe(action):
     if programs := re.findall(r"(?:/im|-name)\s+\"?([\w.-]+?)(?:\.exe)?\"?(?:\s|;|$)", command, re.I):
         if re.search(r"taskkill|stop-process", command, re.I):
             return "force-close " + " and ".join(dict.fromkeys(p.title() for p in programs))
+    if programs := re.findall(r"\b(?:pkill|killall)\s+(?:-\S+\s+)*\"?([\w.-]+)", command):
+        return "force-close " + " and ".join(dict.fromkeys(p.title() for p in programs))
     for pattern, summary in COMMON_COMMANDS:
         if re.search(pattern, command, re.I):
             return summary
@@ -427,6 +460,20 @@ def went_wrong(messages, reply):
     return bool(errors) or bool(FAILED.search(reply))
 
 
+def heard(song):
+    """What's playing, as she says it - from now_playing's "X by Y", "X by Y (paused)" or "Nothing is playing..." """
+    if song.startswith("Nothing"):
+        return "Nothing's playing right now, sir."
+    if song.endswith(" (paused)"):
+        return f"{song.removesuffix(' (paused)')}, sir - paused."
+    return f"{song}, sir."
+
+
+def when():
+    """The current date and time, as each request carries it"""
+    return f"[{datetime.now():%A %d %B %Y, %H:%M}]"
+
+
 def worth_remembering(request):
     """Whether an exchange means anything on its own later. "I guess so" or a sentence cut off at "..." only
     made sense in the moment - recalled weeks later they're noise"""
@@ -461,10 +508,12 @@ class AssistantModel:
                                 profile={"max_input_tokens": s["context"]})
         self.llm = llm
         backend = backend or pc_backend()
+        tools = self._spotify_tools() + youtube.TOOLS + web.TOOLS + claude.TOOLS + apps.TOOLS + list(extra_tools) \
+            + (self.memory.tools() if self.memory else [])
+        self.tools = {t.name: t for t in tools}  # for reflexes, which call them directly
         self.agent = create_deep_agent(
             model=llm,
-            tools=self._spotify_tools() + youtube.TOOLS + web.TOOLS + claude.TOOLS + apps.TOOLS + list(extra_tools)
-            + (self.memory.tools() if self.memory else []),
+            tools=tools,
             system_prompt=initial_prompt + pc_prompt + self_prompt,
             backend=backend,
             interrupt_on={name: True for name in NEEDS_APPROVAL},
@@ -485,7 +534,7 @@ class AssistantModel:
         started = time.time()
         REFUSED.set()
         try:
-            self.agent.invoke({"messages": [HumanMessage("Hello")]}, {"configurable": {"thread_id": "warm-up"}})
+            self.agent.invoke({"messages": [HumanMessage("Hello")]}, {"configurable": {"thread_id": "warm-up"}}, durability=DURABILITY)
             logger.info(f"Warmed up the LLM's prompt cache in {time.time() - started:.1f}s")
         except Exception as e:  # only a speed-up: never stop NIA starting
             logger.warning(f"Warm-up failed ({e!r}) - the first reply will be slower")
@@ -505,9 +554,14 @@ class AssistantModel:
     def respond(self, user_msg):
         """Run one turn, including any tool calls, and return what NIA should say.
         If a PC change needs approval, that's the question; the next call is taken as the answer."""
+        tried = []
+        if not self.pending and (known := reflexes.match(user_msg)) and known[0] in self.tools:
+            reply, tried = self.reflex(user_msg, *known)
+            if reply is not None:
+                return reply
         try:
             with self.turn:
-                return self._respond(user_msg)
+                return self._respond(user_msg, tried)
         except Cancelled:
             # Steps already taken stay taken; the dangling call is patched up by Deep Agents next turn
             self.pending = None
@@ -523,13 +577,41 @@ class AssistantModel:
             self.pending = None
             return "That was more than I can hold at once, sir, so I've cleared our conversation. Try asking about less at a time."
 
-    def _respond(self, user_msg):
+    def reflex(self, user_msg, name, args):
+        """System 1: a command known by heart (see reflexes), run straight away - no LLM, so it needn't wait for one
+        that's busy learning either. It goes into the conversation as if Bonsai had done it, so "play it again"
+        afterwards still makes sense. Returns (what to say, None) - or, if the tool failed, (None, the attempt) for
+        Bonsai to take over from, error and all"""
+        started = time.perf_counter()
+        call = {"name": name, "args": args, "id": f"reflex-{time.time_ns()}"}
+        logger.info(f"Reflex: {name}({args}) - no LLM")
+        hud.send(tool=name)
+        try:
+            result, status = str(self.tools[name].invoke(args)), "success"
+        except Exception as e:
+            result, status = f"Error: {e!r}", "error"
+        logger.info(f"Tool result ({name}): {result[:MAX_TOOL_CHARS]}")
+        tried = [AIMessage("", tool_calls=[call]), ToolMessage(result, tool_call_id=call["id"], name=name, status=status)]
+        if status == "error":
+            logger.info(f"Reflex failed after {time.perf_counter() - started:.1f}s - over to the LLM")
+            return None, tried
+        reply = heard(result) if name == "now_playing" else ""  # the rest are minor actions: they speak for themselves
+        self.agent.update_state(self.config, {"messages": [HumanMessage(f"{user_msg}\n\n{when()}"), *tried,
+                                                           AIMessage(reply or "Done, sir.")]}, as_node="model")
+        self.record(user_msg, did(tried), reply)
+        if not reply:
+            hud.send(nia=in_words(result))  # in the window, for the record
+        logger.info(f"Reflex done in {time.perf_counter() - started:.1f}s")
+        return reply, None
+
+    def _respond(self, user_msg, tried=()):
+        """tried: a reflex's failed attempt at this request, for Bonsai to see and pick up from"""
         ANNOUNCED.clear()  # a new turn: "One moment" may be said again
         steps["total"], steps["calls"], steps["refused"] = 0, {}, 0  # and a fresh step budget
         if self.pending and time.time() - self.pending[1] >= APPROVAL_EXPIRES:
             # Nobody answered in time: refuse quietly, then treat this as a new request, not as the answer
             logger.info("Approval expired - refused")
-            self.agent.invoke(Command(resume={"decisions": [{"type": "reject"}] * self.pending[0]}), self.config)
+            self.agent.invoke(Command(resume={"decisions": [{"type": "reject"}] * self.pending[0]}), self.config, durability=DURABILITY)
             self.pending = None
         if self.pending:
             answer = user_msg.lower()
@@ -542,7 +624,7 @@ class AssistantModel:
             decision = {"type": "approve"} if approved else {"type": "reject", "message": reason}
             if not approved:
                 REFUSED.set()
-            result = self.agent.invoke(Command(resume={"decisions": [decision] * self.pending[0]}), self.config)
+            result = self.agent.invoke(Command(resume={"decisions": [decision] * self.pending[0]}), self.config, durability=DURABILITY)
         else:
             REFUSED.clear()  # a new request: a "no" to the last one no longer applies
             # The clock and any recalled memories ride on the user turn, not the system prompt, so the
@@ -553,8 +635,8 @@ class AssistantModel:
             for similarity, _, kind, text, _ in hits:
                 logger.info(f"Recalled ({kind}, {similarity:.2f}): {text[:120]}")
             learned = preferences_note(self.memory.preferences()) if self.memory else ""
-            message = HumanMessage(f"{user_msg}\n\n[{datetime.now():%A %d %B %Y, %H:%M}]{learned}{note(hits)}")
-            result = self.agent.invoke({"messages": [message]}, self.config)
+            message = HumanMessage(f"{user_msg}\n\n{when()}{learned}{note(hits)}")
+            result = self.agent.invoke({"messages": [message, *tried]}, self.config, durability=DURABILITY)
 
         # Commands the approval layers clear run straight away; anything else waits for a spoken yes
         while result.get("__interrupt__"):
@@ -570,7 +652,7 @@ class AssistantModel:
                 decisions.append({"type": "approve"} if verdict == "run" else None)
             if None in decisions:
                 break
-            result = self.agent.invoke(Command(resume={"decisions": decisions}), self.config)
+            result = self.agent.invoke(Command(resume={"decisions": decisions}), self.config, durability=DURABILITY)
 
         if result.get("__interrupt__"):
             actions = result["__interrupt__"][0].value["action_requests"]

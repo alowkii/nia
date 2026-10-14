@@ -18,14 +18,20 @@ import re
 import urllib.request
 from pathlib import Path
 
+from utils.system import SHELL, WINDOWS
+
 logger = logging.getLogger(__name__)
 
-# Said out loud whatever the stated intent, so a loose description can't hide a dangerous command
+# Said out loud whatever the stated intent, so a loose description can't hide a dangerous command. Windows' and
+# Linux's commands alike: a risk is a risk whichever shell would run it
 RISKS = [
-    (r"\b(del|erase|rm|rmdir|rd|remove-item)\b", "it deletes files"),
-    (r"\b(format|diskpart|clear-disk)\b", "it formats or wipes a disk"),
-    (r"\b(shutdown|restart-computer|stop-computer|logoff)\b", "it shuts down or restarts the PC"),
-    (r"\b(taskkill|stop-process|kill)\b", "it closes programs"),
+    (r"\b(del|erase|rm|rmdir|rd|remove-item|shred|unlink)\b|\bfind\b.*\s-delete\b", "it deletes files"),
+    (r"\b(format|diskpart|clear-disk|mkfs(\.\w+)?|wipefs|fdisk|parted)\b|\bdd\s", "it formats or wipes a disk"),
+    (r"\b(shutdown|restart-computer|stop-computer|logoff|reboot|poweroff|halt)\b|"
+     r"\bsystemctl\s+(poweroff|reboot|halt|suspend|hibernate)\b|\bloginctl\s+(terminate|kill)",
+     "it shuts down or restarts the PC"),
+    (r"\b(taskkill|stop-process|kill|pkill|killall|xkill)\b|\bsystemctl\s+(stop|restart|kill|disable|mask)\b",
+     "it closes programs"),
     (r"\b(reg|regedit|set-itemproperty|new-itemproperty)\b|hk(lm|cu):", "it changes the registry"),
     (r"\b(invoke-webrequest|iwr|curl|wget|bitsadmin)\b.*\|\s*(iex|invoke-expression)", "it downloads and runs code"),
     # She has web_search and read_page for the web; a shell command fetching from it ran unasked once (curl, 0.03)
@@ -33,9 +39,12 @@ RISKS = [
      "it reaches the internet"),
     # ask_claude runs Claude Code safely; from the shell it could be given any tools at all
     (r"\bclaude(\.exe)?\b", "it runs Claude Code"),
-    (r"\b(winget|choco|msiexec|scoop)\b|\b(pip|npm|pnpm|yarn)\s+(install|uninstall|add|remove)\b", "it installs or removes software"),
-    (r"sendkeys|keybd_event|sendinput", "it presses keys in another window"),
-    (r"-verb\s+runas|\brunas\b", "it runs something as administrator"),
+    (r"\b(winget|choco|msiexec|scoop|pacman|yay|paru|apt|apt-get|dnf|flatpak|snap|makepkg)\b|"
+     r"\b(pip|npm|pnpm|yarn)\s+(install|uninstall|add|remove)\b", "it installs or removes software"),
+    (r"sendkeys|keybd_event|sendinput|\b(xdotool|ydotool|wtype)\b", "it presses keys in another window"),
+    (r"-verb\s+runas|\brunas\b|\b(sudo|doas|pkexec|su)\b", "it runs something as administrator"),
+    # Changes how the PC starts or what runs on its own
+    (r"\bcrontab\b|\bsystemctl\s+(--user\s+)?(enable|start)\b", "it changes what runs on its own"),
 ]
 
 
@@ -45,14 +54,24 @@ def risks(action):
 
 
 # Layer 2: commands that can only read. Anything chained, redirected or escaped is out
-READ_ONLY = {"tasklist", "dir", "ipconfig", "systeminfo", "type", "more", "where", "whoami", "hostname", "ver",
-             "netstat", "nslookup", "ping", "tree", "getmac", "vol", "findstr", "find"}
-FILTERS = {"findstr", "find", "sort", "more"}
+if WINDOWS:
+    READ_ONLY = {"tasklist", "dir", "ipconfig", "systeminfo", "type", "more", "where", "whoami", "hostname", "ver",
+                 "netstat", "nslookup", "ping", "tree", "getmac", "vol", "findstr", "find"}
+    FILTERS = {"findstr", "find", "sort", "more"}
+    CMD_UNSAFE = re.compile(r"[&;<>^`]|\|\|")
+else:
+    # No find (-exec, -delete), less (waits for keys), ping (never ends without -c), tee (writes) or anything taking
+    # a command to run
+    READ_ONLY = {"ls", "cat", "head", "tail", "grep", "wc", "ps", "pgrep", "whoami", "hostname", "uname", "uptime",
+                 "df", "du", "free", "lsblk", "pwd", "date", "tree", "file", "stat", "nslookup", "id",
+                 "lscpu", "lsusb", "lspci", "printenv", "ss", "realpath"}
+    FILTERS = {"grep", "sort", "head", "tail", "wc", "uniq", "cut"}
+    # $( and backticks run a command; a newline chains one; > and < redirect
+    CMD_UNSAFE = re.compile(r"[&;<>`\n]|\|\||\$\(")
 GIT_READ = {"status", "log", "diff", "show", "describe", "rev-parse", "blame", "shortlog", "ls-files"}
 # These only list when given nothing but listing options - and change things otherwise ("branch -D", "tag -d")
 GIT_LIST = {"branch": {"--show-current", "-a", "-r", "-v", "-vv", "--all", "--list"}, "tag": {"-l", "--list"},
             "remote": {"-v", "get-url", "origin"}}
-CMD_UNSAFE = re.compile(r"[&;<>^`]|\|\|")
 POWERSHELL = re.compile(r'powershell(?:\.exe)?\s+(?:-NoProfile\s+)?-(?:Command|c)\s+"(.+)"', re.I | re.S)
 PS_UNSAFE = re.compile(r"[;&<>`]|\$\(|@\(|-ComObject|\binvoke|\biex\b|\bstart-|\[", re.I)
 PS_READ = re.compile(r"(get|test|select|where|sort|format|measure|group|resolve)-\w+|out-string", re.I)
@@ -89,7 +108,8 @@ def read_only(command):
 
 # Layer 3: one narrow yes/no per hazard, with examples of what does NOT count - this setup separated
 # harmless from risky commands best (scripts/eval_approval.py); broad "is it read-only?" questions did not
-READING = "only reads, lists, searches or prints information (such as dir, type, findstr, tasklist, Get-Process)"
+READING = ("only reads, lists, searches or prints information (such as "
+           + ("dir, type, findstr, tasklist, Get-Process)" if WINDOWS else "ls, cat, grep, ps, df)"))
 
 
 def _noul(question, yes, no):
@@ -124,7 +144,7 @@ HAZARDS = {
 
 def hazards(command, model, timeout=30):
     """{hazard: probability} from the decision model, or None if it can't be reached"""
-    body = {"model": model, "state": {"command": command, "shell": "Windows cmd.exe"}, "questions": HAZARDS}
+    body = {"model": model, "state": {"command": command, "shell": SHELL}, "questions": HAZARDS}
     request = urllib.request.Request("http://127.0.0.1:11434/v1/systemone", json.dumps(body).encode(),
                                      {"Content-Type": "application/json"})
     try:
@@ -141,13 +161,19 @@ def hazards(command, model, timeout=30):
 # own code - changes to herself go through a reviewed branch
 NIA_ROOT = Path(__file__).resolve().parent.parent
 OFF_LIMITS = re.compile(r"\\(windows|program files( \(x86\))?|programdata|appdata|\$recycle\.bin|"
-                        r"system volume information)(\\|$)|\\\.", re.I)
-MKDIR = re.compile(r'\s*(?:mkdir|md)\s+("[^"]+"|[^\s"&|<>;^]+)(?:\s+2>&1)?(?:\s*&&\s*echo\s+[\w .-]*)?\s*', re.I)
+                        r"system volume information)(\\|$)|\\\.", re.I) if WINDOWS else \
+    re.compile(r"/\.")  # a dot-folder (~/.config/autostart runs whatever lands in it); outside home is checked below
+OTHER_DRIVES = [Path("/mnt"), Path("/media"), Path("/run/media")]  # Linux: where other disks are mounted
+MKDIR = re.compile(r'\s*(?:mkdir|md)\s+(?:-p\s+)?("[^"]+"|[^\s"&|<>;^]+)(?:\s+2>&1)?(?:\s*&&\s*echo\s+[\w .-]*)?\s*',
+                   re.I)
 
 
-def windows_path(path):
-    """A file tool's path (/c/Users/x, or relative to the home folder) or a Windows one, as a full Windows path"""
+def pc_path(path):
+    """A file tool's path (/c/Users/x on Windows, a real one on Linux, or relative to the home folder) or a Windows
+    one, as a full path on this PC"""
     text = str(path).strip().strip('"')
+    if not WINDOWS:
+        return Path(os.path.abspath(Path.home() / os.path.expanduser(text)))  # an absolute path stays as it is
     if drive := re.match(r"^/([a-zA-Z])(?:/|$)(.*)", text):
         return Path(os.path.abspath(f"{drive.group(1).upper()}:\\{drive.group(2)}"))
     if re.match(r"^[a-zA-Z]:[\\/]", text):
@@ -158,12 +184,14 @@ def windows_path(path):
 def creatable(path):
     """Whether a new folder or file may appear at path without asking: your own folders, or another drive -
     never the system, AppData, a dot-folder or NIA's own code"""
-    target = windows_path(path)
+    target = pc_path(path)
     if OFF_LIMITS.search(str(target)):
         return False
     for own in (NIA_ROOT, NIA_ROOT.parent / "nia-changes"):
         if target == own or own in target.parents:
             return False
+    if not WINDOWS:
+        return any(place in target.parents for place in [Path.home(), *OTHER_DRIVES])
     on_system_drive = target.drive.upper() == Path.home().drive.upper()
     return not on_system_drive or Path.home() in target.parents
 
@@ -172,7 +200,7 @@ def decide(action, model, threshold):
     """("run" or "ask", why) for one action awaiting approval"""
     if action["name"] == "write_file":
         path = action["args"].get("file_path", "")
-        if creatable(path) and not windows_path(path).exists():
+        if creatable(path) and not pc_path(path).exists():
             return "run", "a new file in your folders"
         return "ask", "it overwrites a file, or it's outside your folders"
     if action["name"] != "execute":

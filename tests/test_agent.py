@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # NIA's code, one folder up
+(Path(__file__).resolve().parent.parent / "logs").mkdir(exist_ok=True)  # a fresh checkout has none; tests use it
 
 import time
 
@@ -13,6 +14,7 @@ from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
 
 from agent import chat
 from agent.chat import AssistantModel
+from utils.system import WINDOWS
 from agent.action_controller import SpotifyController
 
 
@@ -314,6 +316,8 @@ def test_installed_apps_are_found_the_way_windows_finds_them():
     # "Play one of the movies in VLC": VLC was in C:\Program Files (x86)\VideoLAN\VLC, but NIA guessed folders
     # ("...\VLC media player", `where vlc.exe`) until her steps ran out. open_app asks Windows instead: its registered
     # apps, then the Start menu. Here a stand-in Start menu and player - nothing real is opened
+    if not WINDOWS:
+        return  # see test_installed_apps_are_found_the_way_linux_finds_them
     import tempfile
     import pythoncom
     from win32com.shell import shell
@@ -359,10 +363,77 @@ def test_installed_apps_are_found_the_way_windows_finds_them():
             assert "already playing" in apps.play_video.invoke({"file": str(movie), "player": "Fake Player"})
             assert len(opened) == 3, "not a second copy"
             apps.last_video.update(path=None, when=0.0)
-            assert "VLC doesn't seem to be installed" in apps.play_video.invoke({"file": str(movie)}), "VLC by default"
+            # VLC by default - and when it isn't installed, the PC's own player for the file rather than nothing
+            assert apps.play_video.invoke({"file": str(movie)}) == \
+                "Opened The Founder (2016).mp4 in the PC's video player (VLC isn't installed)"
+            assert opened[-1] == (movie, ""), "opened with the app Windows has for .mp4 files"
         finally:
             apps.START_MENUS, apps.registered, apps.os.startfile = real
     # It's one of NIA's tools, and needs no approval - like opening a website
+    from agent import chat
+    assert "open_app" not in chat.NEEDS_APPROVAL
+
+
+def test_installed_apps_are_found_the_way_linux_finds_them():
+    # The same on Linux: an app is what the launcher lists (desktop entries), then a program on PATH - never a guess
+    # at folders. Here stand-in desktop entries and player - nothing real is opened
+    if WINDOWS:
+        return
+    import tempfile
+    from agent import apps
+
+    with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent.parent / "logs",
+                                     ignore_cleanup_errors=True) as tmp:
+        tmp = Path(tmp)
+        player, movie = tmp / "player" / "fakeplayer", tmp / "movies" / "The Founder (2016).mp4"
+        for path in (player, movie):
+            path.parent.mkdir()
+            path.write_bytes(b"")
+        player.chmod(0o755)
+        menu = tmp / "applications"
+        menu.mkdir()
+        entry = "[Desktop Entry]\nType=Application\nName={name}\nExec={exec}\nTerminal={terminal}\n"
+        (menu / "org.example.FakePlayer.desktop").write_text(entry.format(
+            name="Fake Player", exec=f"{player} --started-from-file %U", terminal="false"))
+        (menu / "fakeplayer-reset.desktop").write_text(entry.format(  # the plain one is preferred
+            name="Fake Player - reset preferences", exec=f"{player} --reset", terminal="false"))
+        (menu / "faketop.desktop").write_text(entry.format(name="Fake Top", exec="faketop", terminal="true"))
+
+        opened = []
+        real = apps.application_dirs, apps.subprocess.Popen
+        apps.application_dirs = lambda: [menu]  # only the stand-in launcher entries
+        apps.subprocess.Popen = lambda command, **kwargs: opened.append(command)
+        try:
+            found = menu / "org.example.FakePlayer.desktop"
+            assert apps.find_app("fake player") == found and apps.find_app("FakePlayer") == found
+            assert apps.find_app("fakeplayer") == found, "by the program it runs, too"
+            assert apps.open_app.invoke({"app": "Fake Player", "file": str(movie)}) == \
+                "Opened The Founder (2016).mp4 in Fake Player"
+            assert opened == [[str(player), "--started-from-file", str(movie)]], "the file in place of %U"
+            assert apps.open_app.invoke({"app": "Fake Player"}) == "Opened Fake Player"
+            assert opened[-1] == [str(player), "--started-from-file"]
+            # A terminal app opens in a terminal, not invisibly in the background
+            apps.open_app.invoke({"app": "Fake Top"})
+            assert opened[-1][-1] == "faketop" and opened[-1][0].endswith("xdg-terminal-exec") \
+                or not apps.shutil.which("xdg-terminal-exec")
+            # Plain answers when it can't: no such file, no such app
+            assert apps.open_app.invoke({"app": "Fake Player", "file": str(tmp / "nope.mp4")}).startswith(
+                "Not opened: there's no file")
+            assert "doesn't seem to be installed" in apps.open_app.invoke({"app": "Some Other Player"})
+            assert len(opened) == 3, "nothing opened when it couldn't be"
+            # play_video, and no second copy a moment later
+            assert apps.play_video.invoke({"file": str(movie), "player": "Fake Player"}) == \
+                "Opened The Founder (2016).mp4 in Fake Player"
+            assert "already playing" in apps.play_video.invoke({"file": str(movie), "player": "Fake Player"})
+            assert len(opened) == 4, "not a second copy"
+            apps.last_video.update(path=None, when=0.0)
+            # VLC by default - not among these entries, so the PC's own player for the file
+            assert apps.play_video.invoke({"file": str(movie)}) == \
+                "Opened The Founder (2016).mp4 in the PC's video player (VLC isn't installed)"
+            assert opened[-1] == ["xdg-open", str(movie)]
+        finally:
+            apps.application_dirs, apps.subprocess.Popen = real
+            apps.last_video.update(path=None, when=0.0)
     from agent import chat
     assert "open_app" not in chat.NEEDS_APPROVAL
 
@@ -389,7 +460,7 @@ def test_a_hunt_for_a_program_is_pointed_to_open_app():
         a.respond("play a movie in VLC")
     finally:
         approval.decide = real
-    assert asked == ['dir "D:\Downloads" /b'], "a hunt is refused before approval - never put to the user"
+    assert asked == ['dir "D:\\Downloads" /b'], "a hunt is refused before approval - never put to the user"
     results = [m for m in a.messages if isinstance(m, ToolMessage)]
     assert results[0].status == "error" and "play_video plays a movie" in results[0].content
     assert ran == ['dir "D:\\Downloads" /b'], "the hunt never ran; an ordinary command did"
@@ -416,13 +487,30 @@ def test_a_hunt_for_a_program_is_pointed_to_open_app():
         approval.decide = real
 
     # A windowed app run through the shell held her turn until it was closed (a movie in VLC: a minute). It's never
-    # run that way - told to use open_app - while console tools still run. Judged from the program file's header
-    from agent import chat
+    # run that way - told to use open_app - while console tools still run. Judged from the program file's header on
+    # Windows; on Linux, from whether the launcher lists the program as an app outside a terminal
+    from agent import apps, chat
     import os
-    windows = Path(os.environ.get("SystemRoot", r"C:\Windows"))
-    assert chat.windowed_program(f'"{windows / "notepad.exe"}" "D:\\notes.txt"') == windows / "notepad.exe"
-    assert chat.windowed_program(f'{windows / "System32" / "cmd.exe"} /c dir') is None, "a console tool runs"
-    assert chat.windowed_program("git -C D:\\nia status") is None and chat.windowed_program('dir "D:\\x"') is None
+    import tempfile
+    if WINDOWS:
+        windows = Path(os.environ.get("SystemRoot", r"C:\Windows"))
+        player = windows / "notepad.exe"
+        assert chat.windowed_program(f'"{player}" "D:\\notes.txt"') == player
+        assert chat.windowed_program(f'{windows / "System32" / "cmd.exe"} /c dir') is None, "a console tool runs"
+        assert chat.windowed_program("git -C D:\\nia status") is None and chat.windowed_program('dir "D:\\x"') is None
+    else:
+        stand_ins = Path(tempfile.mkdtemp(dir=Path(__file__).resolve().parent.parent / "logs"))
+        player, console = stand_ins / "fakeplayer", stand_ins / "faketop"
+        for program in (player, console):
+            program.write_text("#!/bin/sh\n")
+            program.chmod(0o755)
+        entry = "[Desktop Entry]\nType=Application\nName={0}\nExec={1} %U\nTerminal={2}\n"
+        (stand_ins / "player.desktop").write_text(entry.format("Fake Player", player, "false"))
+        (stand_ins / "top.desktop").write_text(entry.format("Fake Top", console, "true"))
+        real_dirs, apps.application_dirs = apps.application_dirs, lambda: [stand_ins]
+        assert chat.windowed_program(f'"{player}" "{Path.home()}/notes.txt"') == player
+        assert chat.windowed_program(f"{console} --utf-force") is None, "a terminal app is a console tool"
+        assert chat.windowed_program("git -C ~/nia status") is None and chat.windowed_program("ls ~/x") is None
     launched = []
 
     @tool
@@ -431,13 +519,17 @@ def test_a_hunt_for_a_program_is_pointed_to_open_app():
         launched.append(command)
         return "ok"
 
-    movie = call("execute", command=f'"{windows / "notepad.exe"}" "D:\\Downloads\\movie.mp4"')
+    movie = call("execute", command=f'"{player}" "D:\\Downloads\\movie.mp4"')
     a = assistant(movie, AIMessage("I'll use open_app, sir."), extra_tools=[execute])
     approval.decide = lambda action, model, threshold: ("run", "test")  # cleared to run - and still not run
     try:
         a.respond("play the movie")
     finally:
         approval.decide = real
+        if not WINDOWS:
+            apps.application_dirs = real_dirs
+            import shutil
+            shutil.rmtree(stand_ins, ignore_errors=True)
     refused = [m for m in a.messages if isinstance(m, ToolMessage)][0]
     assert launched == [] and refused.status == "error" and "Use open_app" in refused.content
 
@@ -475,6 +567,110 @@ def test_a_failed_turn_is_not_remembered():
                   "I'm afraid I've gone round in circles on that, sir"):
         assert chat.FAILED.search(reply), reply
     assert not chat.FAILED.search("I'm afraid the shop closes at nine, sir."), "polite, not a failure"
+
+
+def test_known_commands_are_reflexes():
+    # System 1: "Pause the music" took 3-4 s through Bonsai for a reply nobody heard. Each phrasing here is one the
+    # user really said (from nia.log), and Bonsai chose the same tool - except "what's playing?", where it skipped
+    from agent.reflexes import match
+    cases = {
+        "Pause the music": ("pause", {}), "Pause, Spotify, bro.": ("pause", {}),
+        "stop the music": ("pause", {}), "Resume the music please": ("resume", {}),
+        "Keep playing the music though.": ("resume", {}), "skip this song": ("skip", {"direction": "next"}),
+        "Just go to the next song": ("skip", {"direction": "next"}), "Next song on spotify": ("skip", {"direction": "next"}),
+        "Change it to next one please": ("skip", {"direction": "next"}),
+        "go back to the previous song": ("skip", {"direction": "previous"}),
+        "Put the volume to full bra.": ("set_volume", {"percent": 100}),
+        "Spotify volume to 70": ("set_volume", {"percent": 70}),
+        "Decrease the volume to 75.": ("set_volume", {"percent": 75}),
+        "Decrease the volume for Spotify to 75%.": ("set_volume", {"percent": 75}),
+        "Can you lower down the volume to 50?": ("set_volume", {"percent": 50}),
+        "Turn up the volume": ("change_volume", {"step": 10}),
+        "Decrease the volume on Spotify.": ("change_volume", {"step": -10}),
+        "Turn up your volume.": ("change_voice_volume", {"step": 25}), "speak up": ("change_voice_volume", {"step": 25}),
+        "You're too loud": ("change_voice_volume", {"step": -25}),
+        "Increase your volume to full": ("set_voice_volume", {"percent": 100}),
+        "what's playing?": ("now_playing", {}), "Can you tell me what's playing right now?": ("now_playing", {}),
+        "What's playing on Spotify right now?": ("now_playing", {}),
+    }
+    for said, expected in cases.items():
+        assert match(said) == expected, (said, match(said))
+    # Anything more, less sure, or not quite these goes to Bonsai: a second request, a "don't", a "later", a
+    # cut-off "and", another app, another target - a miss costs 3 s, a wrong match does the wrong thing
+    for said in ("Don't pause the music", "Pause the music in five minutes", "pause the music and play lofi",
+                 "Turn up your volume and", "Go to the next album", "Play on full volume", "skip the intro",
+                 "Decrease the volume of spotify 250", "What's playing on Libre Wolf right now?", "play",
+                 "Play whatever was playing before.", "what's your volume", "stop", "Nia", "",
+                 "Hey, it's not playing yet.", "Can you play whatever was playing on Spotify?", "set the volume"):
+        assert match(said) is None, (said, match(said))
+
+
+def test_a_reflex_needs_no_llm_and_bonsai_sees_it():
+    from langchain_core.tools import tool
+    from agent import chat
+    voice = []
+
+    @tool
+    def change_voice_volume(step: int) -> str:
+        """Her own voice"""
+        voice.append(step)
+        return f"Your voice volume is now {50 + step}%"
+
+    # No scripted replies before the third turn: any call to the LLM in the first two would fail the test
+    a = assistant(AIMessage("Playing it again, sir."), spotify=FakeSpotify(), extra_tools=[change_voice_volume])
+    a.llm.messages = iter([])
+    assert a.respond("Pause the music, bro") == "", "a minor action that worked says nothing"
+    assert a.respond("speak up") == "" and voice == [25]
+    assert a._spotify.calls == [("pause", ())]
+    # In the conversation as if Bonsai had done it - so "play it again" next still makes sense
+    kinds = [type(m).__name__ for m in a.messages]
+    assert kinds == ["HumanMessage", "AIMessage", "ToolMessage", "AIMessage"] * 2, kinds
+    assert a.messages[0].content.startswith("Pause the music, bro\n\n["), "with the time, like any request"
+    assert a.messages[1].tool_calls[0]["name"] == "pause"
+    assert "[Did: pause()]" in a.session[1]["content"], "and learned from, like any turn"
+    a.llm.messages = iter([AIMessage("Playing it again, sir.")])
+    assert a.respond("play it again, the one I paused") == "Playing it again, sir."
+    assert len(a.messages) == 10, "Bonsai's turn follows on from the reflexes"
+    # What's playing is a question: that's said
+    a = assistant(spotify=FakeSpotify())
+    a.llm.messages = iter([])
+    assert a.respond("what's playing?") == "did now_playing, sir."
+    assert chat.heard("Thunderstruck by AC/DC (paused)") == "Thunderstruck by AC/DC, sir - paused."
+    assert chat.heard("Nothing is playing right now") == "Nothing's playing right now, sir."
+    # Without her voice tools (a typed session), a voice command isn't a reflex: Bonsai answers
+    a = assistant(AIMessage("I can't change my voice here, sir."), spotify=FakeSpotify())
+    assert a.respond("speak up") == "I can't change my voice here, sir."
+
+
+def test_a_failed_reflex_goes_to_bonsai():
+    # System 2 checks System 1: if the tool fails, Bonsai takes over - it sees the error, so it can say so or fix it
+    import tempfile
+    from agent.memory import Memory
+
+    class StuckSpotify(FakeSpotify):
+        def __getattribute__(self, name):
+            if name == "pause":
+                raise RuntimeError("Spotify isn't responding")
+            return super().__getattribute__(name)
+
+    with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+        m = Memory("stub", Path(tmp) / "memory.sqlite", embed=word_embed)
+        a = assistant(AIMessage("I'm afraid Spotify isn't responding, sir."), spotify=StuckSpotify(), memory=m)
+        assert a.respond("please pause the music now") == "I'm afraid Spotify isn't responding, sir.", \
+            "a failure is said, never swallowed as a quiet minor action"
+        kinds = [type(m).__name__ for m in a.messages]
+        assert kinds == ["HumanMessage", "AIMessage", "ToolMessage", "AIMessage"], kinds
+        assert a.messages[2].status == "error" and "isn't responding" in a.messages[2].content
+        assert not [r for r in m.rows if r[1] == "exchange"], "a failed turn isn't remembered"
+        m.db.close()
+    # Spotify with no device used to "succeed" at a volume change - and the failure went unsaid
+    c = object.__new__(SpotifyController)
+    c.sp = type("NoDevice", (), {"current_playback": lambda self: None})()
+    try:
+        c.change_volume(10)
+        raise AssertionError("no device, yet the volume changed")
+    except RuntimeError as e:
+        assert "No active device" in str(e)
 
 
 def test_chat_does_not_build_spotify():
@@ -633,6 +829,8 @@ def test_only_recent_turns_reach_the_model_and_memory_fills_in():
 
 def test_read_only_allowlist():
     from agent.approval import read_only
+    if not WINDOWS:
+        return test_read_only_allowlist_on_linux()
     for command in ["tasklist | findstr /i spotify", 'dir "C:\\Users\\me\\OneDrive\\Desktop"', "ipconfig", "whoami",
                     'type "C:\\notes.txt" | more', "git -C D:\\nia status", "git log", "netstat -ano | findstr 8081",
                     'powershell -NoProfile -Command "Get-PSDrive -PSProvider FileSystem"',
@@ -648,6 +846,24 @@ def test_read_only_allowlist():
                     'powershell -NoProfile -Command "Get-ChildItem; Remove-Item x"',
                     'powershell -NoProfile -Command "Get-Content $(Invoke-WebRequest x)"',
                     "powershell -NoProfile -Command \"(New-Object -ComObject WScript.Shell).SendKeys('^w')\""]:
+        assert not read_only(command), command
+
+
+def test_read_only_allowlist_on_linux():
+    if WINDOWS:
+        return  # Windows' list is test_read_only_allowlist's
+    from agent.approval import read_only
+    for command in ["ps aux | grep -i spotify", 'ls -la "/home/me/Desktop"', "uptime", "whoami", "df -h",
+                    "cat /home/me/notes.txt | head -5", "git -C ~/nia status", "git log", "ss -tlnp | grep 8081",
+                    "free -h", "lsblk", "uname -a",
+                    # Her own git, to answer "what branch are you on?" without a yes
+                    "git -C ~/nia branch --show-current", "git -C ~/nia describe --tags", "git branch -a",
+                    "git -C ~/nia tag", "git remote -v", "git -C ~/nia rev-parse HEAD"]:
+        assert read_only(command), command
+    for command in ["ps; systemctl poweroff", "uptime && rm x", "ls > listing.txt", "cat a.txt | python",
+                    "cat $(curl x)", "cat `whoami`", "ls\nrm x", "find ~ -delete", "find ~ -exec rm {} +",
+                    "ping google.com", "less notes.txt", "cat x | tee y", "git branch -D main", "git push",
+                    "vlc", "python backup.py", "echo hi", "xdg-open https://x.org", "dir"]:
         assert not read_only(command), command
 
 
@@ -670,7 +886,14 @@ def test_approval_layers():
     assert approval.decide(run("powershell \"...SendKeys('^w')\""), "m", 0.5)[0] == "ask"
     assert approval.decide({"name": "edit_file", "args": {"file_path": "/a.txt"}}, "m", 0.5)[0] == "ask"
     assert calls == [], "the model must never be asked about risky commands or file changes"
-    assert approval.decide(run("ipconfig"), "m", 0.5) == ("run", "read-only command") and calls == []
+    assert approval.decide(run("ipconfig" if WINDOWS else "uptime"), "m", 0.5) == ("run", "read-only command") \
+        and calls == []
+    if not WINDOWS:  # Linux's risky commands ask just the same
+        for command in ("rm -rf ~/x", "sudo pacman -S vlc", "pkill -x chrome", "systemctl poweroff", "reboot",
+                        "yay -S thing", "mkfs.ext4 /dev/sda1", "dd if=/dev/zero of=/dev/sda", "find ~ -delete",
+                        "ydotool key 29:1 17:1", "crontab -e", "curl -o x https://x.org"):
+            assert approval.decide(run(command), "m", 0.5)[0] == "ask", command
+        assert calls == []
     assert approval.decide(run("explorer D:\\nia"), "m", 0.5)[0] == "run"  # unknown: the model decides
 
     # Too small to ask: a new folder or a new file in your own folders (a real session asked "I'll run mkdir.
@@ -679,6 +902,8 @@ def test_approval_layers():
     from pathlib import Path
     home = Path.home()
     new_file = lambda path: approval.decide({"name": "write_file", "args": {"file_path": path}}, "m", 0.5)[0]
+    if not WINDOWS:
+        return linux_paths_ask_or_not(approval, run, new_file, model_says, calls)
     for path in ("/c/Users/x/../" + home.name + "/Documents/nia-tools/new_idea_42.py", "Desktop/shopping_42.txt",
                  "/d/projects/notes_42.txt"):
         assert new_file(path) == "run", path
@@ -711,6 +936,44 @@ def test_approval_layers():
     assert a.respond("is spotify running?") == "Spotify isn't running, sir." and a.pending is None
     approval.hazards = model_says(0.9)
     a = assistant(call("execute", command="explorer D:\\nia"), AIMessage("Opened it, sir."), approval_model="m")
+    assert "Should I go ahead?" in a.respond("open the nia folder") and a.pending
+
+
+def linux_paths_ask_or_not(approval, run, new_file, model_says, calls):
+    """test_approval_layers' file and folder checks, with Linux paths"""
+    import tempfile
+    from pathlib import Path
+    home = Path.home()
+    for path in (f"{home}/x/../Documents/nia-tools/new_idea_42.py", "Desktop/shopping_42.txt",
+                 "~/notes_42.txt", "/run/media/me/Transcend/notes_42.txt", "/mnt/backup/notes_42.txt"):
+        assert new_file(path) == "run", path
+    with tempfile.NamedTemporaryFile(dir=home, suffix=".txt", delete=False) as existing:
+        pass
+    try:
+        assert new_file(existing.name) == "ask", "overwriting an existing file asks"
+    finally:
+        Path(existing.name).unlink()
+    own = approval.NIA_ROOT
+    for path in (f"{home}/.config/autostart/x.desktop", "/etc/x.conf", "/usr/bin/x", ".ssh/authorized_keys",
+                 "/tmp/x.txt", "~/.bashrc", str(own / "agent" / "new_tool.py"),
+                 str(own.parent / "nia-changes" / "x" / "y.py"), str(own / ".." / own.name / "agent" / "sneaky.py")):
+        assert new_file(path) == "ask", path
+    assert approval.decide(run(f"mkdir -p {home}/Documents/nia-tools 2>&1 && echo created"), "m", 0.5) == \
+        ("run", "a new folder in your folders")
+    assert approval.decide(run('mkdir "/run/media/me/Transcend/new projects"'), "m", 0.5)[0] == "run"
+    for command in ("mkdir /etc/x", "mkdir ~/.config/y", "mkdir ~/x && rm ~/y", "mkdir ~/x; reboot"):
+        assert approval.decide(run(command), None, 0.5)[0] == "ask", command
+    approval.hazards = model_says(0.9)
+    assert approval.decide(run("touch ~/nia-notes-42.txt"), "m", 0.5)[0] == "ask"
+    approval.hazards = model_says(None)  # Ollama down
+    assert approval.decide(run("touch ~/nia-notes-42.txt"), "m", 0.5) == ("ask", "decision model unavailable")
+    assert approval.decide(run("touch ~/nia-notes-42.txt"), "", 0.5) == ("ask", "no decision model set")
+
+    # In the agent: a cleared command runs with no question; an uncleared one is asked about
+    a = assistant(call("execute", command="ps aux"), AIMessage("Spotify isn't running, sir."))
+    assert a.respond("is spotify running?") == "Spotify isn't running, sir." and a.pending is None
+    approval.hazards = model_says(0.9)
+    a = assistant(call("execute", command="touch ~/nia-notes-42.txt"), AIMessage("Opened it, sir."), approval_model="m")
     assert "Should I go ahead?" in a.respond("open the nia folder") and a.pending
 
 
@@ -985,7 +1248,7 @@ def test_play_something_opens_spotify_and_picks_from_preferences():
     import settings
     from agent import action_controller
     launched = []
-    action_controller.os.startfile = launched.append
+    action_controller.start_spotify = lambda: launched.append("spotify:")  # never launch the real app
 
     class StubAPI:
         """Spotify with no app running until it's launched; then the laptop shows up and plays"""
@@ -1024,7 +1287,7 @@ def test_spotify_is_given_time_and_one_restart_before_she_says_anything():
     # wasn't responding and offered a restart. Now it gets ~15 s, then this PC's app is restarted once, unasked
     from agent import action_controller
     launched = []
-    action_controller.os.startfile = launched.append
+    action_controller.start_spotify = lambda: launched.append("spotify:")  # never launch the real app
 
     class SlowToPlay:
         """Only a phone is listed until the PC app is launched; playback starts on look number `plays_at`"""
@@ -1259,8 +1522,13 @@ def test_ask_claude_is_safe_and_reports_back():
     from agent import claude
     from agent.approval import risks
 
-    # Always the same locked-down call: web search and fetch only, anything else refused, nothing carried over
-    cmd = claude.command("Who won the last Grand Prix?", "sonnet")
+    # Always the same locked-down call: web search and fetch only, anything else refused, nothing carried over. With
+    # a stand-in program: these are the flags NIA passes, installed or not (CI has no Claude Code)
+    real_exe, claude.executable = claude.executable, lambda: "claude"
+    try:
+        cmd, no_model = claude.command("Who won the last Grand Prix?", "sonnet"), claude.command("q", "")
+    finally:
+        claude.executable = real_exe
     assert cmd[cmd.index("--effort") + 1] == "low", "low effort: 17 s instead of 46 s for the same answer"
     assert "Always browse first" in cmd[2], "never an answer from memory alone"
     assert cmd[cmd.index("--output-format") + 1] == "stream-json" and "--verbose" in cmd
@@ -1268,7 +1536,7 @@ def test_ask_claude_is_safe_and_reports_back():
         assert flag in cmd, flag
     assert cmd[cmd.index("--tools") + 1] == "WebSearch,WebFetch" and cmd[cmd.index("--permission-mode") + 1] == "dontAsk"
     assert not any("dangerously" in part or "bypass" in part for part in cmd)
-    assert cmd[-2:] == ["--model", "sonnet"] and "--model" not in claude.command("q", "")
+    assert cmd[-2:] == ["--model", "sonnet"] and "--model" not in no_model
     real_env = dict(claude.os.environ)
     claude.os.environ.update({"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "parent"})
     try:
@@ -1351,8 +1619,13 @@ def test_changes_to_herself_go_to_a_branch_and_only_if_tests_pass():
     from pathlib import Path
     from agent import claude
 
-    # Claude may only edit inside its checkout, never the safety files, and run nothing but the tests
-    cmd = claude.build_command("add a joke tool")
+    # Claude may only edit inside its checkout, never the safety files, and run nothing but the tests (a stand-in
+    # program, as in test_ask_claude: these are the flags NIA passes, installed or not)
+    real_exe, claude.executable = claude.executable, lambda: "claude"
+    try:
+        cmd = claude.build_command("add a joke tool")
+    finally:
+        claude.executable = real_exe
     assert cmd[cmd.index("--permission-mode") + 1] == "dontAsk" and "--restricted" in cmd
     shells = [c for c in cmd if c.startswith(("Bash(", "PowerShell("))]  # PowerShell is the shell on Windows
     assert len(shells) == 6 and all(c.endswith((" tests/test_agent.py)", " tests/test_voice.py)", " tests/test_nia.py)")) for c in shells)
@@ -1422,7 +1695,9 @@ def test_changes_to_herself_go_to_a_branch_and_only_if_tests_pass():
     real_improve = claude.improve
     claude.improve = lambda request, root=None: started.append(request) or "Started: on a branch"
     try:
-        a = assistant(call("improve_myself", request="integrate Discord"), AIMessage("It's under way, sir."))
+        # NIA offers the tool only where Claude Code is installed (not on CI): handed over here either way
+        a = assistant(call("improve_myself", request="integrate Discord"), AIMessage("It's under way, sir."),
+                      extra_tools=[] if claude.TOOLS else [claude.improve_myself])
         question = a.respond("ask Claude to integrate Discord into you")
         assert "have Claude integrate Discord, on a new branch for you to review" in question
         # A long, detailed request is read back as its first clause, not in full
@@ -1480,7 +1755,7 @@ def test_restart_spotify_only_touches_spotify():
     from agent import action_controller
     killed, launched = [], []
     action_controller.subprocess.run = lambda cmd, **kw: killed.append(cmd)
-    action_controller.os.startfile = launched.append
+    action_controller.start_spotify = lambda: launched.append("spotify:")  # never launch the real app
 
     class StubAPI:
         def devices(self):  # the app is gone until it's relaunched
@@ -1489,14 +1764,15 @@ def test_restart_spotify_only_touches_spotify():
     c = object.__new__(SpotifyController)  # skip OAuth
     c.sp = StubAPI()
     assert "back online" in c.restart_app()
-    assert killed == [["taskkill", "/F", "/IM", "Spotify.exe"], ["taskkill", "/F", "/IM", "SpotifyLauncher.exe"]]
+    assert killed == ([["taskkill", "/F", "/IM", "Spotify.exe"], ["taskkill", "/F", "/IM", "SpotifyLauncher.exe"]]
+                      if WINDOWS else [["pkill", "-KILL", "-x", "spotify"]])
     assert launched == ["spotify:"]
 
 
 @without_waiting
 def test_playback_wakes_an_idle_device_and_checks_it_started():
     from agent import action_controller
-    action_controller.os.startfile = lambda uri: None  # never launch the real app
+    action_controller.start_spotify = lambda: None  # never launch the real app
 
     class StubAPI:
         def __init__(self, devices, plays=True):

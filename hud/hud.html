@@ -152,7 +152,7 @@
   .switch[aria-checked="true"] .knob { left: 18px; background: var(--bg); }
   .field { display: flex; flex-direction: column; gap: 4px; }
   .field label { font-size: 11px; color: var(--sub); }
-  .field input, .field select, .paste { height: 32px; box-sizing: border-box; padding: 0 4px; background: transparent; border: none;
+  .field input, .field select { height: 32px; box-sizing: border-box; padding: 0 4px; background: transparent; border: none;
             border-bottom: 1px solid color-mix(in srgb, var(--main) 25%, transparent); color: var(--text); font-family: var(--mono); font-size: 12px; width: 100%; }
   .field select option { background: var(--bg); color: var(--text); }
   .fields { display: flex; flex-direction: column; gap: 12px; }
@@ -268,11 +268,6 @@
     <div class="group">
       <span class="caption">SPOTIFY</span>
       <div class="actions"><button type="button" class="text-btn" id="spotifyLogin">LOG IN TO SPOTIFY</button></div>
-      <div id="spotifyPaste" hidden class="group" style="gap: 8px">
-        <label class="note" for="pasteUrl">Approve NIA in the browser tab that opened, then paste the address it lands on here.</label>
-        <input class="paste" id="pasteUrl" type="text" autocomplete="off" placeholder="https://…?code=…">
-        <div class="actions"><button type="button" class="text-btn" id="spotifyConnect">CONNECT</button></div>
-      </div>
       <span class="note" id="spotifyNote" role="status"></span>
     </div>
     <div class="group">
@@ -576,6 +571,10 @@ events.onmessage = (e) => {
   const m = JSON.parse(e.data);
   if (m.config) { config = { ...config, ...m.config }; applyTheme(config.theme); renderToggles(); }
   if ('server' in m) server = m.server;
+  if (m.spotify) {  // the browser came back from Spotify
+    $('spotifyNote').classList.toggle('error', m.spotify !== 'ok');
+    $('spotifyNote').textContent = m.spotify === 'ok' ? 'Logged in to Spotify.' : m.spotify;
+  }
   if ('error' in m) error = m.error;
   if ('you' in m) { you = m.you; tool = null; partial = ''; nia = ''; plan = []; }
   if (m.plan) plan = m.plan;
@@ -644,14 +643,14 @@ const micPick = $('micPick'), micMenu = $('micMenu');
 function showMic() {
   const name = micInUse ?? config.mic_device;
   $('micName').textContent = micLabel(name);
-  micPick.title = `Microphone: ${name || 'Windows default'}`;
+  micPick.title = `Microphone: ${name || 'System default'}`;
 }
 async function openMicMenu(open) {
   micMenu.hidden = !open;
   micPick.setAttribute('aria-expanded', String(open));
   if (!open) return;
   const { mics, current } = await (await fetch('/mics')).json();
-  micMenu.innerHTML = '<span class="caption">MICROPHONE</span>' + [['', 'Windows default'], ...mics.map((m) => [m, m])]
+  micMenu.innerHTML = '<span class="caption">MICROPHONE</span>' + [['', 'System default'], ...mics.map((m) => [m, m])]
     .map(([value, label]) => `<button type="button" class="mic-option" role="menuitemradio" data-mic="${esc(value)}"
         aria-checked="${value === current}"><span class="dot"></span>${esc(label)}</button>`).join('');
   (micMenu.querySelector('[aria-checked="true"]') || micMenu.querySelector('.mic-option')).focus();
@@ -731,7 +730,7 @@ async function loadForm() {
         if (kind === 'check') return switchHtml(key, esc(label), '', !!v).replace('class="switch"', 'class="switch field-switch"');
         const input = kind === 'voice' ? `<select id="${id}" name="${key}">${options(voices, v)}</select>`
           : kind === 'stt' ? `<select id="${id}" name="${key}">${options(stt_models, v)}</select>`
-          : kind === 'mic' ? `<select id="${id}" name="${key}"><option value="">Windows default</option>${
+          : kind === 'mic' ? `<select id="${id}" name="${key}"><option value="">System default</option>${
               (mics.includes(v) || !v ? mics : [...mics, v]).map((m) =>
                 `<option value="${esc(m)}"${m === v ? ' selected' : ''}>${esc(m)}</option>`).join('')}</select>`
           : `<input id="${id}" name="${key}" type="text" inputmode="${kind === 'number' ? 'decimal' : 'text'}" value="${esc(v)}" autocomplete="off">`;
@@ -763,17 +762,12 @@ $('form').addEventListener('submit', async (e) => {
 
 $('serverRestart').addEventListener('click', () => post('/server/restart'));
 $('spotifyLogin').addEventListener('click', async () => {
-  await post('/spotify/login');
-  $('spotifyPaste').hidden = false;
-  $('spotifyNote').textContent = '';
-  $('pasteUrl').focus();
-});
-$('spotifyConnect').addEventListener('click', async () => {
-  const res = await post('/spotify/code', { url: $('pasteUrl').value });
   const note = $('spotifyNote');
-  note.classList.toggle('error', !res.ok);
-  note.textContent = res.ok ? 'Logged in to Spotify.' : (await res.json()).error;
-  if (res.ok) { $('spotifyPaste').hidden = true; $('pasteUrl').value = ''; }
+  const res = await post('/spotify/login').catch(() => null);
+  note.classList.toggle('error', !(res && res.ok));
+  note.textContent = res && res.ok ? 'Approve NIA in the browser tab that opened - she finishes the login herself.'
+    // e.g. no Spotify app in .env: say so, rather than a button that seems to do nothing
+    : res ? (await res.json().catch(() => ({}))).error || 'Spotify login failed.' : 'NIA isn\'t answering.';
 });
 
 applyTheme('cyan');

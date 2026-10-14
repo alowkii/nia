@@ -4,6 +4,7 @@ import urllib.request
 from pathlib import Path
 
 import settings
+from utils.system import EXE
 
 # Server output also goes here, so it survives the server's console window closing (or never having one)
 SERVER_LOG = Path(__file__).resolve().parent.parent / "logs" / "llama-server.log"
@@ -14,7 +15,7 @@ def llm_server_command(s=None):
     s = s or settings.load()
     bonsai = Path(s["bonsai_dir"])
     SERVER_LOG.parent.mkdir(exist_ok=True)
-    return [str(bonsai / "llama-prism" / "llama-server.exe"), "-m", str(bonsai / s["model_file"]),
+    return [str(bonsai / "llama-prism" / f"llama-server{EXE}"), "-m", str(bonsai / s["model_file"]),
             "-ngl", "99", "-fa", "on", "-c", str(s["context"]), "-np", "1",
             "--reasoning", "on" if s["thinking"] else "off",
             "--temp", str(s["temperature"]), "--top-p", str(s["top_p"]), "--top-k", str(s["top_k"]),

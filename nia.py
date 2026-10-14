@@ -5,10 +5,13 @@ Opens the HUD (hud/hud.html) in NIA's own window and runs everything behind it, 
 shows what NIA is doing, takes typed commands, and holds every setting. Closing it shuts everything down.
 Starting it again while NIA runs just opens another window onto her.
 """
+import html
 import json
 import os
 import queue
 import secrets
+import shutil
+import signal
 import subprocess
 import sys
 import threading
@@ -25,14 +28,14 @@ import settings
 from agent.server import llm_server_command, llm_up
 from utils import mics
 from utils.logger import LOG_DIR, logging
+from utils.system import DETACHED, EXE, HIDDEN, WINDOWS, console_python
 
 logger = logging.getLogger("nia")
 
 ROOT = Path(__file__).resolve().parent
 PAGE = ROOT / "hud" / "hud.html"
 PORT = 8765  # 8080 is httpd's, 8081 the LLM server's
-HIDDEN = subprocess.CREATE_NO_WINDOW
-PYTHON = str(Path(sys.executable).with_name("python.exe"))  # pythonw has no stdout for the child to log to
+PYTHON = console_python()  # pythonw has no stdout for the child to log to
 
 # The settings panel: (section, [(key, label, kind)]); kind is text | number | check | voice | stt
 FIELDS = [
@@ -109,18 +112,18 @@ class Hub:
 
     def send(self, **message):
         with self.lock:
-            self.latest.update({k: v for k, v in message.items() if k not in ("envelope", "fps", "partial")})
+            self.latest.update({k: v for k, v in message.items() if k not in ("envelope", "fps", "partial", "spotify")})
             for page in self.pages:
                 page.put(message)
 
 
 def bonsai_servers():
-    """NIA's llama-server processes, answering or not - by their path, since Ollama runs its own llama-server.exe"""
+    """NIA's llama-server processes, answering or not - by their path, since Ollama runs its own llama-server"""
     exe = Path(llm_server_command()[0]).resolve()
     found = []
     for proc in psutil.process_iter(["name", "exe"]):
         try:
-            if proc.info["name"] == "llama-server.exe" and proc.info["exe"] and Path(proc.info["exe"]).resolve() == exe:
+            if proc.info["name"] == f"llama-server{EXE}" and proc.info["exe"] and Path(proc.info["exe"]).resolve() == exe:
                 found.append(proc)
         except (psutil.Error, OSError):
             pass
@@ -148,7 +151,11 @@ def leftovers():
     after a crash or a closed console. Never one with a living parent, such as a python main.py run by hand"""
     def orphan(proc):
         parent = proc.parent()
-        return parent is None or parent.create_time() > proc.create_time()  # its pid reused by something newer
+        if parent is None or parent.create_time() > proc.create_time():  # its pid reused by something newer
+            return True
+        # Linux hands an orphan to init, or to the session's "subreaper" (systemd --user), instead of leaving it
+        # parentless
+        return not WINDOWS and (parent.pid == 1 or parent.name() == "systemd")
     found, servers = [], {proc.pid for proc in bonsai_servers()}
     for proc in psutil.process_iter(["name", "cmdline", "cwd"]):
         try:
@@ -165,11 +172,52 @@ def leftovers():
 JOBS = []  # kept for as long as nia.py runs: when Windows closes a job, it ends what's in it; also the console handler
 
 
+def _die_with_parent(prctl):
+    """In the child, before it runs (Linux): the kernel sends it SIGTERM when the thread that started it ends. prctl
+    is looked up beforehand - importing in a child forked from a threaded process can deadlock"""
+    return lambda: prctl(1, signal.SIGTERM)  # 1: PR_SET_PDEATHSIG
+
+
+SPAWNS = queue.Queue()
+SPAWNER = {"thread": None, "lock": threading.Lock()}
+
+
+def _spawner():
+    """Linux: starts every process tied to nia.py, from this one thread - which lives as long as nia.py does. The
+    kernel's "parent died" signal is sent when the *thread* that started a child ends, so a server (re)started from
+    a short-lived thread (a settings save) would have been killed as soon as that thread was done"""
+    import ctypes
+    tie = _die_with_parent(ctypes.CDLL(None, use_errno=True).prctl)
+    while True:
+        args, kwargs, reply = SPAWNS.get()
+        try:
+            reply.put(subprocess.Popen(*args, preexec_fn=tie, **kwargs))
+        except Exception as e:
+            reply.put(e)
+
+
+def popen_bound(*args, **kwargs):
+    """subprocess.Popen, for a process that must end when nia.py ends, however that happens - Ctrl+C, a closed
+    console, a crash, Task Manager, kill -9. A model server holding ~6 GB of GPU memory was left running after a
+    Ctrl+C cut a shutdown short. Windows: a job object; Linux: the kernel's parent-death signal"""
+    if WINDOWS:
+        proc = subprocess.Popen(*args, **kwargs)
+        bound_to_me(proc)
+        return proc
+    with SPAWNER["lock"]:
+        if SPAWNER["thread"] is None:
+            SPAWNER["thread"] = threading.Thread(target=_spawner, daemon=True, name="spawner")
+            SPAWNER["thread"].start()
+    reply = queue.Queue()
+    SPAWNS.put((args, kwargs, reply))
+    proc = reply.get()
+    if isinstance(proc, Exception):
+        raise proc
+    return proc
+
+
 def bound_to_me(proc):
-    """Windows ends proc when nia.py ends, however that happens - Ctrl+C, a closed console, a crash, Task Manager.
-    A model server holding ~6 GB of GPU memory was left running after a Ctrl+C cut a shutdown short"""
-    if os.name != "nt":
-        return
+    """Windows ends proc when nia.py ends: proc goes in a job object that closes with nia.py"""
     import ctypes
     from ctypes import wintypes
 
@@ -207,10 +255,13 @@ def ensure_ollama():
         return
     except OSError:
         pass
-    app = Path(os.getenv("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama app.exe"
-    if app.exists():
+    app = Path(os.getenv("LOCALAPPDATA", "")) / "Programs" / "Ollama" / "ollama app.exe" if WINDOWS else None
+    if app and app.exists():
         logger.info("Starting Ollama (memory and auto-approval need it)")
-        subprocess.Popen([str(app)], creationflags=HIDDEN)
+        subprocess.Popen([str(app)], **HIDDEN)
+    elif not WINDOWS and (ollama := shutil.which("ollama")):  # its server, left running for next time as on Windows
+        logger.info("Starting Ollama (memory and auto-approval need it)")
+        subprocess.Popen([ollama, "serve"], **DETACHED)
     else:
         logger.warning("Ollama isn't running or installed - no memory, and every PC command will ask first")
 
@@ -232,9 +283,8 @@ class Server:
             threading.Thread(target=self._wait, args=(None, s["port"]), daemon=True).start()
             return
         logger.info(f"Starting LLM server: {' '.join(llm_server_command(s))}")
-        self.proc = subprocess.Popen(llm_server_command(s), creationflags=HIDDEN,
-                                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # it logs to its own file
-        bound_to_me(self.proc)
+        self.proc = popen_bound(llm_server_command(s), **HIDDEN,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)  # it logs to its own file
         threading.Thread(target=self._wait, args=(self.proc, s["port"]), daemon=True).start()
 
     def _wait(self, proc, port, timeout=180):
@@ -286,7 +336,7 @@ class Assistant:
                "PYTHONIOENCODING": "utf-8"}  # its log file, not Windows' old code page ("—" came out as "�")
         console = open(LOG_DIR / "assistant.out.log", "ab")  # native crashes print here, not to nia.log
         self.stopping = False
-        self.proc = subprocess.Popen([PYTHON, "main.py"], cwd=ROOT, env=env, creationflags=HIDDEN,
+        self.proc = subprocess.Popen([PYTHON, "main.py"], cwd=ROOT, env=env, **HIDDEN,
                                      stdin=subprocess.DEVNULL, stdout=console, stderr=subprocess.STDOUT)
         console.close()
         self.hub.send(state="booting", error=None)
@@ -366,6 +416,49 @@ def apply(changed, values, assistant, server, hub):
     return restarting
 
 
+LOGIN_PAGE = ROOT / "hud" / "spotify.html"
+
+
+def spotify_account(login):
+    """The Spotify account a fresh login belongs to, by name - for the page to show - or None"""
+    try:
+        import spotipy
+        me = spotipy.Spotify(auth_manager=login, requests_timeout=5).current_user()
+        return me.get("display_name") or me.get("id")
+    except Exception:  # the login worked; a name is only a nicety
+        return None
+
+
+def login_page(ok, why="", account=None):
+    """The tab Spotify sends the browser back to: hud/spotify.html, in NIA's look and the theme picked in her
+    settings - what happened, and what to do next"""
+    s = settings.load()
+    if ok:
+        name = s["wake_phrase"].split()[-1].title()  # "Nia"
+        rows = ([("SIGNED IN AS", account)] if account else []) + \
+            [("TRY SAYING", f"\u201cHey {name}, play some lofi\u201d")]
+    else:
+        rows = [("WHAT HAPPENED", why[:1].upper() + why[1:] + "."),
+                ("NEXT", "Open NIA's settings (the gear) and press Log in to Spotify again.")]
+    values = {
+        "state": "ok" if ok else "error", "theme": s["hud_theme"],
+        "chip": "SPOTIFY \u00b7 CONNECTED" if ok else "SPOTIFY \u00b7 NOT CONNECTED",
+        "caption": "LOGIN COMPLETE" if ok else "LOGIN FAILED",
+        "title": "Spotify is connected" if ok else "Spotify login didn't finish",
+        "message": "NIA can play your music now - on this PC, or on any device signed in to your Spotify." if ok
+                   else "NIA couldn't finish logging in to Spotify, so music won't play yet.",
+    }
+    page = LOGIN_PAGE.read_text(encoding="utf-8")
+    for key, value in values.items():
+        page = page.replace("{{%s}}" % key, html.escape(value))
+    cells = "".join(f'<div class="row"><dt>{html.escape(label)}</dt><dd{" class=say" if label == "TRY SAYING" else ""}>'
+                    f"{html.escape(value)}</dd></div>" for label, value in rows)
+    return page.replace("{{rows}}", cells)
+
+
+SPOTIFY_LOGIN = {"state": None}  # the one login started from the panel, until Spotify sends the browser back
+
+
 def handler(hub, assistant, server, done):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):  # requests aren't worth a log line
@@ -391,10 +484,38 @@ def handler(hub, assistant, server, done):
                                             "current": settings.load()["mic_device"]}).encode())
             elif self.path == "/events":
                 self.events()
+            elif self.path.startswith("/spotify/callback"):
+                self.spotify_callback()
             elif file := logo_file(self.path):  # the logo, favicon and app icons
                 self.reply(200, file.read_bytes(), LOGO_TYPES[file.suffix])
             else:
                 self.reply(404)
+
+        def spotify_callback(self):
+            """Spotify sends the browser here after the login is approved: the code is traded for NIA's token. Only
+            for a login started from her panel - the one-use state must match - so no web page can sign her in to
+            an account of its choosing"""
+            from urllib.parse import parse_qs, urlsplit
+            query = {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
+            expected, SPOTIFY_LOGIN["state"] = SPOTIFY_LOGIN["state"], None
+            account = None
+            if not expected or not secrets.compare_digest(query.get("state", ""), expected):
+                ok, why = False, "this login wasn't started from NIA's settings panel"
+            elif "error" in query:
+                ok, why = False, f"Spotify said {query['error'].replace('_', ' ')}"
+            else:
+                from agent.action_controller import oauth
+                try:
+                    login = oauth()
+                    login.get_access_token(query.get("code", ""), as_dict=False, check_cache=False)
+                    ok, why = True, ""
+                    account = spotify_account(login)
+                except Exception as e:
+                    ok, why = False, f"Spotify didn't accept it ({e})"
+            logger.info(f"Logged in to Spotify{f' as {account}' if account else ''}" if ok
+                        else f"Spotify login failed: {why}")
+            hub.send(spotify="ok" if ok else f"Spotify login failed: {why}")
+            self.reply(200 if ok else 400, login_page(ok, why, account).encode(), "text/html; charset=utf-8")
 
         def events(self):
             self.send_response(200)
@@ -449,20 +570,18 @@ def handler(hub, assistant, server, done):
                 threading.Thread(target=server.restart, daemon=True).start()
             elif self.path == "/spotify/login":
                 from agent.action_controller import oauth
-                url = oauth().get_authorize_url()
+                SPOTIFY_LOGIN["state"] = secrets.token_urlsafe(16)
+                try:
+                    url = oauth().get_authorize_url(state=SPOTIFY_LOGIN["state"])
+                except Exception as e:  # no Spotify app in .env: the button seemed to do nothing at all
+                    why = ("No Spotify app set up: put SPOTIFY_ID and SPOTIFY_SECRET in .env (see the README)"
+                           if "client_id" in str(e) or "client_secret" in str(e) else f"Spotify login couldn't start: {e}")
+                    logger.warning(f"{why} ({e})")
+                    self.reply(400, json.dumps({"error": why}).encode())
+                    return
                 webbrowser.open(url)
                 self.reply(200, json.dumps({"url": url}).encode())
                 return
-            elif self.path == "/spotify/code":
-                from agent.action_controller import oauth
-                try:
-                    login = oauth()
-                    login.get_access_token(login.parse_response_code(str(body.get("url", "")).strip()),
-                                           as_dict=False, check_cache=False)
-                except Exception as e:  # a wrong or stale address: say so in the panel
-                    self.reply(400, json.dumps({"error": f"Spotify didn't accept that: {e}"}).encode())
-                    return
-                logger.info("Logged in to Spotify")
             elif self.path == "/quit":
                 done.set()
             else:
@@ -475,19 +594,45 @@ def handler(hub, assistant, server, done):
 
 class HudServer(ThreadingHTTPServer):
     daemon_threads = True
-    allow_reuse_address = False  # on Windows it would let a second NIA bind the same port instead of failing
+    # On Windows it would let a second NIA bind the same port instead of failing; on Linux it only lets a rebooted NIA
+    # bind the port while the old one's closed connections linger (a second listener still fails)
+    allow_reuse_address = not WINDOWS
 
 
 # Her own taskbar button and pin - NIA's name and icon, not Python's or Edge's: the window carries this app ID, and so
 # does a Start-menu shortcut with her icon and how to start her, which is what Windows shows and pins
 APP_ID = "NIA.Assistant"
-ICON = LOGO / "nia.ico"  # her app icon, 16-256 px: the Start menu and a high-DPI taskbar want the large sizes
+# Her app icon: 16-256 px on Windows, where the Start menu and a high-DPI taskbar want the large sizes; a PNG on Linux
+ICON = LOGO / "nia.ico" if WINDOWS else LOGO / "png" / "nia-app-icon-512.png"
 SHORTCUT = Path(os.getenv("APPDATA", "")) / "Microsoft" / "Windows" / "Start Menu" / "Programs" / "NIA.lnk"
+# Linux: her launcher entry. Its name is her window's app ID ("nia"), which is how the desktop matches a window to
+# the entry's name and icon
+DESKTOP_ENTRY = Path(os.getenv("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "applications" / "nia.desktop"
+
+
+def desktop_entry():
+    """Linux: NIA in the app launcher, with her icon and how to start her - (re)written each start, so it follows the
+    folder if it moves. Her window gets the matching app ID, so the bar and window switcher show her as NIA"""
+    from gi.repository import GLib
+    GLib.set_prgname("nia")  # the window's app ID on Wayland (its class on X11)
+    GLib.set_application_name("NIA")
+    entry = (f"[Desktop Entry]\nType=Application\nName=NIA\nGenericName=Voice assistant\n"
+             f"Comment=NIA - Next-gen Intelligence Agent\nExec=\"{sys.executable}\" \"{ROOT / 'nia.py'}\"\nPath={ROOT}\n"
+             f"Icon={ICON}\nTerminal=false\nCategories=Utility;\nStartupWMClass=nia\n")
+    try:
+        DESKTOP_ENTRY.parent.mkdir(parents=True, exist_ok=True)
+        if not DESKTOP_ENTRY.exists() or DESKTOP_ENTRY.read_text() != entry:
+            DESKTOP_ENTRY.write_text(entry)
+    except OSError as e:  # a missing entry costs only the launcher's icon
+        logger.warning(f"Couldn't make the launcher entry ({e!r}) - the window still works")
 
 
 def taskbar_identity():
     """This process's windows are NIA's, and the Start-menu shortcut that pins them is (re)made - kept pointing at
-    wherever this copy of NIA lives"""
+    wherever this copy of NIA lives. On Linux, the launcher entry instead"""
+    if not WINDOWS:
+        desktop_entry()
+        return
     import ctypes
     ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_ID)
     try:
@@ -510,7 +655,7 @@ def taskbar_identity():
         staged = LOG_DIR / "NIA.lnk"
         link.QueryInterface(pythoncom.IID_IPersistFile).Save(str(staged), 0)
         copied = subprocess.run(["cmd", "/c", "copy", "/y", str(staged), str(SHORTCUT)], capture_output=True,
-                                text=True, creationflags=HIDDEN)
+                                text=True, **HIDDEN)
         staged.unlink(missing_ok=True)
         if copied.returncode:
             raise OSError(copied.stdout.strip() or copied.stderr.strip())
@@ -538,22 +683,38 @@ def own_button(window):
 
 
 def make_window(url):
-    """hud.html in NIA's own window - the same Edge engine (WebView2, part of Windows) without Edge's window"""
+    """hud.html in NIA's own window - the same Edge engine (WebView2, part of Windows) without Edge's window; on Linux,
+    WebKitGTK"""
+    if not WINDOWS and Path("/proc/driver/nvidia").exists():
+        # WebKitGTK's DMA-BUF renderer on NVIDIA's driver under Wayland: "Error 71 (Protocol error) dispatching to
+        # Wayland display", and GTK ended nia.py - window, assistant and server - a second after it opened
+        os.environ.setdefault("WEBKIT_DISABLE_DMABUF_RENDERER", "1")
     import webview
     window = webview.create_window("NIA", url, maximized=True, background_color="#03070A", min_size=(960, 600))
-    window.events.shown += lambda: own_button(window)
+    if WINDOWS:
+        window.events.shown += lambda: own_button(window)
     return window
 
 
 def show_windows():
     """Until every window is closed - on this thread, which must be the main one"""
     import webview
-    webview.start(icon=str(ICON))
+    webview.start(icon=str(ICON), **({} if WINDOWS else {"gui": "gtk"}))
 
 
 def on_console_close(done, stopped):
     """Ctrl+C, or the console window closed: shut down properly. Python's own Ctrl+C never fires while the window's
-    loop runs in .NET; and a closed console ends the process ~5 s after this returns, so wait for the shutdown"""
+    loop runs in .NET; and a closed console ends the process ~5 s after this returns, so wait for the shutdown.
+    On Linux: Ctrl+C, a closed terminal (SIGHUP) or a polite kill (SIGTERM) - the shutdown then runs as the window's
+    loop ends, so there's nothing to wait for here"""
+    if not WINDOWS:
+        def handle(signum, frame):
+            logger.info("Stopping (Ctrl+C)" if signum == signal.SIGINT else
+                        f"Stopping ({signal.Signals(signum).name})")
+            done.set()
+        for signum in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+            signal.signal(signum, handle)
+        return
     import ctypes
     from ctypes import wintypes
 

@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{{title}} · NIA</title>
+<link rel="icon" href="/logo/svg/nia-favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<!-- Where Spotify sends the browser after a login from NIA's settings panel (nia.py fills in the {{...}}). Her window's
+     look - its fonts, and the colours of the theme picked in her settings - so the tab reads as part of NIA -->
+<style>
+  :root { --bg: #03070A; --main: #5FE3FF; --text: #D7F6FF; --sub: #9CC2D1; --muted: #6F95A6; --off: #3E5966;
+          --ok: #7CF5C4; --bad: #FF5A4E; --c: var(--ok);
+          --display: Rajdhani, Bahnschrift, "Segoe UI", sans-serif;
+          --mono: "JetBrains Mono", "Cascadia Mono", Consolas, ui-monospace, monospace; }
+  [data-state="error"] { --c: var(--bad); }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); font-family: var(--mono); }
+  body { display: flex; flex-direction: column; min-height: 100vh; padding: 28px 40px;
+         background: radial-gradient(ellipse 60% 50% at 50% 42%, color-mix(in srgb, var(--c) 9%, transparent), transparent 70%),
+                     var(--bg); }
+
+  header { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+  .brand svg { height: 22px; width: auto; display: block; }
+  .brand .mark { color: var(--main); }
+  .brand .word { color: var(--text); }
+  .chip { display: flex; align-items: center; gap: 10px; color: var(--c); letter-spacing: 3px; font-size: 11px; }
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; animation: blink 1.6s ease-in-out infinite; }
+
+  main { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; text-align: center;
+         padding: 32px 0; }
+  .orb { width: 200px; height: 200px; color: var(--c); margin-bottom: 28px; }
+  .orb .spin { transform-origin: 100px 100px; animation: spin 24s linear infinite; }
+  .orb .spin.back { animation-duration: 40s; animation-direction: reverse; }
+  .orb .core { transform-origin: 100px 100px; animation: settle .9s cubic-bezier(.2, .9, .3, 1.3) both; }
+  .orb .sign { stroke-dasharray: 100; stroke-dashoffset: 100; animation: draw .6s .45s ease-out forwards; }
+  .orb .pulse { transform-origin: 100px 100px; animation: pulse 2.4s .9s ease-out infinite; opacity: 0; }
+
+  .caption { color: var(--c); letter-spacing: 4px; font-size: 11px; margin: 0 0 10px; }
+  h1 { font-family: var(--display); font-weight: 600; font-size: 40px; line-height: 1.1; letter-spacing: .5px;
+       margin: 0 0 14px; color: var(--text); }
+  .message { color: var(--sub); font-size: 13px; line-height: 1.7; max-width: 46ch; margin: 0 0 28px; }
+
+  .details { width: min(420px, 100%); border-top: 1px solid var(--off); border-bottom: 1px solid var(--off);
+             padding: 6px 0; margin: 0 0 24px; text-align: left; }
+  .row { display: grid; grid-template-columns: 120px 1fr; gap: 16px; padding: 10px 2px; font-size: 12px; }
+  .row + .row { border-top: 1px dashed color-mix(in srgb, var(--off) 70%, transparent); }
+  .row dt { color: var(--muted); letter-spacing: 2px; font-size: 10.5px; padding-top: 1px; }
+  .row dd { margin: 0; color: var(--text); overflow-wrap: anywhere; }
+  .row dd.say { color: var(--main); }
+
+  .close { color: var(--muted); font-size: 11px; letter-spacing: 1px; }
+  footer { color: var(--off); font-size: 10.5px; letter-spacing: 2px; text-align: center; }
+
+  @keyframes blink { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  @keyframes settle { from { transform: scale(.6); opacity: 0; } to { transform: scale(1); opacity: 1; } }
+  @keyframes draw { to { stroke-dashoffset: 0; } }
+  @keyframes pulse { 0% { transform: scale(.8); opacity: .5; } 100% { transform: scale(1.35); opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) {
+    *, .orb .sign { animation: none !important; stroke-dashoffset: 0; }
+  }
+  @media (max-width: 520px) {
+    body { padding: 20px 16px; }
+    h1 { font-size: 32px; }
+    .orb { width: 160px; height: 160px; }
+    .row { grid-template-columns: 112px 1fr; gap: 12px; }
+    .row dt { letter-spacing: 1.5px; }
+  }
+</style>
+</head>
+<body data-state="{{state}}" data-theme="{{theme}}">
+  <header>
+    <span class="brand" role="img" aria-label="NIA">
+      <svg viewBox="12 4 206 92" aria-hidden="true">
+        <g class="mark" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M22 86L50 34l28 52" stroke-width="7"></path>
+          <path d="M38 86l12-22 12 22" stroke-opacity=".45" stroke-width="5"></path>
+          <circle cx="50" cy="18" r="6.5" fill="currentColor" stroke="none"></circle>
+        </g>
+        <path class="word" transform="translate(112 0)" d="M0 70V30l30 40V30M48 70V30M66 70l18-40 18 40"
+              fill="none" stroke="currentColor" stroke-width="6" stroke-linecap="round" stroke-linejoin="round"></path>
+      </svg>
+    </span>
+    <div class="chip"><span class="dot"></span><span>{{chip}}</span></div>
+  </header>
+
+  <main>
+    <svg class="orb" viewBox="0 0 200 200" aria-hidden="true">
+      <circle class="spin" cx="100" cy="100" r="94" fill="none" stroke="currentColor" stroke-opacity=".35"
+              stroke-width="1" stroke-dasharray="2 7"></circle>
+      <circle class="spin back" cx="100" cy="100" r="80" fill="none" stroke="currentColor" stroke-opacity=".25"
+              stroke-width="1.5" stroke-dasharray="40 14 6 14"></circle>
+      <circle class="pulse" cx="100" cy="100" r="56" fill="none" stroke="currentColor" stroke-width="1.5"></circle>
+      <g class="core">
+        <circle cx="100" cy="100" r="56" fill="currentColor" fill-opacity=".1" stroke="currentColor" stroke-width="2"></circle>
+        <!-- a check when it worked, an exclamation mark when it didn't -->
+        <path class="sign" data-for="ok" d="M78 101l15 15 30-32" fill="none" stroke="currentColor" stroke-width="7"
+              stroke-linecap="round" stroke-linejoin="round" pathLength="100"></path>
+        <path class="sign" data-for="error" d="M100 72v34" fill="none" stroke="currentColor" stroke-width="7"
+              stroke-linecap="round" pathLength="100"></path>
+        <circle data-for="error" cx="100" cy="126" r="4.5" fill="currentColor"></circle>
+      </g>
+    </svg>
+
+    <p class="caption">{{caption}}</p>
+    <h1>{{title}}</h1>
+    <p class="message">{{message}}</p>
+    <dl class="details">{{rows}}</dl>
+    <p class="close">You can close this tab.</p>
+  </main>
+
+  <footer>NIA · NEXT-GEN INTELLIGENCE AGENT</footer>
+
+<script>
+  // Only the mark that fits: the check, or the exclamation mark
+  document.querySelectorAll('[data-for]').forEach((el) => {
+    if (el.dataset.for !== document.body.dataset.state) el.remove();
+  });
+  // The colours of the theme picked in NIA's settings (the same values as hud.html's THEMES)
+  const THEMES = {
+    cyan:   { main: '#5FE3FF', text: '#D7F6FF', sub: '#9CC2D1', muted: '#6F95A6', off: '#3E5966', bg: '#03070A', ok: '#7CF5C4', bad: '#FF5A4E' },
+    gold:   { main: '#FFC857', text: '#FFF3DC', sub: '#D6C29C', muted: '#9F8C6C', off: '#5A4D36', bg: '#070503', ok: '#A8E07A', bad: '#FF5A4E' },
+    ice:    { main: '#DDEBF2', text: '#F2F8FB', sub: '#AEBEC7', muted: '#7F8F99', off: '#3F4B52', bg: '#050607', ok: '#7CF5C4', bad: '#FF6B5E' },
+    mint:   { main: '#7CF5C4', text: '#DFFBEF', sub: '#A3CFBC', muted: '#6F9D8A', off: '#3A5A4D', bg: '#030806', ok: '#5FE3FF', bad: '#FF5A6E' },
+    violet: { main: '#B9A3FF', text: '#EEE8FF', sub: '#BDB3DB', muted: '#9087B0', off: '#4A4466', bg: '#06040B', ok: '#7CF5C4', bad: '#FF5A4E' },
+    red:    { main: '#FF5A4E', text: '#FFE7E4', sub: '#D6AEA9', muted: '#A9837E', off: '#5C3A36', bg: '#080303', ok: '#7CF5C4', bad: '#FFD166' },
+  };
+  const theme = THEMES[document.body.dataset.theme];
+  if (theme) for (const [name, value] of Object.entries(theme)) document.documentElement.style.setProperty('--' + name, value);
+</script>
+</body>
+</html>

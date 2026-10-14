@@ -5,9 +5,11 @@ import subprocess
 import time
 from pathlib import Path
 import spotipy
+from dotenv import load_dotenv
 from spotipy.oauth2 import SpotifyOAuth
 
 import settings
+from utils.system import DETACHED, WINDOWS
 
 logger = logging.getLogger(__name__)
 PLAY_WAIT = 15  # seconds Spotify gets to start playing before it counts as stuck
@@ -21,33 +23,54 @@ def _describe(item):
     return f"{item['name']} by {', '.join(artist['name'] for artist in item['artists'])}"
 
 
+# Where Spotify sends the browser after you approve NIA: her own window server (nia.py, nia.PORT), which finishes the
+# login itself. Spotify takes a loopback address as secure, so it needs no website of your own. Add exactly this as
+# a Redirect URI in your Spotify app's settings
+REDIRECT_URI = "http://127.0.0.1:8765/spotify/callback"
+
+
 def oauth():
     """NIA's Spotify login; the token is saved to CACHE and refreshed from there"""
+    load_dotenv(CACHE.parent / ".env")  # again: a .env added (or fixed) while NIA runs works without a restart
     return SpotifyOAuth(
         client_id=os.getenv("SPOTIFY_ID"),
         client_secret=os.getenv("SPOTIFY_SECRET"),
-        redirect_uri="https://aalokpandit.netlify.app/",
+        redirect_uri=REDIRECT_URI,
         scope="user-modify-playback-state user-read-playback-state user-read-currently-playing",
         cache_path=str(CACHE),
         open_browser=True
     )
 
 
+def start_spotify():
+    """The Spotify app, opened (or woken) on this PC - apart from NIA, so it outlives her"""
+    if WINDOWS:
+        os.startfile("spotify:")
+    else:
+        subprocess.Popen(["spotify"], **DETACHED)
+
+
 class SpotifyController:
     """Spotify API errors propagate; the agent's ToolNode hands them back to the model."""
 
     def __init__(self):
-        """Initialize Spotify client with authentication"""
-        self.sp = spotipy.Spotify(auth_manager=oauth())
+        """Initialize Spotify client with authentication. Not logged in yet: spotipy would ask for the login on the
+        console, which NIA doesn't have - an EOFError she took for "Spotify isn't responding", and offered a restart
+        that closed the app. Said plainly instead, and nothing is kept, so the next music request tries again"""
+        login = oauth()
+        if not login.get_cached_token():
+            raise RuntimeError("Not logged in to Spotify yet - the user needs to press Log in to Spotify in the "
+                               "settings panel (the gear). Restarting Spotify won't help")
+        self.sp = spotipy.Spotify(auth_manager=login)
 
     def open_app(self, timeout=20):
         """Launch Spotify on this PC unless it's already a device, and wait until it shows up as one.
-        Uses Windows' spotify: link, so there's no shell command and nothing to approve."""
+        Uses Windows' spotify: link (Linux: the spotify program), so there's no shell command and nothing to approve"""
         devices = self.sp.devices()["devices"]
         if any(d["type"] == "Computer" for d in devices):
             return devices
         # Also wakes an app that's open but idle: Spotify drops those from the device list after a while
-        os.startfile("spotify:")
+        start_spotify()
         started = time.time()
         for _ in range(timeout * 2):
             time.sleep(0.5)
@@ -61,8 +84,9 @@ class SpotifyController:
     def restart_app(self):
         """Force-close Spotify on this PC and open it again - the fix for an app that accepts
         commands but plays nothing. Only ever touches Spotify's own processes"""
-        for image in ("Spotify.exe", "SpotifyLauncher.exe"):
-            subprocess.run(["taskkill", "/F", "/IM", image], capture_output=True)
+        for image in ("Spotify.exe", "SpotifyLauncher.exe") if WINDOWS else ("spotify",):
+            subprocess.run(["taskkill", "/F", "/IM", image] if WINDOWS else ["pkill", "-KILL", "-x", image],
+                           capture_output=True)
         time.sleep(2)  # let Spotify drop off the device list before waiting for it to come back
         self.open_app()
         self.restarted = time.time()
@@ -231,7 +255,8 @@ class SpotifyController:
         """Nudge volume by step percent (negative to lower), clamped to 0-100"""
         current = self.get_current_playback()
         if not current or not current.get('device'):
-            return "No active device found to change volume"
+            # An error, not a result: as one it was taken for success, and a volume change that failed went unsaid
+            raise RuntimeError("No active device found to change volume")
         current_volume = current['device']['volume_percent']
         new_volume = max(0, min(current_volume + step, 100))
         self.sp.volume(new_volume)
@@ -260,6 +285,7 @@ class SpotifyController:
 if __name__ == "__main__":
     # Log in to Spotify again, e.g. after "Refresh token expired": python -m agent.action_controller
     CACHE.unlink(missing_ok=True)
-    print("Approve NIA in the browser tab that opens, then paste the address it redirects you to here.")
+    print("Approve NIA in the browser tab that opens. If NIA is running, log in from her settings panel instead.")
+    oauth().get_access_token(as_dict=False)  # spotipy catches the redirect on 127.0.0.1:8765 itself
     print("Logged in. Spotify says:", SpotifyController().now_playing())
     input("Press Enter to close.")
