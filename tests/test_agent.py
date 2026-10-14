@@ -1619,8 +1619,13 @@ def test_changes_to_herself_go_to_a_branch_and_only_if_tests_pass():
     from pathlib import Path
     from agent import claude
 
-    # Claude may only edit inside its checkout, never the safety files, and run nothing but the tests
-    cmd = claude.build_command("add a joke tool")
+    # Claude may only edit inside its checkout, never the safety files, and run nothing but the tests (a stand-in
+    # program, as in test_ask_claude: these are the flags NIA passes, installed or not)
+    real_exe, claude.executable = claude.executable, lambda: "claude"
+    try:
+        cmd = claude.build_command("add a joke tool")
+    finally:
+        claude.executable = real_exe
     assert cmd[cmd.index("--permission-mode") + 1] == "dontAsk" and "--restricted" in cmd
     shells = [c for c in cmd if c.startswith(("Bash(", "PowerShell("))]  # PowerShell is the shell on Windows
     assert len(shells) == 6 and all(c.endswith((" tests/test_agent.py)", " tests/test_voice.py)", " tests/test_nia.py)")) for c in shells)
@@ -1690,7 +1695,9 @@ def test_changes_to_herself_go_to_a_branch_and_only_if_tests_pass():
     real_improve = claude.improve
     claude.improve = lambda request, root=None: started.append(request) or "Started: on a branch"
     try:
-        a = assistant(call("improve_myself", request="integrate Discord"), AIMessage("It's under way, sir."))
+        # NIA offers the tool only where Claude Code is installed (not on CI): handed over here either way
+        a = assistant(call("improve_myself", request="integrate Discord"), AIMessage("It's under way, sir."),
+                      extra_tools=[] if claude.TOOLS else [claude.improve_myself])
         question = a.respond("ask Claude to integrate Discord into you")
         assert "have Claude integrate Discord, on a new branch for you to review" in question
         # A long, detailed request is read back as its first clause, not in full
