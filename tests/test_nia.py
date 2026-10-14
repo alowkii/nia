@@ -157,6 +157,49 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         except urllib.error.HTTPError as e:
             assert e.code == 404, path
 
+    # Spotify login with no Spotify app in .env: the panel is told why, instead of a button that does nothing
+    import os
+    real_id = os.environ.get("SPOTIFY_ID")
+    os.environ["SPOTIFY_ID"] = ""  # kept over whatever .env says (load_dotenv never overrides)
+    try:
+        code, body = post("/spotify/login")
+        assert code == 400 and "SPOTIFY_ID and SPOTIFY_SECRET in .env" in body["error"], (code, body)
+    finally:
+        if real_id is None:
+            os.environ.pop("SPOTIFY_ID")
+        else:
+            os.environ["SPOTIFY_ID"] = real_id
+
+    # Spotify sends the browser back to NIA's own server, which finishes the login - only one started from her panel
+    from agent import action_controller
+    assert action_controller.REDIRECT_URI == f"http://127.0.0.1:{nia.PORT}/spotify/callback"
+    traded, opened = [], []
+
+    class StubLogin:  # stands in for Spotify: never the real login, nor a real browser tab
+        def get_authorize_url(self, state=None):
+            return f"https://accounts.spotify.com/authorize?state={state}"
+        def get_access_token(self, code, as_dict=True, check_cache=True):
+            traded.append(code)
+    real_oauth, real_open = action_controller.oauth, nia.webbrowser.open
+    action_controller.oauth, nia.webbrowser.open = StubLogin, opened.append
+
+    def callback(query):
+        try:
+            with urllib.request.urlopen(f"{base}/spotify/callback?{query}") as response:
+                return response.status
+        except urllib.error.HTTPError as e:
+            return e.code
+    try:
+        assert callback("code=evil&state=x") == 400 and traded == [], "no login was started: refused"
+        state = post("/spotify/login")[1]["url"].split("state=")[1]
+        assert opened and callback("code=evil&state=wrong") == 400 and traded == [], "another page's code: refused"
+        state = post("/spotify/login")[1]["url"].split("state=")[1]
+        assert callback(f"code=good&state={state}") == 200 and traded == ["good"]
+        assert callback(f"code=again&state={state}") == 400 and traded == ["good"], "each login is used once"
+        assert "spotify" not in hub.latest, "a reloaded page doesn't replay an old login's outcome"
+    finally:
+        action_controller.oauth, nia.webbrowser.open = real_oauth, real_open
+
     # The window's quit
     assert post("/quit")[0] == 204 and done.is_set()
     httpd.shutdown()
