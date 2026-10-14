@@ -4,6 +4,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))  # NIA's code, one folder up
+(Path(__file__).resolve().parent.parent / "logs").mkdir(exist_ok=True)  # a fresh checkout has none; tests use it
 
 import time
 
@@ -849,6 +850,8 @@ def test_read_only_allowlist():
 
 
 def test_read_only_allowlist_on_linux():
+    if WINDOWS:
+        return  # Windows' list is test_read_only_allowlist's
     from agent.approval import read_only
     for command in ["ps aux | grep -i spotify", 'ls -la "/home/me/Desktop"', "uptime", "whoami", "df -h",
                     "cat /home/me/notes.txt | head -5", "git -C ~/nia status", "git log", "ss -tlnp | grep 8081",
@@ -1519,8 +1522,13 @@ def test_ask_claude_is_safe_and_reports_back():
     from agent import claude
     from agent.approval import risks
 
-    # Always the same locked-down call: web search and fetch only, anything else refused, nothing carried over
-    cmd = claude.command("Who won the last Grand Prix?", "sonnet")
+    # Always the same locked-down call: web search and fetch only, anything else refused, nothing carried over. With
+    # a stand-in program: these are the flags NIA passes, installed or not (CI has no Claude Code)
+    real_exe, claude.executable = claude.executable, lambda: "claude"
+    try:
+        cmd, no_model = claude.command("Who won the last Grand Prix?", "sonnet"), claude.command("q", "")
+    finally:
+        claude.executable = real_exe
     assert cmd[cmd.index("--effort") + 1] == "low", "low effort: 17 s instead of 46 s for the same answer"
     assert "Always browse first" in cmd[2], "never an answer from memory alone"
     assert cmd[cmd.index("--output-format") + 1] == "stream-json" and "--verbose" in cmd
@@ -1528,7 +1536,7 @@ def test_ask_claude_is_safe_and_reports_back():
         assert flag in cmd, flag
     assert cmd[cmd.index("--tools") + 1] == "WebSearch,WebFetch" and cmd[cmd.index("--permission-mode") + 1] == "dontAsk"
     assert not any("dangerously" in part or "bypass" in part for part in cmd)
-    assert cmd[-2:] == ["--model", "sonnet"] and "--model" not in claude.command("q", "")
+    assert cmd[-2:] == ["--model", "sonnet"] and "--model" not in no_model
     real_env = dict(claude.os.environ)
     claude.os.environ.update({"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "parent"})
     try:
@@ -1611,8 +1619,13 @@ def test_changes_to_herself_go_to_a_branch_and_only_if_tests_pass():
     from pathlib import Path
     from agent import claude
 
-    # Claude may only edit inside its checkout, never the safety files, and run nothing but the tests
-    cmd = claude.build_command("add a joke tool")
+    # Claude may only edit inside its checkout, never the safety files, and run nothing but the tests (a stand-in
+    # program, as in test_ask_claude: these are the flags NIA passes, installed or not)
+    real_exe, claude.executable = claude.executable, lambda: "claude"
+    try:
+        cmd = claude.build_command("add a joke tool")
+    finally:
+        claude.executable = real_exe
     assert cmd[cmd.index("--permission-mode") + 1] == "dontAsk" and "--restricted" in cmd
     shells = [c for c in cmd if c.startswith(("Bash(", "PowerShell("))]  # PowerShell is the shell on Windows
     assert len(shells) == 6 and all(c.endswith((" tests/test_agent.py)", " tests/test_voice.py)", " tests/test_nia.py)")) for c in shells)
@@ -1682,7 +1695,9 @@ def test_changes_to_herself_go_to_a_branch_and_only_if_tests_pass():
     real_improve = claude.improve
     claude.improve = lambda request, root=None: started.append(request) or "Started: on a branch"
     try:
-        a = assistant(call("improve_myself", request="integrate Discord"), AIMessage("It's under way, sir."))
+        # NIA offers the tool only where Claude Code is installed (not on CI): handed over here either way
+        a = assistant(call("improve_myself", request="integrate Discord"), AIMessage("It's under way, sir."),
+                      extra_tools=[] if claude.TOOLS else [claude.improve_myself])
         question = a.respond("ask Claude to integrate Discord into you")
         assert "have Claude integrate Discord, on a new branch for you to review" in question
         # A long, detailed request is read back as its first clause, not in full

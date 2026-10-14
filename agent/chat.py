@@ -121,6 +121,11 @@ def logged_summaries(summarizer, backend):
 # Bonsai's whole context - so a few files read at once overflowed it
 MAX_TOOL_CHARS = 3000  # ~750 tokens
 
+# Each step's conversation is saved before the next step starts. LangGraph's default ("async") saves in the background,
+# each save holding a worker thread while it waits for the one before: on a 2-CPU machine (6 workers) a quick run of
+# tool calls left every worker waiting on a save queued behind them, and the turn hung for good (found by CI)
+DURABILITY = "sync"
+
 # Set by the voice layer when the user says "stop" mid-turn: the next tool call ends the turn
 CANCEL = threading.Event()
 claude.STOP = CANCEL  # a running ask_claude call is killed on "stop" too
@@ -529,7 +534,7 @@ class AssistantModel:
         started = time.time()
         REFUSED.set()
         try:
-            self.agent.invoke({"messages": [HumanMessage("Hello")]}, {"configurable": {"thread_id": "warm-up"}})
+            self.agent.invoke({"messages": [HumanMessage("Hello")]}, {"configurable": {"thread_id": "warm-up"}}, durability=DURABILITY)
             logger.info(f"Warmed up the LLM's prompt cache in {time.time() - started:.1f}s")
         except Exception as e:  # only a speed-up: never stop NIA starting
             logger.warning(f"Warm-up failed ({e!r}) - the first reply will be slower")
@@ -606,7 +611,7 @@ class AssistantModel:
         if self.pending and time.time() - self.pending[1] >= APPROVAL_EXPIRES:
             # Nobody answered in time: refuse quietly, then treat this as a new request, not as the answer
             logger.info("Approval expired - refused")
-            self.agent.invoke(Command(resume={"decisions": [{"type": "reject"}] * self.pending[0]}), self.config)
+            self.agent.invoke(Command(resume={"decisions": [{"type": "reject"}] * self.pending[0]}), self.config, durability=DURABILITY)
             self.pending = None
         if self.pending:
             answer = user_msg.lower()
@@ -619,7 +624,7 @@ class AssistantModel:
             decision = {"type": "approve"} if approved else {"type": "reject", "message": reason}
             if not approved:
                 REFUSED.set()
-            result = self.agent.invoke(Command(resume={"decisions": [decision] * self.pending[0]}), self.config)
+            result = self.agent.invoke(Command(resume={"decisions": [decision] * self.pending[0]}), self.config, durability=DURABILITY)
         else:
             REFUSED.clear()  # a new request: a "no" to the last one no longer applies
             # The clock and any recalled memories ride on the user turn, not the system prompt, so the
@@ -631,7 +636,7 @@ class AssistantModel:
                 logger.info(f"Recalled ({kind}, {similarity:.2f}): {text[:120]}")
             learned = preferences_note(self.memory.preferences()) if self.memory else ""
             message = HumanMessage(f"{user_msg}\n\n{when()}{learned}{note(hits)}")
-            result = self.agent.invoke({"messages": [message, *tried]}, self.config)
+            result = self.agent.invoke({"messages": [message, *tried]}, self.config, durability=DURABILITY)
 
         # Commands the approval layers clear run straight away; anything else waits for a spoken yes
         while result.get("__interrupt__"):
@@ -647,7 +652,7 @@ class AssistantModel:
                 decisions.append({"type": "approve"} if verdict == "run" else None)
             if None in decisions:
                 break
-            result = self.agent.invoke(Command(resume={"decisions": decisions}), self.config)
+            result = self.agent.invoke(Command(resume={"decisions": decisions}), self.config, durability=DURABILITY)
 
         if result.get("__interrupt__"):
             actions = result["__interrupt__"][0].value["action_requests"]
