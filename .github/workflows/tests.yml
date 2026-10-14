@@ -13,6 +13,8 @@ jobs:
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the tags too: she tells her version from them (git describe)
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"  # as NIA is tested on Windows
@@ -21,14 +23,18 @@ jobs:
       - name: test_agent
         run: python tests/test_agent.py
       - name: test_voice
+        if: success() || failure()  # each suite reports, even after another fails
         run: python tests/test_voice.py
       - name: test_nia
+        if: success() || failure()  # each suite reports, even after another fails
         run: python tests/test_nia.py
 
   linux:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # the tags too: she tells her version from them (git describe)
       # The window's PyGObject and WebKitGTK come from the system, as in README's Setup on Linux; PortAudio for
       # sounddevice; pactl and xdg-utils for the mixer and apps
       - run: |
@@ -40,6 +46,8 @@ jobs:
       - name: test_agent
         run: .venv/bin/python tests/test_agent.py
       - name: test_voice
+        if: success() || failure()  # each suite reports, even after another fails
         run: .venv/bin/python tests/test_voice.py
       - name: test_nia
+        if: success() || failure()  # each suite reports, even after another fails
         run: .venv/bin/python tests/test_nia.py
