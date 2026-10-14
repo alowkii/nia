@@ -296,9 +296,19 @@ class Quieter:
         self.holds = []  # [level, everything] of each of her sounds playing now
         self.originals = {}  # an app's identifier -> its own volume, from before any of hers
 
-    def _sessions(self):
+    @staticmethod
+    def _all():
+        """Every app's sound in the mixer - none when there's no sound device at all: Windows raised "Element not
+        found" (a PC with no speaker, a CI machine) and her start crashed, where there's simply nothing to turn down"""
         com_ready()
-        for session in AudioUtilities.GetAllSessions():
+        try:
+            return AudioUtilities.GetAllSessions()
+        except Exception as e:
+            logger.warning(f"Couldn't read the mixer ({e!r}) - other apps' volume is left alone")
+            return []
+
+    def _sessions(self):
+        for session in self._all():
             if session.ProcessId != os.getpid() and session.Identifier:  # never NIA's own voice
                 yield session
 
@@ -343,8 +353,7 @@ class Quieter:
     def own_voice_full(self):
         """Her own mixer volume at full - her voice volume setting is what decides how loud she is. Windows remembers
         each program's volume, and one of hers had been left at 2% by an earlier NIA"""
-        com_ready()
-        for session in AudioUtilities.GetAllSessions():
+        for session in self._all():
             if session.ProcessId == os.getpid():
                 volume = session.SimpleAudioVolume
                 if volume.GetMasterVolume() < 0.99:

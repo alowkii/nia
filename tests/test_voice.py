@@ -325,6 +325,15 @@ try:
             va.QUIETER.record, va.sd.play, va.sd.wait = real_record, real_play, real_wait
         assert during == [{"chrome": 0.0, "spotify": 0.0, "dings": 0.0, "her": 1.0}], "only the chime is heard"
         assert levels() == {"chrome": 0.8, "spotify": 1.0, "dings": 1.0, "her": 1.0}
+    # No sound device at all (a PC with no speaker; a CI machine): Windows' mixer raised "Element not found" and her
+    # start crashed. There's just nothing to turn down
+    def no_device():
+        raise OSError("Element not found")
+    va.AudioUtilities = SimpleNamespace(GetAllSessions=no_device)
+    with tempfile.TemporaryDirectory() as tmp:
+        quiet = va.Quieter(Path(tmp) / "quieted.json")
+        quiet.hold(0.3)()  # lowered and put back - neither raises
+        quiet.own_voice_full()
 finally:
     va.AudioUtilities = real_utilities
 

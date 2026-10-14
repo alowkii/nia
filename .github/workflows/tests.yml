@@ -11,6 +11,7 @@ on:
 jobs:
   windows:
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -21,16 +22,21 @@ jobs:
           cache: pip
       - run: pip install -r requirements.txt
       - name: test_agent
-        run: python tests/test_agent.py
+        run: python -X faulthandler -u tests/test_agent.py
+        timeout-minutes: 6
       - name: test_voice
         if: success() || failure()  # each suite reports, even after another fails
-        run: python tests/test_voice.py
+        run: python -X faulthandler -u tests/test_voice.py
+        timeout-minutes: 6
       - name: test_nia
         if: success() || failure()  # each suite reports, even after another fails
-        run: python tests/test_nia.py
+        run: python -X faulthandler -u tests/test_nia.py
+        timeout-minutes: 6
 
+  # A hung suite prints where every thread is stuck (faulthandler) instead of running until the job times out
   linux:
     runs-on: ubuntu-24.04
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
         with:
@@ -44,10 +50,10 @@ jobs:
           python3 -m venv --system-site-packages .venv
           .venv/bin/pip install -r requirements.txt
       - name: test_agent
-        run: .venv/bin/python tests/test_agent.py
+        run: timeout -s ABRT 6m .venv/bin/python -X faulthandler -u tests/test_agent.py
       - name: test_voice
         if: success() || failure()  # each suite reports, even after another fails
-        run: .venv/bin/python tests/test_voice.py
+        run: timeout -s ABRT 6m .venv/bin/python -X faulthandler -u tests/test_voice.py
       - name: test_nia
         if: success() || failure()  # each suite reports, even after another fails
-        run: .venv/bin/python tests/test_nia.py
+        run: timeout -s ABRT 6m .venv/bin/python -X faulthandler -u tests/test_nia.py
