@@ -121,6 +121,8 @@ prompt prefix stays identical and llama-server reuses its cache.
   [Evergreen runtime](https://developer.microsoft.com/microsoft-edge/webview2/). On Linux it's **WebKitGTK**:
   `webkit2gtk-4.1` and `python-gobject` from your distribution, plus `pactl` (PipeWire or PulseAudio) and
   `xdg-utils` - see [Setup on Linux](#setup-on-linux)
+- The last Windows-only code is kept on the [`windows-only`](https://github.com/alowkii/nia/tree/windows-only) branch;
+  everything since runs on both
 - **Python 3.11** (tested on Windows) - python.org's or the Microsoft Store's both work; **3.14** on Linux (the
   system's own, since the window needs its PyGObject)
 - **NVIDIA GPU with 8 GB VRAM** for the LLM. Bonsai 2 27B (`PTQ1_0`, 5.95 GB) runs fully on
