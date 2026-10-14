@@ -163,10 +163,10 @@ def launch(program, path=None):
 
 @tool
 def open_app(app: str, file: str = "") -> str:
-    """Open an installed app - "open VLC", "open Notepad" - or play a file in one: "play this movie in VLC", "open
-    the song in Groove". app is its name as the user says it; file is the file's full path (a file-tool path like
-    /d/x.mp4 is fine) - find the file first, then call this once. No approval needed. It finds the app the way
-    the system does, so never search folders or run `where` or `which` for an app's program"""
+    """Open an installed app - "open VLC", "open the calculator" - or open a file in one: "play this movie in VLC".
+    app is its name as the user says it; file is the file's full path, as the file tools give it - find the file
+    first, then call this once. No approval needed. It finds the app the way the system does, so never search
+    folders or run `where` or `which` for an app's program"""
     program = find_app(app)
     if program is None:
         return f"{app} doesn't seem to be installed: " + (
@@ -199,7 +199,7 @@ last_video = {"path": None, "when": 0.0}
 def play_video(file: str, player: str = "VLC") -> str:
     """Play a movie or video file from the PC - "play a movie", "play the movie", "watch The Founder" - in a video
     player: VLC unless the user names another (the PC's own video player if VLC isn't installed). file is the video's
-    full path (a file-tool path like /d/x.mp4 is fine) - find it first, e.g. with glob. No approval needed. For
+    full path, as the file tools give it - find it first, e.g. with glob. No approval needed. For
     YouTube use play_youtube; for music, Spotify"""
     path = pc_path(file)
     if path == last_video["path"] and time.time() - last_video["when"] < REOPEN_AFTER:
