@@ -152,7 +152,7 @@
   .switch[aria-checked="true"] .knob { left: 18px; background: var(--bg); }
   .field { display: flex; flex-direction: column; gap: 4px; }
   .field label { font-size: 11px; color: var(--sub); }
-  .field input, .field select, .paste { height: 32px; box-sizing: border-box; padding: 0 4px; background: transparent; border: none;
+  .field input, .field select { height: 32px; box-sizing: border-box; padding: 0 4px; background: transparent; border: none;
             border-bottom: 1px solid color-mix(in srgb, var(--main) 25%, transparent); color: var(--text); font-family: var(--mono); font-size: 12px; width: 100%; }
   .field select option { background: var(--bg); color: var(--text); }
   .fields { display: flex; flex-direction: column; gap: 12px; }
@@ -268,11 +268,6 @@
     <div class="group">
       <span class="caption">SPOTIFY</span>
       <div class="actions"><button type="button" class="text-btn" id="spotifyLogin">LOG IN TO SPOTIFY</button></div>
-      <div id="spotifyPaste" hidden class="group" style="gap: 8px">
-        <label class="note" for="pasteUrl">Approve NIA in the browser tab that opened, then paste the address it lands on here.</label>
-        <input class="paste" id="pasteUrl" type="text" autocomplete="off" placeholder="https://…?code=…">
-        <div class="actions"><button type="button" class="text-btn" id="spotifyConnect">CONNECT</button></div>
-      </div>
       <span class="note" id="spotifyNote" role="status"></span>
     </div>
     <div class="group">
@@ -576,6 +571,10 @@ events.onmessage = (e) => {
   const m = JSON.parse(e.data);
   if (m.config) { config = { ...config, ...m.config }; applyTheme(config.theme); renderToggles(); }
   if ('server' in m) server = m.server;
+  if (m.spotify) {  // the browser came back from Spotify
+    $('spotifyNote').classList.toggle('error', m.spotify !== 'ok');
+    $('spotifyNote').textContent = m.spotify === 'ok' ? 'Logged in to Spotify.' : m.spotify;
+  }
   if ('error' in m) error = m.error;
   if ('you' in m) { you = m.you; tool = null; partial = ''; nia = ''; plan = []; }
   if (m.plan) plan = m.plan;
@@ -763,17 +762,12 @@ $('form').addEventListener('submit', async (e) => {
 
 $('serverRestart').addEventListener('click', () => post('/server/restart'));
 $('spotifyLogin').addEventListener('click', async () => {
-  await post('/spotify/login');
-  $('spotifyPaste').hidden = false;
-  $('spotifyNote').textContent = '';
-  $('pasteUrl').focus();
-});
-$('spotifyConnect').addEventListener('click', async () => {
-  const res = await post('/spotify/code', { url: $('pasteUrl').value });
   const note = $('spotifyNote');
-  note.classList.toggle('error', !res.ok);
-  note.textContent = res.ok ? 'Logged in to Spotify.' : (await res.json()).error;
-  if (res.ok) { $('spotifyPaste').hidden = true; $('pasteUrl').value = ''; }
+  const res = await post('/spotify/login').catch(() => null);
+  note.classList.toggle('error', !(res && res.ok));
+  note.textContent = res && res.ok ? 'Approve NIA in the browser tab that opened - she finishes the login herself.'
+    // e.g. no Spotify app in .env: say so, rather than a button that seems to do nothing
+    : res ? (await res.json().catch(() => ({}))).error || 'Spotify login failed.' : 'NIA isn\'t answering.';
 });
 
 applyTheme('cyan');

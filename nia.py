@@ -5,6 +5,7 @@ Opens the HUD (hud/hud.html) in NIA's own window and runs everything behind it, 
 shows what NIA is doing, takes typed commands, and holds every setting. Closing it shuts everything down.
 Starting it again while NIA runs just opens another window onto her.
 """
+import html
 import json
 import os
 import queue
@@ -111,7 +112,7 @@ class Hub:
 
     def send(self, **message):
         with self.lock:
-            self.latest.update({k: v for k, v in message.items() if k not in ("envelope", "fps", "partial")})
+            self.latest.update({k: v for k, v in message.items() if k not in ("envelope", "fps", "partial", "spotify")})
             for page in self.pages:
                 page.put(message)
 
@@ -415,6 +416,9 @@ def apply(changed, values, assistant, server, hub):
     return restarting
 
 
+SPOTIFY_LOGIN = {"state": None}  # the one login started from the panel, until Spotify sends the browser back
+
+
 def handler(hub, assistant, server, done):
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *args):  # requests aren't worth a log line
@@ -440,10 +444,39 @@ def handler(hub, assistant, server, done):
                                             "current": settings.load()["mic_device"]}).encode())
             elif self.path == "/events":
                 self.events()
+            elif self.path.startswith("/spotify/callback"):
+                self.spotify_callback()
             elif file := logo_file(self.path):  # the logo, favicon and app icons
                 self.reply(200, file.read_bytes(), LOGO_TYPES[file.suffix])
             else:
                 self.reply(404)
+
+        def spotify_callback(self):
+            """Spotify sends the browser here after the login is approved: the code is traded for NIA's token. Only
+            for a login started from her panel - the one-use state must match - so no web page can sign her in to
+            an account of its choosing"""
+            from urllib.parse import parse_qs, urlsplit
+            query = {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
+            expected, SPOTIFY_LOGIN["state"] = SPOTIFY_LOGIN["state"], None
+            if not expected or not secrets.compare_digest(query.get("state", ""), expected):
+                ok, why = False, "this login wasn't started from NIA's settings panel - press Log in to Spotify there"
+            elif "error" in query:
+                ok, why = False, f"Spotify said {query['error']}"
+            else:
+                from agent.action_controller import oauth
+                try:
+                    oauth().get_access_token(query.get("code", ""), as_dict=False, check_cache=False)
+                    ok, why = True, ""
+                except Exception as e:
+                    ok, why = False, f"Spotify didn't accept it ({e})"
+            logger.info("Logged in to Spotify" if ok else f"Spotify login failed: {why}")
+            hub.send(spotify="ok" if ok else f"Spotify login failed: {why}")
+            title = "NIA is logged in to Spotify" if ok else "Spotify login failed"
+            text = "You can close this tab." if ok else why[:1].upper() + why[1:] + "."
+            page = (f"<!doctype html><meta charset=utf-8><title>{title}</title><body style='background:#03070A;"
+                    f"color:#cfe;font:16px system-ui;padding:3em'><h2>{html.escape(title)}</h2>"
+                    f"<p>{html.escape(text)}</p>")
+            self.reply(200 if ok else 400, page.encode(), "text/html; charset=utf-8")
 
         def events(self):
             self.send_response(200)
@@ -498,20 +531,18 @@ def handler(hub, assistant, server, done):
                 threading.Thread(target=server.restart, daemon=True).start()
             elif self.path == "/spotify/login":
                 from agent.action_controller import oauth
-                url = oauth().get_authorize_url()
+                SPOTIFY_LOGIN["state"] = secrets.token_urlsafe(16)
+                try:
+                    url = oauth().get_authorize_url(state=SPOTIFY_LOGIN["state"])
+                except Exception as e:  # no Spotify app in .env: the button seemed to do nothing at all
+                    why = ("No Spotify app set up: put SPOTIFY_ID and SPOTIFY_SECRET in .env (see the README)"
+                           if "client_id" in str(e) or "client_secret" in str(e) else f"Spotify login couldn't start: {e}")
+                    logger.warning(f"{why} ({e})")
+                    self.reply(400, json.dumps({"error": why}).encode())
+                    return
                 webbrowser.open(url)
                 self.reply(200, json.dumps({"url": url}).encode())
                 return
-            elif self.path == "/spotify/code":
-                from agent.action_controller import oauth
-                try:
-                    login = oauth()
-                    login.get_access_token(login.parse_response_code(str(body.get("url", "")).strip()),
-                                           as_dict=False, check_cache=False)
-                except Exception as e:  # a wrong or stale address: say so in the panel
-                    self.reply(400, json.dumps({"error": f"Spotify didn't accept that: {e}"}).encode())
-                    return
-                logger.info("Logged in to Spotify")
             elif self.path == "/quit":
                 done.set()
             else:

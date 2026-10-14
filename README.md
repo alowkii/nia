@@ -158,11 +158,15 @@ SPOTIFY_SECRET=your_spotify_client_secret
 AUTHOR=your_name
 ```
 
-`AUTHOR` is just what the assistant calls you. In your Spotify app settings, add the
-redirect URI that matches [`agent/action_controller.py`](agent/action_controller.py) —
-it currently expects `https://aalokpandit.netlify.app/`, so change it to your own.
-The first music command opens a browser once for OAuth and caches the token in
-`.spotify_cache`.
+`AUTHOR` is just what the assistant calls you. In your Spotify app's settings, add this **Redirect URI**, exactly:
+
+```
+http://127.0.0.1:8765/spotify/callback
+```
+
+That's NIA's own window server: press **Log in to Spotify** in her settings panel, approve NIA in the browser tab that
+opens, and Spotify sends the browser back to her, which finishes the login (the token is kept in `.spotify_cache`). No
+website of your own is needed - Spotify accepts a loopback address. Only a login started from her panel is accepted.
 
 ### Setup on Linux
 
