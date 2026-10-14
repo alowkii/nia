@@ -2,6 +2,8 @@ import json
 import logging
 import os
 import re
+import shlex
+import shutil
 import subprocess
 import threading
 import time
@@ -26,6 +28,7 @@ from langgraph.types import Command
 
 import settings
 from utils.hud import hud
+from utils.system import NEW_CONSOLE, WINDOWS
 from utils.words import in_words
 from . import approval, apps, claude, reflexes, web, youtube
 from .server import SERVER_LOG, llm_server_command, llm_up
@@ -56,7 +59,7 @@ def ensure_llm_server(timeout=180):
         logger.info("Waiting for nia.py's LLM server...")
     else:
         logger.info(f"Starting LLM server: {' '.join(llm_server_command(s))}")
-        subprocess.Popen(llm_server_command(s), creationflags=subprocess.CREATE_NEW_CONSOLE)
+        subprocess.Popen(llm_server_command(s), **NEW_CONSOLE)
     while not llm_up(s["port"]):
         if time.time() - started > timeout:
             raise RuntimeError(f"llama-server did not come up on port {s['port']} - see {SERVER_LOG}")
@@ -67,12 +70,21 @@ def ensure_llm_server(timeout=180):
 ARTIFACTS = Path(__file__).resolve().parent.parent / "logs"
 
 
+# Linux folders the file tools never reach: the kernel's live views, where a search (grep -r /proc) never ends
+NOT_FILES = {"proc", "sys", "dev"}
+
+
 def pc_backend():
     """The real PC for the file and shell tools. Deep Agents' file tools only take /-style paths
-    (they reject C:\\...), so each drive is mounted as /c/, /d/, ...; anything else is under the
-    home folder. The shell runs in the home folder and takes normal Windows paths."""
-    drives = {f"/{letter.lower()}/": FilesystemBackend(root_dir=f"{letter}:\\", virtual_mode=True)
-              for letter in "CDEFGHIJ" if Path(f"{letter}:\\").exists()}
+    (they reject C:\\...), so on Windows each drive is mounted as /c/, /d/, ...; on Linux each top-level
+    folder is mounted as itself, so /home/x is /home/x. Anything else is under the home folder. The shell
+    runs in the home folder and takes the PC's own paths."""
+    if WINDOWS:
+        drives = {f"/{letter.lower()}/": FilesystemBackend(root_dir=f"{letter}:\\", virtual_mode=True)
+                  for letter in "CDEFGHIJ" if Path(f"{letter}:\\").exists()}
+    else:
+        drives = {f"/{top.name}/": FilesystemBackend(root_dir=top, virtual_mode=True)
+                  for top in Path("/").iterdir() if top.is_dir() and not top.is_symlink() and top.name not in NOT_FILES}
     # ponytail: no sandbox - the shell and files are the real PC; the spoken yes is the only guard
     shell = LocalShellBackend(root_dir=Path.home(), virtual_mode=True, inherit_env=True, timeout=60)
     # Deep Agents' own files - each summarized conversation, large tool results - go in NIA's logs/, not the home
@@ -89,7 +101,7 @@ def logged_summaries(summarizer, backend):
     def offload_logged(where, messages, session_id):
         path = offload(where, messages, session_id)
         folder = getattr(getattr(backend, "default", None), "cwd", None)  # the PC's home folder (none in tests)
-        saved = f"; the full text is in {approval.windows_path(path) if folder else path}" if path else ""
+        saved = f"; the full text is in {approval.pc_path(path) if folder else path}" if path else ""
         logger.info(f"Summarizing the conversation: it neared Bonsai's context, so {len(messages)} older messages "
                     f"(~{count_tokens_approximately(messages)} tokens) are being condensed{saved}")
         return path
@@ -228,15 +240,28 @@ def remember_result(call, result):
 
 # A shell command hunting for a program isn't run: open_app finds installed apps itself. Bonsai ignored the
 # instruction, then a note on each result (five times in one turn), and listed folders for VLC for minutes
-HUNTING_FOR_A_PROGRAM = re.compile(r"\bwhere\s+\S+|program files|\*\.exe|\\\w+\.exe\b", re.I)
+HUNTING_FOR_A_PROGRAM = re.compile(r"\bwhere\s+\S+|program files|\*\.exe|\\\w+\.exe\b|"  # Windows; then Linux
+                                   r"\b(which|whereis)\s+\S+|\bcommand\s+-v\b|share/applications\b|\.desktop\b", re.I)
 USE_OPEN_APP = ("Not run: don't search for an app's program - play_video plays a movie or video file in VLC, and "
-                "open_app opens any installed app (with a file to open in it); both find the app the way Windows does")
+                "open_app opens any installed app (with a file to open in it); both find the app the way the system "
+                "does")
 
 
 def windowed_program(command):
-    """The program a shell command starts, if it's a windowed app (VLC, Notepad) - from the program file's own header
-    (its subsystem: 2 is a window, 3 a console). Started through the shell, such an app holds the command - and her
-    turn - until it's closed: one movie in VLC kept a turn waiting a minute. Console tools (git, 7z) aren't"""
+    """The program a shell command starts, if it's a windowed app (VLC, Notepad) - on Windows from the program file's
+    own header (its subsystem: 2 is a window, 3 a console); on Linux, a program the launcher lists as an app that
+    doesn't run in a terminal. Started through the shell, such an app holds the command - and her turn - until it's
+    closed: one movie in VLC kept a turn waiting a minute. Console tools (git, 7z, btop) aren't"""
+    if not WINDOWS:
+        try:
+            first = shlex.split(command)[:1]
+        except ValueError:
+            return None
+        found = shutil.which(first[0]) if first else None
+        if found and any(apps.entry_program(e) == Path(found).resolve() for e in apps.desktop_entries()
+                         if not e["terminal"]):
+            return Path(found)
+        return None
     match = re.match(r'\s*"([^"]+\.exe)"|\s*(\S+\.exe)\b', command, re.I)
     if not match:
         return None
@@ -322,12 +347,13 @@ def tool_guard(request, handler):
 
 # Plain words for everyday commands, when the model doesn't say what it's doing
 COMMON_COMMANDS = [
-    (r"\b(tasklist|get-process)\b", "check which programs are running"),
+    (r"\b(tasklist|get-process|ps|pgrep)\b", "check which programs are running"),
     (r"\b(dir|ls|get-childitem|gci)\b", "list a folder"),
-    (r"\b(type|cat|get-content|gc)\b", "read a file"),
-    (r"\b(ipconfig|ping|tracert|nslookup|test-connection)\b", "check the network"),
-    (r"\b(systeminfo|get-computerinfo|wmic|get-ciminstance)\b", "look up system information"),
-    (r"^\s*start\s", "open something"),
+    (r"\b(type|cat|get-content|gc|head|tail)\b", "read a file"),
+    (r"\b(ipconfig|ping|tracert|nslookup|test-connection|ip\s+a(ddr)?|nmcli)\b", "check the network"),
+    (r"\b(systeminfo|get-computerinfo|wmic|get-ciminstance|uname|lscpu|neofetch|fastfetch)\b",
+     "look up system information"),
+    (r"^\s*(start|xdg-open)\s", "open something"),
 ]
 
 
@@ -365,6 +391,8 @@ def describe(action):
     if programs := re.findall(r"(?:/im|-name)\s+\"?([\w.-]+?)(?:\.exe)?\"?(?:\s|;|$)", command, re.I):
         if re.search(r"taskkill|stop-process", command, re.I):
             return "force-close " + " and ".join(dict.fromkeys(p.title() for p in programs))
+    if programs := re.findall(r"\b(?:pkill|killall)\s+(?:-\S+\s+)*\"?([\w.-]+)", command):
+        return "force-close " + " and ".join(dict.fromkeys(p.title() for p in programs))
     for pattern, summary in COMMON_COMMANDS:
         if re.search(pattern, command, re.I):
             return summary

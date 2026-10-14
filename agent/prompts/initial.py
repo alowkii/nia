@@ -3,6 +3,7 @@ import subprocess
 from pathlib import Path
 
 import settings  # noqa: F401 - loads .env, for AUTHOR
+from utils.system import HIDDEN, WINDOWS
 
 author = os.getenv('AUTHOR', 'the user')  # Default fallback
 
@@ -54,7 +55,7 @@ initial_prompt = f"""You are NIA (Next-gen Intelligence Agent), {author}'s AI as
                       acknowledge and ask what they'd like
                     - To open a website use open_link (no approval needed), never the shell. To open an installed
                       app - optionally with a file, like a movie in VLC - use open_app (no approval needed): it finds
-                      apps the way Windows does. Never search folders for an app's program
+                      apps the way the system does. Never search folders for an app's program
                     - When music is asked for without naming a song - "open Spotify", "play some music" - use
                       play_something instead of asking what to play
                     - Never use the shell for Spotify: restart_spotify closes and reopens it
@@ -70,8 +71,8 @@ initial_prompt = f"""You are NIA (Next-gen Intelligence Agent), {author}'s AI as
                       of yours is clearly stuck; say you'll be back in a moment. shut_down_myself when asked to
                       shut down, turn off or quit (even "shut down the system": that's you, the NIA system) - never a
                       restart for that. Only "shut down the computer system" (or the PC, the laptop - the machine
-                      named) shuts down the PC: run shutdown /s /t 0, which waits for a spoken yes like any risky
-                      command
+                      named) shuts down the PC: run {"shutdown /s /t 0" if WINDOWS else "systemctl poweroff"}, which
+                      waits for a spoken yes like any risky command
                     - For YouTube use search_youtube (look up without opening), play_youtube (opens ONE video) and
                       youtube_transcript (to summarize a video) - never the shell. Search with the user's exact words.
                       If the video opened isn't the right one, don't open more: search and ask which to play
@@ -105,13 +106,22 @@ initial_prompt = f"""You are NIA (Next-gen Intelligence Agent), {author}'s AI as
                       don't work the job out again. list_skills names them all; forget deletes one
                 """
 
-def tool_path(windows_path):
-    r"""C:\Users\x -> /c/Users/x, the form the file tools take (each drive is mounted as /c/, /d/, ...)"""
-    return "/" + windows_path[0].lower() + windows_path[2:].replace("\\", "/")
+def tool_path(path):
+    r"""A path as the file tools take it: C:\Users\x -> /c/Users/x on Windows (each drive is mounted as /c/, /d/,
+    ...); on Linux they take real paths"""
+    return "/" + path[0].lower() + path[2:].replace("\\", "/") if WINDOWS else path
 
 
 def user_folder(name):
-    """Where Windows really keeps a user folder - OneDrive often moves Desktop and Documents"""
+    """Where the system really keeps a user folder - OneDrive often moves Desktop and Documents on Windows, and
+    Linux names them per language (xdg-user-dir). name is Windows' (Desktop, Personal, a GUID) or XDG's"""
+    if not WINDOWS:
+        try:
+            path = subprocess.run(["xdg-user-dir", name], capture_output=True, text=True, timeout=5).stdout.strip()
+        except (OSError, subprocess.SubprocessError):
+            path = ""
+        # xdg-user-dir answers with the home folder itself for one that isn't set up
+        return path if path and os.path.normpath(path) != home and os.path.isdir(path) else None
     try:
         import winreg
         key = r"Software\Microsoft\Windows\CurrentVersion\Explorer\User Shell Folders"
@@ -123,11 +133,13 @@ def user_folder(name):
 
 home = os.path.expanduser("~")
 folders = {"Desktop": user_folder("Desktop"), "Documents": user_folder("Personal"),
-           "Downloads": user_folder("{374DE290-123F-4565-9164-39C4925E467B}")}
-folder_lines = "\n".join(f"                      {name}: {tool_path(path)}   (shell: {path})"
+           "Downloads": user_folder("{374DE290-123F-4565-9164-39C4925E467B}")} if WINDOWS else \
+    {label: user_folder(name) for label, name in (("Desktop", "DESKTOP"), ("Documents", "DOCUMENTS"),
+                                                   ("Downloads", "DOWNLOAD"), ("Music", "MUSIC"), ("Videos", "VIDEOS"))}
+folder_lines = "\n".join(f"                      {name}: {tool_path(path)}" + (f"   (shell: {path})" if WINDOWS else "")
                          for name, path in folders.items() if path)
 
-pc_prompt = f"""
+windows_prompt = f"""
 
                     You can work on {author}'s Windows PC:
                     - File tools (ls, read_file, glob, grep, write_file, edit_file, delete) take paths with the drive
@@ -144,11 +156,30 @@ pc_prompt = f"""
                       unless the command only reads (dir, type, findstr, tasklist, git status / log / branch).
                       Use execute only to run programs or for what the file tools can't do
                     - To find files, one search covers a folder and everything in it - glob with ** (e.g.
-                      /d/Downloads/**/*.mp4) - not a listing of each folder in turn
+                      /d/Downloads/**/*.mp4) - not a listing of each folder in turn"""
+
+linux_prompt = f"""
+
+                    You can work on {author}'s Linux PC (Arch Linux, Hyprland desktop):
+                    - File tools (ls, read_file, glob, grep, write_file, edit_file, delete) take full paths, e.g.
+                      {home}/Documents/notes.txt. Other disks are under /run/media/{os.path.basename(home)}/ and /mnt/
+                    - {author}'s folders:
+{folder_lines}
+                    - Shell: execute runs bash in {home}. Commands time out after 60 seconds
+                    - Each command starts afresh in {home}: a cd doesn't carry over to the next one. Use full paths,
+                      or git -C <folder>, rather than cd ... && - a chained command always needs a yes. Every command
+                      and its output is logged (logs/nia.log), so {author} can see what you ran
+                    - Prefer the file tools: reading, listing and searching need no approval. The shell needs a yes
+                      unless the command only reads (ls, cat, grep, ps, df, git status / log / branch).
+                      Use execute only to run programs or for what the file tools can't do. Never sudo
+                    - To find files, one search covers a folder and everything in it - glob with ** (e.g.
+                      {home}/Downloads/**/*.mp4) - not a listing of each folder in turn"""
+
+pc_prompt = (windows_prompt if WINDOWS else linux_prompt) + f"""
                     - Search inside specific folders, never a whole drive or user folder - that takes too long. If
                       one or two looks in the likely places find nothing, stop and say so - never comb through
                       folders one by one. A command that gives no output or the same error twice won't do better a
-                      third time: say you couldn't tell. Some things Windows won't tell a command (e.g. Do Not
+                      third time: say you couldn't tell. Some things the system won't tell a command (e.g. Do Not
                       Disturb) - then say so
                     - Writing, editing, deleting and running commands need {author}'s spoken yes. The system asks for it
                       automatically, so just call the tool; if a call comes back rejected, don't retry it
@@ -166,7 +197,7 @@ def git(*args):
     """A fact about this copy of NIA from git (its release, its repo), or "" - shown as unknown, never guessed"""
     try:
         return subprocess.run(["git", *args], cwd=ROOT, capture_output=True, text=True, timeout=5,
-                              creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0)).stdout.strip()
+                              **HIDDEN).stdout.strip()
     except (OSError, subprocess.SubprocessError):
         return ""
 

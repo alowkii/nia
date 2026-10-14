@@ -15,7 +15,6 @@ import os
 import re
 import shutil
 import subprocess
-import sys
 import tempfile
 import threading
 import time
@@ -24,6 +23,7 @@ from pathlib import Path
 from langchain_core.tools import tool
 
 import settings
+from utils.system import EXE, HIDDEN, console_python
 
 logger = logging.getLogger(__name__)
 TIMEOUT = 90  # seconds; a web-researched answer took 17 s at low effort (46 s at Claude Code's default)
@@ -39,7 +39,7 @@ ASK = ("Answer this for a voice assistant to read aloud. Always browse first, ev
 
 def executable():
     """Claude Code's command line, if it's installed"""
-    local = Path.home() / ".local" / "bin" / "claude.exe"
+    local = Path.home() / ".local" / "bin" / f"claude{EXE}"
     return shutil.which("claude") or (str(local) if local.exists() else None)
 
 
@@ -98,7 +98,7 @@ def ask(question):
     s = settings.load()
     proc = subprocess.Popen(command(question, s["claude_model"], s["claude_effort"]), cwd=FOLDER, env=clean_env(),
                             stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                            creationflags=subprocess.CREATE_NO_WINDOW, encoding="utf-8", errors="replace")
+                            **HIDDEN, encoding="utf-8", errors="replace")
     reader = threading.Thread(target=lambda: setattr(proc, "answer", proc.communicate()), daemon=True)
     reader.start()
     if ANNOUNCE:  # while Claude works
@@ -142,7 +142,7 @@ def ask_claude(question: str) -> str:
 ROOT = Path(__file__).resolve().parent.parent
 TRANSCRIPTS = ROOT / "logs" / "claude"  # every Claude run, whole (logs/ is never committed)
 CHANGES = ROOT.parent / "nia-changes"  # where each change is built, one checkout per branch
-PYTHON = Path(sys.executable).with_name("python.exe").as_posix()  # pythonw has no console for the tests
+PYTHON = Path(console_python()).as_posix()  # pythonw has no console for the tests
 BUILD_TIMEOUT = 20 * 60  # a coding job takes minutes, not seconds
 TEST_TIMEOUT = 10 * 60
 # The safety rails - approvals, this lock-down, the window - and the tests that guard them: Claude may not edit
@@ -162,7 +162,7 @@ _job = threading.Lock()  # one change at a time
 
 def _git(cwd, *args):
     return subprocess.run(["git", *args], cwd=cwd, capture_output=True, text=True, encoding="utf-8",
-                          errors="replace", creationflags=subprocess.CREATE_NO_WINDOW)
+                          errors="replace", **HIDDEN)
 
 
 def branch_name(request, now=None):
@@ -190,7 +190,7 @@ def run_tests(folder):
     for suite in sorted(Path(folder).glob("tests/test_*.py")):
         try:
             done = subprocess.run([PYTHON, f"tests/{suite.name}"], cwd=folder, capture_output=True,
-                                  timeout=TEST_TIMEOUT, creationflags=subprocess.CREATE_NO_WINDOW)
+                                  timeout=TEST_TIMEOUT, **HIDDEN)
             if done.returncode != 0:
                 failed.append(suite.name)
                 output = (done.stdout + done.stderr).decode("utf-8", "replace")
@@ -224,7 +224,7 @@ def _build(request, root, branch):
         logger.info(f"Building {request!r} on {branch} in {folder}")
         proc = subprocess.run(build_command(request), cwd=folder, env=clean_env(), capture_output=True, text=True,
                               encoding="utf-8", errors="replace", timeout=BUILD_TIMEOUT, stdin=subprocess.DEVNULL,
-                              creationflags=subprocess.CREATE_NO_WINDOW)
+                              **HIDDEN)
         record("build", request, proc.stdout)
         result = next((e for e in events(proc.stdout) if e.get("type") == "result"), {})
         summary = str(result.get("result") or "").strip()

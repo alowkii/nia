@@ -1,5 +1,6 @@
 """NIA settings: defaults live here, your changes in settings.json (written by the settings panel in nia.py)"""
 import json
+import os
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -10,7 +11,7 @@ PATH = Path(__file__).resolve().parent / "settings.json"
 
 DEFAULTS = {
     # LLM server (llama-server + Bonsai, GPU) - restart the server to apply
-    "bonsai_dir": r"D:\bonsai",
+    "bonsai_dir": r"D:\bonsai" if os.name == "nt" else str(Path.home() / "bonsai"),
     "model_file": "Ternary-Bonsai-2-27B-PTQ1_0.gguf",
     "port": 8081,  # 8080 is taken by httpd on this machine
     "context": 16384,  # tokens; ~7.5 of 8 GB VRAM on an RTX 4060 with the display. The agent harness alone is ~3.6K
@@ -27,7 +28,7 @@ DEFAULTS = {
     "voice_speed": 1.2,  # 1 = the voice's natural pace; George at 1.2 says the same in ~17% less time
     "ready_chime": True,  # a soft rising chime each time NIA is ready - after starting, and after a restart
     "voice_volume": 1.0,  # NIA's own voice, 0.1-1 (1 = full; more would clip); also set by voice ("speak quieter")
-    "mic_device": "",  # the microphone NIA listens through, by name; "" = Windows' default (switchable live)
+    "mic_device": "",  # the microphone NIA listens through, by name; "" = the system's default (switchable live)
     "stt_model": "medium",  # Moonshine streaming: tiny / small / medium (tiny rarely hears "Nia")
     "wake_phrase": "hey nia",
     # How closely the start of what you say must match the wake phrase, 0-1. Lower wakes more easily:

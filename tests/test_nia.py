@@ -106,9 +106,10 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
     # Only NIA's own llama-server counts: Ollama runs its own llama-server.exe, and waiting on that one
     # left a real launch stuck on "Booting" (and Restart server would have killed it)
     from types import SimpleNamespace
-    ours = SimpleNamespace(info={"name": "llama-server.exe", "exe": nia.llm_server_command()[0]})
-    ollamas = SimpleNamespace(info={"name": "llama-server.exe",
-                                    "exe": r"C:\Users\x\AppData\Local\Programs\Ollama\lib\ollama\llama-server.exe"})
+    ours = SimpleNamespace(info={"name": f"llama-server{nia.EXE}", "exe": nia.llm_server_command()[0]})
+    ollamas = SimpleNamespace(info={"name": f"llama-server{nia.EXE}",
+                                    "exe": r"C:\Users\x\AppData\Local\Programs\Ollama\lib\ollama\llama-server.exe"
+                                    if nia.WINDOWS else "/usr/lib/ollama/llama-server"})
     real = nia.psutil.process_iter
     nia.psutil.process_iter = lambda attrs: [ollamas]
     assert nia.bonsai_servers() == []
@@ -163,22 +164,34 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
 # Her own taskbar button and pin: a Start-menu shortcut with her icon, how to start her, and the window's app ID
 # (a folder outside AppData: Store Python sees its own private copy of AppData, the copy step the real one)
 with tempfile.TemporaryDirectory(dir=nia.LOG_DIR, ignore_cleanup_errors=True) as tmp:
-    real_shortcut, nia.SHORTCUT = nia.SHORTCUT, Path(tmp) / "NIA.lnk"  # never the real Start menu here
-    try:
-        nia.taskbar_identity()
-        import pythoncom
-        from win32com.propsys import propsys, pscon
-        from win32com.shell import shell
-        link = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None, pythoncom.CLSCTX_INPROC_SERVER,
-                                          shell.IID_IShellLink)
-        link.QueryInterface(pythoncom.IID_IPersistFile).Load(str(nia.SHORTCUT))
-        assert link.GetPath(0)[0].lower().endswith("pythonw.exe"), "starts her without a console"
-        assert link.GetArguments() == f'"{nia.ROOT / "nia.py"}"' and link.GetIconLocation()[0] == str(nia.ICON)
-        store = propsys.SHGetPropertyStoreFromParsingName(str(nia.SHORTCUT))
-        assert store.GetValue(pscon.PKEY_AppUserModel_ID).GetValue() == nia.APP_ID, "the same ID as her window"
-        assert not (nia.LOG_DIR / "NIA.lnk").exists(), "the staged copy is cleaned up"
-    finally:
-        nia.SHORTCUT = real_shortcut
+    if not nia.WINDOWS:  # Linux: her launcher entry, with her icon, how to start her and her window's app ID
+        real_entry, nia.DESKTOP_ENTRY = nia.DESKTOP_ENTRY, Path(tmp) / "applications" / "nia.desktop"
+        try:
+            nia.taskbar_identity()
+            entry = nia.DESKTOP_ENTRY.read_text()
+            assert f'Exec="{sys.executable}" "{nia.ROOT / "nia.py"}"' in entry and f"Icon={nia.ICON}" in entry
+            assert nia.ICON.is_file() and "StartupWMClass=nia" in entry
+            from gi.repository import GLib
+            assert GLib.get_prgname() == "nia", "the window's app ID matches the entry's name"
+        finally:
+            nia.DESKTOP_ENTRY = real_entry
+    else:
+        real_shortcut, nia.SHORTCUT = nia.SHORTCUT, Path(tmp) / "NIA.lnk"  # never the real Start menu here
+        try:
+            nia.taskbar_identity()
+            import pythoncom
+            from win32com.propsys import propsys, pscon
+            from win32com.shell import shell
+            link = pythoncom.CoCreateInstance(shell.CLSID_ShellLink, None, pythoncom.CLSCTX_INPROC_SERVER,
+                                              shell.IID_IShellLink)
+            link.QueryInterface(pythoncom.IID_IPersistFile).Load(str(nia.SHORTCUT))
+            assert link.GetPath(0)[0].lower().endswith("pythonw.exe"), "starts her without a console"
+            assert link.GetArguments() == f'"{nia.ROOT / "nia.py"}"' and link.GetIconLocation()[0] == str(nia.ICON)
+            store = propsys.SHGetPropertyStoreFromParsingName(str(nia.SHORTCUT))
+            assert store.GetValue(pscon.PKEY_AppUserModel_ID).GetValue() == nia.APP_ID, "the same ID as her window"
+            assert not (nia.LOG_DIR / "NIA.lnk").exists(), "the staged copy is cleaned up"
+        finally:
+            nia.SHORTCUT = real_shortcut
 
 # Closing NIA closes everything she started - real processes here, not stand-ins. After one Ctrl+C an assistant
 # lingered 10+ minutes and the model server (~6 GB of GPU memory) never stopped
@@ -215,14 +228,19 @@ family = [parent.pid] + [c.pid for c in psutil.Process(parent.pid).children(recu
 nia.kill_tree(parent.pid)
 assert all(gone_soon(pid) for pid in family), "the whole tree, not just the top"
 
-# bound_to_me: a process that owns a server dies abruptly - no cleanup at all - and the server goes with it
+# popen_bound: a process that owns a server dies abruptly - no cleanup at all - and the server goes with it. Started
+# from a thread that ends first, as a settings save restarts it: on Linux that must not end the server early
 owner = subprocess.Popen([sys.executable, "-c", f"""
-import os, subprocess, sys
+import os, subprocess, sys, threading, time
 sys.path.insert(0, {str(nia.ROOT)!r})
 import nia
-server = subprocess.Popen({SLEEPER!r})
-nia.bound_to_me(server)
-print(server.pid, flush=True)
+started = []
+starter = threading.Thread(target=lambda: started.append(nia.popen_bound({SLEEPER!r})))
+starter.start()
+starter.join()
+time.sleep(1)
+assert started[0].poll() is None, "the server outlived the thread that started it"
+print(started[0].pid, flush=True)
 os._exit(0)  # like a closed console or Task Manager
 """], stdout=subprocess.PIPE, text=True, cwd=nia.ROOT)
 server_pid = int(owner.stdout.readline())

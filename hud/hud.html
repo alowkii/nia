@@ -644,14 +644,14 @@ const micPick = $('micPick'), micMenu = $('micMenu');
 function showMic() {
   const name = micInUse ?? config.mic_device;
   $('micName').textContent = micLabel(name);
-  micPick.title = `Microphone: ${name || 'Windows default'}`;
+  micPick.title = `Microphone: ${name || 'System default'}`;
 }
 async function openMicMenu(open) {
   micMenu.hidden = !open;
   micPick.setAttribute('aria-expanded', String(open));
   if (!open) return;
   const { mics, current } = await (await fetch('/mics')).json();
-  micMenu.innerHTML = '<span class="caption">MICROPHONE</span>' + [['', 'Windows default'], ...mics.map((m) => [m, m])]
+  micMenu.innerHTML = '<span class="caption">MICROPHONE</span>' + [['', 'System default'], ...mics.map((m) => [m, m])]
     .map(([value, label]) => `<button type="button" class="mic-option" role="menuitemradio" data-mic="${esc(value)}"
         aria-checked="${value === current}"><span class="dot"></span>${esc(label)}</button>`).join('');
   (micMenu.querySelector('[aria-checked="true"]') || micMenu.querySelector('.mic-option')).focus();
@@ -731,7 +731,7 @@ async function loadForm() {
         if (kind === 'check') return switchHtml(key, esc(label), '', !!v).replace('class="switch"', 'class="switch field-switch"');
         const input = kind === 'voice' ? `<select id="${id}" name="${key}">${options(voices, v)}</select>`
           : kind === 'stt' ? `<select id="${id}" name="${key}">${options(stt_models, v)}</select>`
-          : kind === 'mic' ? `<select id="${id}" name="${key}"><option value="">Windows default</option>${
+          : kind === 'mic' ? `<select id="${id}" name="${key}"><option value="">System default</option>${
               (mics.includes(v) || !v ? mics : [...mics, v]).map((m) =>
                 `<option value="${esc(m)}"${m === v ? ' selected' : ''}>${esc(m)}</option>`).join('')}</select>`
           : `<input id="${id}" name="${key}" type="text" inputmode="${kind === 'number' ? 'decimal' : 'text'}" value="${esc(v)}" autocomplete="off">`;

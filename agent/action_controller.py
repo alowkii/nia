@@ -8,6 +8,7 @@ import spotipy
 from spotipy.oauth2 import SpotifyOAuth
 
 import settings
+from utils.system import DETACHED, WINDOWS
 
 logger = logging.getLogger(__name__)
 PLAY_WAIT = 15  # seconds Spotify gets to start playing before it counts as stuck
@@ -33,6 +34,14 @@ def oauth():
     )
 
 
+def start_spotify():
+    """The Spotify app, opened (or woken) on this PC - apart from NIA, so it outlives her"""
+    if WINDOWS:
+        os.startfile("spotify:")
+    else:
+        subprocess.Popen(["spotify"], **DETACHED)
+
+
 class SpotifyController:
     """Spotify API errors propagate; the agent's ToolNode hands them back to the model."""
 
@@ -42,12 +51,12 @@ class SpotifyController:
 
     def open_app(self, timeout=20):
         """Launch Spotify on this PC unless it's already a device, and wait until it shows up as one.
-        Uses Windows' spotify: link, so there's no shell command and nothing to approve."""
+        Uses Windows' spotify: link (Linux: the spotify program), so there's no shell command and nothing to approve"""
         devices = self.sp.devices()["devices"]
         if any(d["type"] == "Computer" for d in devices):
             return devices
         # Also wakes an app that's open but idle: Spotify drops those from the device list after a while
-        os.startfile("spotify:")
+        start_spotify()
         started = time.time()
         for _ in range(timeout * 2):
             time.sleep(0.5)
@@ -61,8 +70,9 @@ class SpotifyController:
     def restart_app(self):
         """Force-close Spotify on this PC and open it again - the fix for an app that accepts
         commands but plays nothing. Only ever touches Spotify's own processes"""
-        for image in ("Spotify.exe", "SpotifyLauncher.exe"):
-            subprocess.run(["taskkill", "/F", "/IM", image], capture_output=True)
+        for image in ("Spotify.exe", "SpotifyLauncher.exe") if WINDOWS else ("spotify",):
+            subprocess.run(["taskkill", "/F", "/IM", image] if WINDOWS else ["pkill", "-KILL", "-x", image],
+                           capture_output=True)
         time.sleep(2)  # let Spotify drop off the device list before waiting for it to come back
         self.open_app()
         self.restarted = time.time()
