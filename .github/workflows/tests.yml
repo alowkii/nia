@@ -1,0 +1,45 @@
+# The three offline test suites, on both systems NIA runs on - every pull request and every push to develop and main.
+# Nothing here reaches a model, a microphone or Spotify: the suites use stand-ins for all of them.
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [develop, main]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"  # as NIA is tested on Windows
+          cache: pip
+      - run: pip install -r requirements.txt
+      - name: test_agent
+        run: python tests/test_agent.py
+      - name: test_voice
+        run: python tests/test_voice.py
+      - name: test_nia
+        run: python tests/test_nia.py
+
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      # The window's PyGObject and WebKitGTK come from the system, as in README's Setup on Linux; PortAudio for
+      # sounddevice; pactl and xdg-utils for the mixer and apps
+      - run: |
+          sudo apt-get update
+          sudo apt-get install -y python3-venv python3-gi gir1.2-webkit2-4.1 libportaudio2 pulseaudio-utils xdg-utils
+      - run: |
+          python3 -m venv --system-site-packages .venv
+          .venv/bin/pip install -r requirements.txt
+      - name: test_agent
+        run: .venv/bin/python tests/test_agent.py
+      - name: test_voice
+        run: .venv/bin/python tests/test_voice.py
+      - name: test_nia
+        run: .venv/bin/python tests/test_nia.py
