@@ -116,17 +116,20 @@ prompt prefix stays identical and llama-server reuses its cache.
 
 ## Requirements
 
-- **Windows 10 or 11** - NIA's window, taskbar button, volume ducking and shutdown handling are Windows-only.
-  Her window is drawn by the **WebView2 runtime**, built into Windows 11 and current Windows 10; if it's
-  missing, get the [Evergreen runtime](https://developer.microsoft.com/microsoft-edge/webview2/)
-- **Python 3.11** (tested) - python.org's or the Microsoft Store's both work
+- **Windows 10 or 11**, or **Linux** (tested on Arch / Omarchy with Hyprland on Wayland, PipeWire). On Windows her
+  window is drawn by the **WebView2 runtime**, built into Windows 11 and current Windows 10; if it's missing, get the
+  [Evergreen runtime](https://developer.microsoft.com/microsoft-edge/webview2/). On Linux it's **WebKitGTK**:
+  `webkit2gtk-4.1` and `python-gobject` from your distribution, plus `pactl` (PipeWire or PulseAudio) and
+  `xdg-utils` - see [Setup on Linux](#setup-on-linux)
+- **Python 3.11** (tested on Windows) - python.org's or the Microsoft Store's both work; **3.14** on Linux (the
+  system's own, since the window needs its PyGObject)
 - **NVIDIA GPU with 8 GB VRAM** for the LLM. Bonsai 2 27B (`PTQ1_0`, 5.95 GB) runs fully on
   the GPU at ~35 tok/s on an RTX 4060 Laptop
 - **[PrismML's llama.cpp fork](https://github.com/PrismML-Eng/llama.cpp/releases)**, since
   stock llama.cpp and Ollama can't load Bonsai's ternary format, plus
   [`Ternary-Bonsai-2-27B-PTQ1_0.gguf`](https://huggingface.co/prism-ml/Ternary-Bonsai-2-27B-gguf).
-  Both are expected under `D:\bonsai` (the fork in `llama-prism\`) — change "Bonsai folder"
-  in the settings panel if yours live elsewhere
+  Both are expected under `D:\bonsai` on Windows, `~/bonsai` on Linux (the fork in `llama-prism`) — change "Bonsai
+  folder" in the settings panel if yours live elsewhere
 - A working microphone and speaker
 - A [Spotify Developer](https://developer.spotify.com/dashboard) app, for music control
 
@@ -159,6 +162,42 @@ it currently expects `https://aalokpandit.netlify.app/`, so change it to your ow
 The first music command opens a browser once for OAuth and caches the token in
 `.spotify_cache`.
 
+### Setup on Linux
+
+```bash
+sudo pacman -S --needed python-gobject webkit2gtk-4.1 libpulse xdg-utils   # Arch; other distros: the same libraries
+
+git clone https://github.com/alowkii/nia
+cd nia
+python -m venv --system-site-packages .venv   # the window needs the system's PyGObject
+.venv/bin/pip install -r requirements.txt     # pycaw and pywin32 are skipped off Windows
+```
+
+**The LLM server:** PrismML publishes Linux builds - take `llama-prism-<build>-bin-linux-cuda-<version>-x64.tar.gz`
+for a CUDA version your driver supports (`nvidia-smi` shows it) and unpack it into `~/bonsai/llama-prism`, with the
+model in `~/bonsai`. The build expects the CUDA runtime beside it; without a system-wide CUDA toolkit, NVIDIA's pip
+wheels carry just those libraries:
+
+```bash
+.venv/bin/pip download --no-deps -d /tmp/cuda "nvidia-cuda-runtime==13.*" "nvidia-cublas==13.*"   # match the build
+cd /tmp/cuda && for w in *.whl; do python -m zipfile -e "$w" .; done
+cp nvidia/cu13/lib/libcudart.so.13 nvidia/cu13/lib/libcublas.so.13 nvidia/cu13/lib/libcublasLt.so.13 ~/bonsai/llama-prism/
+~/bonsai/llama-prism/llama-server --list-devices   # should list the GPU
+```
+
+**Ollama** (memory and the approval model) must be **0.35.x**: from 0.40 its `/v1/systemone` only takes models with
+a `decision.type` field, which OpenThai-SystemOne v0.3 doesn't have, so every check fails and she asks about
+everything. Both models run on the CPU, so the CPU parts of the release are enough (~60 MB):
+
+```bash
+mkdir -p ~/.local/ollama && curl -L https://github.com/ollama/ollama/releases/download/v0.35.1/ollama-linux-amd64.tar.zst \
+  | tar --zstd -x -C ~/.local/ollama --exclude='lib/ollama/cuda_*' --exclude='lib/ollama/mlx*' --exclude='lib/ollama/vulkan*'
+ln -sf ~/.local/ollama/bin/ollama ~/.local/bin/ollama
+```
+
+NIA starts `ollama serve` herself when it isn't running. Then pull the models as described under
+[Memory](#memory) and [Your PC](#your-pc), and create the `.env` as above.
+
 ## Running
 
 One script runs everything, in one window:
@@ -167,7 +206,9 @@ One script runs everything, in one window:
 python nia.py
 ```
 
-(Or `uv run -m nia`; `pythonw nia.py` runs it without a console.) **The first run adds NIA to your Start
+(Or `uv run -m nia`; `pythonw nia.py` runs it without a console. On Linux, `.venv/bin/python nia.py`; **the first
+run adds NIA to your app launcher** - `~/.local/share/applications/nia.desktop`, with her icon - and her window's app
+ID is `nia`, so the bar and window switcher show her by name.) **On Windows, the first run adds NIA to your Start
 menu**, with her own icon and pointing at your copy of the repo and its Python: search "NIA" and choose *Pin to
 taskbar*, or right-click her running window's taskbar button. Either way the pin is NIA's own and starts her
 without a console. Each start refreshes the entry, so it follows the folder if you move it; to remove it,
@@ -176,7 +217,7 @@ behind it, starts the LLM server if it isn't already up (~20 s) and the assistan
 *Standing by* — with a soft, warm two-note chime as she's ready (*Chime when she's ready* in the settings turns
 it off) — say "Hey Nia", or type into the command line at the bottom. **Closing the window shuts everything
 down**, including the LLM server if NIA started it — even if `nia.py` is killed or its console closed, Windows
-ends the server with it — and the log ends with *Stopped everything*. Anything a crash leaves behind is
+(a job object) or Linux (the kernel's parent-death signal) ends the server with it — and the log ends with *Stopped everything*. Anything a crash leaves behind is
 cleaned up the next time she starts. Running it again while NIA is up just opens another window
 onto her. Say "reboot" to restart all of it — see **Rebooting** under [How it works](#how-it-works).
 
@@ -389,10 +430,10 @@ model sees, so the docstring is the prompt.
 ### Your PC
 
 **Apps:** "open VLC", "play this movie in VLC", "open Notepad" - [open_app](agent/apps.py) finds an installed
-app the way Windows does (its registered programs, then the Start menu), never by guessing folders, and opens it,
-with a file if you name one. No approval needed, like opening a website. Windows only (the registry, the Start menu
-and `os.startfile` exist nowhere else); macOS would use `open -a "VLC" movie.mp4`, Linux the app's command on
-PATH or its `.desktop` entry - see *Known limitations*.
+app the way the system does - on Windows its registered programs, then the Start menu; on Linux the launcher's
+`.desktop` entries (Flatpaks included), then a program on PATH - never by guessing folders, and opens it, with a file
+if you name one (a terminal app such as btop opens in a terminal). No approval needed, like opening a website. When
+VLC isn't installed, a film opens in whatever player the PC uses for that kind of file.
 **Movies and videos:** "can you play a movie?", "play The Founder" - [play_video](agent/apps.py) plays a video file
 from the PC in VLC (or a player you name), the way `play_youtube` plays YouTube; "play" for a film never goes to
 Spotify, which is for music. Asked for the same film again within a couple of minutes, she doesn't open a second
@@ -508,11 +549,12 @@ agent/claude.py                     asking Claude Code, and building changes to 
 agent/memory.py                     long-term memory and skills, recalled by vector search
 agent/server.py                     the LLM server command and health check
 agent/prompts/                      system prompt
-utils/                              the assistant's link to the window, microphones, logging, numbers as words
+utils/                              the assistant's link to the window, microphones, logging, numbers as words;
+                                    system.py (what differs between Windows and Linux), mixer.py (Linux volumes)
 assets/logo/                        the NIA logo: SVG and PNG in every lockup, app icons, favicon
 assets/screenshots/                 the window, for this README
 tests/                              the offline test suites (test_agent, test_voice, test_nia)
-scripts/run_bonsai.bat              starts just the LLM server (llama-server + Bonsai)
+scripts/run_bonsai.bat, .sh         starts just the LLM server (llama-server + Bonsai)
 scripts/text_chat.py                text-only chat in the console, no audio
 scripts/eval_approval.py            live check of the approval layers (needs Ollama)
 scripts/openthai-cpu.Modelfile      builds the approval model for Ollama
@@ -520,19 +562,21 @@ scripts/openthai-cpu.Modelfile      builds the approval model for Ollama
 
 ## Known limitations
 
-- **Windows only.** Several parts use what only Windows has, so NIA doesn't run on Linux or macOS as it is:
+- **Windows and Linux, not macOS.** Each part that only one system has is done both ways:
 
-  | Part | On Windows | What Linux / macOS would need |
+  | Part | On Windows | On Linux |
   |---|---|---|
-  | Her window, taskbar button, Start-menu entry | pywebview on WebView2 (.NET), app IDs via `pywin32` | pywebview's GTK/Qt (Linux) or Cocoa (macOS) backend; a `.desktop` file or an app bundle |
-  | Opening apps (`open_app`) | registered apps, the Start menu, `os.startfile` | `open -a "App" file` on macOS; the app's command on PATH or its `.desktop` entry on Linux |
-  | Turning other apps down while she speaks | the volume mixer (`pycaw`) | PulseAudio / PipeWire (Linux), CoreAudio (macOS) |
-  | Ending the model server with her | a job object | a process group, or `prctl(PR_SET_PDEATHSIG)` on Linux |
-  | Ctrl+C and a closed console | a console control handler | ordinary signals |
-  | Her shell and paths | `cmd.exe`, `C:\...` (`/c/...` in the file tools) | bash or zsh, `/home/...`, and prompt rules to match |
-  | Install | `pywin32` (Windows-only) | without it |
+  | Her window, taskbar button, launcher entry | pywebview on WebView2 (.NET), app IDs via `pywin32` | pywebview on WebKitGTK; `nia.desktop` and the app ID `nia` |
+  | Opening apps (`open_app`) | registered apps, the Start menu, `os.startfile` | `.desktop` entries, then PATH |
+  | Turning other apps down while she speaks | the volume mixer (`pycaw`) | PipeWire / PulseAudio through `pactl` ([utils/mixer.py](utils/mixer.py)) |
+  | Choosing the microphone | DirectSound devices | the sound server's sources; her recording is moved onto the chosen one |
+  | Ending the model server with her | a job object | `prctl(PR_SET_PDEATHSIG)` |
+  | Ctrl+C and a closed console | a console control handler | SIGINT, SIGTERM, SIGHUP |
+  | Her shell and paths | `cmd.exe`, `C:\...` (`/c/...` in the file tools) | bash, real paths in both |
 
-  The language model (llama-server), speech (Moonshine) and the agent itself are cross-platform.
+  macOS would need the same again (Cocoa, `open -a`, CoreAudio). On Linux with NVIDIA's driver under Wayland,
+  WebKitGTK's DMA-BUF renderer crashes the window (*Error 71 (Protocol error)*), so NIA turns it off there.
+  [scripts/eval_approval.py](scripts/eval_approval.py)'s 40 commands are still Windows ones.
 
 - **No speaker verification.** A check that commands came from your voice (Resemblyzer)
   added too much latency per command and was removed. Anyone within earshot can issue commands.

@@ -18,7 +18,12 @@ import numpy as np
 import sounddevice as sd
 from langchain_core.tools import tool
 from moonshine_voice import MicTranscriber, ModelArch, TextToSpeech
-from pycaw.pycaw import AudioUtilities
+
+from utils.system import NEW_CONSOLE, WINDOWS
+if WINDOWS:
+    from pycaw.pycaw import AudioUtilities
+else:
+    from utils.mixer import AudioUtilities  # the same mixer, through PipeWire / PulseAudio
 
 import settings
 import agent.chat as agent_chat
@@ -268,6 +273,13 @@ def speakable(text):
     return re.sub(r"([,.!?;:])(?:\s*,)+", r"\1", text).strip()  # "sir,, the" -> "sir, the"
 
 
+def com_ready():
+    """Windows' mixer is a COM object, and each thread needs COM started: the chime can play from a tool's thread"""
+    if WINDOWS:
+        import comtypes
+        comtypes.CoInitialize()
+
+
 class Quieter:
     """Other apps' volume, lowered while NIA makes a sound and put back after - one for the whole process. Each app's
     own volume is recorded once, when it's first lowered; it's held as quiet as the quietest of her sounds still
@@ -285,8 +297,7 @@ class Quieter:
         self.originals = {}  # an app's identifier -> its own volume, from before any of hers
 
     def _sessions(self):
-        import comtypes
-        comtypes.CoInitialize()  # each thread needs its own: the chime can play from a tool's thread
+        com_ready()
         for session in AudioUtilities.GetAllSessions():
             if session.ProcessId != os.getpid() and session.Identifier:  # never NIA's own voice
                 yield session
@@ -332,13 +343,12 @@ class Quieter:
     def own_voice_full(self):
         """Her own mixer volume at full - her voice volume setting is what decides how loud she is. Windows remembers
         each program's volume, and one of hers had been left at 2% by an earlier NIA"""
-        import comtypes
-        comtypes.CoInitialize()
+        com_ready()
         for session in AudioUtilities.GetAllSessions():
             if session.ProcessId == os.getpid():
                 volume = session.SimpleAudioVolume
                 if volume.GetMasterVolume() < 0.99:
-                    logger.info(f"Her own volume in the Windows mixer was {volume.GetMasterVolume():.0%} - set to full")
+                    logger.info(f"Her own volume in the mixer was {volume.GetMasterVolume():.0%} - set to full")
                     volume.SetMasterVolume(1.0, None)
 
     def put_back(self):
@@ -356,7 +366,7 @@ QUIETER = Quieter()
 
 
 def duck(level, everything=False):
-    """Turn every other app's volume down to level x its own (Windows mixer); returns a function that restores them"""
+    """Turn every other app's volume down to level x its own (the system's mixer); returns a function that restores them"""
     return QUIETER.hold(level, everything)
 
 
@@ -418,7 +428,7 @@ class WakeWordDetector:
         settings.save(saved)
         logger.info(f"Voice volume set to {level:.0%}")
         if level == 1.0:
-            return "Your voice is at 100%, its maximum - for louder, the user can turn up the Windows volume"
+            return "Your voice is at 100%, its maximum - for louder, the user can turn up the system volume"
         return f"Your voice volume is now {level:.0%}"
 
     def volume_heard(self, level):
@@ -458,7 +468,7 @@ class WakeWordDetector:
             """Switch yourself - the NIA system - off completely, right after this reply: your window, the language
             model, speech and agent. For "shut down", "shut down the system", "turn off", "power down", "switch off"
             or "quit": these always mean you, never the PC. Only when the computer is named ("shut down the computer
-            system", "...the PC", "...the laptop") is it the machine: that's the shell's shutdown /s /t 0 instead.
+            system", "...the PC", "...the laptop") is it the machine: that's the shell's shutdown command instead.
             Not a restart (that's restart_myself), and not "stop" (that only stops what you're doing). They start
             you again by running nia.py"""
             self.restart_after = "off"
@@ -475,7 +485,7 @@ class WakeWordDetector:
             hud.send(restart=what)
         else:
             if what != "off":
-                subprocess.Popen([sys.executable, *sys.argv], creationflags=subprocess.CREATE_NEW_CONSOLE)
+                subprocess.Popen([sys.executable, *sys.argv], **NEW_CONSOLE)
             self.lines.put(None)
 
     def on_line(self, line):
@@ -542,7 +552,7 @@ class WakeWordDetector:
         name = self.settings["mic_device"]
         index = mics.index(name)
         if name and index is None:
-            logger.warning(f"Microphone {name!r} isn't connected - listening through Windows' default instead")
+            logger.warning(f"Microphone {name!r} isn't connected - listening through the default instead")
         logger.info(f"Listening through {name if index is not None else 'the default microphone'}")
         hud.send(mic=name if index is not None else mics.DEFAULT)
         return index
@@ -555,6 +565,7 @@ class WakeWordDetector:
             self.mic._sd_stream.close()
             self.mic._sd_stream = None
         self.mic.device(self.mic_index()).start()
+        mics.route(self.settings["mic_device"])
 
     def idle(self):
         hud.show("awake" if self.awake else "asleep")
@@ -586,6 +597,7 @@ class WakeWordDetector:
     def run(self):
         s = self.settings
         self.mic.start()
+        mics.route(s["mic_device"])
         logger.info(f"Listening for {s['wake_phrase']!r}...")
         self.idle()
         if s["ready_chime"]:  # she's ready: a soft chime, so you know without looking
