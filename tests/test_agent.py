@@ -850,6 +850,8 @@ def test_read_only_allowlist():
 
 
 def test_read_only_allowlist_on_linux():
+    if WINDOWS:
+        return  # Windows' list is test_read_only_allowlist's
     from agent.approval import read_only
     for command in ["ps aux | grep -i spotify", 'ls -la "/home/me/Desktop"', "uptime", "whoami", "df -h",
                     "cat /home/me/notes.txt | head -5", "git -C ~/nia status", "git log", "ss -tlnp | grep 8081",
