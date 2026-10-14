@@ -1522,8 +1522,13 @@ def test_ask_claude_is_safe_and_reports_back():
     from agent import claude
     from agent.approval import risks
 
-    # Always the same locked-down call: web search and fetch only, anything else refused, nothing carried over
-    cmd = claude.command("Who won the last Grand Prix?", "sonnet")
+    # Always the same locked-down call: web search and fetch only, anything else refused, nothing carried over. With
+    # a stand-in program: these are the flags NIA passes, installed or not (CI has no Claude Code)
+    real_exe, claude.executable = claude.executable, lambda: "claude"
+    try:
+        cmd, no_model = claude.command("Who won the last Grand Prix?", "sonnet"), claude.command("q", "")
+    finally:
+        claude.executable = real_exe
     assert cmd[cmd.index("--effort") + 1] == "low", "low effort: 17 s instead of 46 s for the same answer"
     assert "Always browse first" in cmd[2], "never an answer from memory alone"
     assert cmd[cmd.index("--output-format") + 1] == "stream-json" and "--verbose" in cmd
@@ -1531,7 +1536,7 @@ def test_ask_claude_is_safe_and_reports_back():
         assert flag in cmd, flag
     assert cmd[cmd.index("--tools") + 1] == "WebSearch,WebFetch" and cmd[cmd.index("--permission-mode") + 1] == "dontAsk"
     assert not any("dangerously" in part or "bypass" in part for part in cmd)
-    assert cmd[-2:] == ["--model", "sonnet"] and "--model" not in claude.command("q", "")
+    assert cmd[-2:] == ["--model", "sonnet"] and "--model" not in no_model
     real_env = dict(claude.os.environ)
     claude.os.environ.update({"CLAUDECODE": "1", "CLAUDE_CODE_SESSION_ID": "parent"})
     try:
