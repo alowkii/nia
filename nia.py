@@ -416,6 +416,46 @@ def apply(changed, values, assistant, server, hub):
     return restarting
 
 
+LOGIN_PAGE = ROOT / "hud" / "spotify.html"
+
+
+def spotify_account(login):
+    """The Spotify account a fresh login belongs to, by name - for the page to show - or None"""
+    try:
+        import spotipy
+        me = spotipy.Spotify(auth_manager=login, requests_timeout=5).current_user()
+        return me.get("display_name") or me.get("id")
+    except Exception:  # the login worked; a name is only a nicety
+        return None
+
+
+def login_page(ok, why="", account=None):
+    """The tab Spotify sends the browser back to: hud/spotify.html, in NIA's look and the theme picked in her
+    settings - what happened, and what to do next"""
+    s = settings.load()
+    if ok:
+        name = s["wake_phrase"].split()[-1].title()  # "Nia"
+        rows = ([("SIGNED IN AS", account)] if account else []) + \
+            [("TRY SAYING", f"\u201cHey {name}, play some lofi\u201d")]
+    else:
+        rows = [("WHAT HAPPENED", why[:1].upper() + why[1:] + "."),
+                ("NEXT", "Open NIA's settings (the gear) and press Log in to Spotify again.")]
+    values = {
+        "state": "ok" if ok else "error", "theme": s["hud_theme"],
+        "chip": "SPOTIFY \u00b7 CONNECTED" if ok else "SPOTIFY \u00b7 NOT CONNECTED",
+        "caption": "LOGIN COMPLETE" if ok else "LOGIN FAILED",
+        "title": "Spotify is connected" if ok else "Spotify login didn't finish",
+        "message": "NIA can play your music now - on this PC, or on any device signed in to your Spotify." if ok
+                   else "NIA couldn't finish logging in to Spotify, so music won't play yet.",
+    }
+    page = LOGIN_PAGE.read_text(encoding="utf-8")
+    for key, value in values.items():
+        page = page.replace("{{%s}}" % key, html.escape(value))
+    cells = "".join(f'<div class="row"><dt>{html.escape(label)}</dt><dd{" class=say" if label == "TRY SAYING" else ""}>'
+                    f"{html.escape(value)}</dd></div>" for label, value in rows)
+    return page.replace("{{rows}}", cells)
+
+
 SPOTIFY_LOGIN = {"state": None}  # the one login started from the panel, until Spotify sends the browser back
 
 
@@ -458,25 +498,24 @@ def handler(hub, assistant, server, done):
             from urllib.parse import parse_qs, urlsplit
             query = {k: v[0] for k, v in parse_qs(urlsplit(self.path).query).items()}
             expected, SPOTIFY_LOGIN["state"] = SPOTIFY_LOGIN["state"], None
+            account = None
             if not expected or not secrets.compare_digest(query.get("state", ""), expected):
-                ok, why = False, "this login wasn't started from NIA's settings panel - press Log in to Spotify there"
+                ok, why = False, "this login wasn't started from NIA's settings panel"
             elif "error" in query:
-                ok, why = False, f"Spotify said {query['error']}"
+                ok, why = False, f"Spotify said {query['error'].replace('_', ' ')}"
             else:
                 from agent.action_controller import oauth
                 try:
-                    oauth().get_access_token(query.get("code", ""), as_dict=False, check_cache=False)
+                    login = oauth()
+                    login.get_access_token(query.get("code", ""), as_dict=False, check_cache=False)
                     ok, why = True, ""
+                    account = spotify_account(login)
                 except Exception as e:
                     ok, why = False, f"Spotify didn't accept it ({e})"
-            logger.info("Logged in to Spotify" if ok else f"Spotify login failed: {why}")
+            logger.info(f"Logged in to Spotify{f' as {account}' if account else ''}" if ok
+                        else f"Spotify login failed: {why}")
             hub.send(spotify="ok" if ok else f"Spotify login failed: {why}")
-            title = "NIA is logged in to Spotify" if ok else "Spotify login failed"
-            text = "You can close this tab." if ok else why[:1].upper() + why[1:] + "."
-            page = (f"<!doctype html><meta charset=utf-8><title>{title}</title><body style='background:#03070A;"
-                    f"color:#cfe;font:16px system-ui;padding:3em'><h2>{html.escape(title)}</h2>"
-                    f"<p>{html.escape(text)}</p>")
-            self.reply(200 if ok else 400, page.encode(), "text/html; charset=utf-8")
+            self.reply(200 if ok else 400, login_page(ok, why, account).encode(), "text/html; charset=utf-8")
 
         def events(self):
             self.send_response(200)

@@ -180,14 +180,18 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             return f"https://accounts.spotify.com/authorize?state={state}"
         def get_access_token(self, code, as_dict=True, check_cache=True):
             traded.append(code)
-    real_oauth, real_open = action_controller.oauth, nia.webbrowser.open
+    real_oauth, real_open, real_account = action_controller.oauth, nia.webbrowser.open, nia.spotify_account
     action_controller.oauth, nia.webbrowser.open = StubLogin, opened.append
+    nia.spotify_account = lambda login: "<b>alowki</b>"  # never asks the real Spotify who's signed in
+    pages = []
 
     def callback(query):
         try:
             with urllib.request.urlopen(f"{base}/spotify/callback?{query}") as response:
+                pages.append(response.read().decode())
                 return response.status
         except urllib.error.HTTPError as e:
+            pages.append(e.read().decode())
             return e.code
     try:
         assert callback("code=evil&state=x") == 400 and traded == [], "no login was started: refused"
@@ -195,10 +199,16 @@ with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
         assert opened and callback("code=evil&state=wrong") == 400 and traded == [], "another page's code: refused"
         state = post("/spotify/login")[1]["url"].split("state=")[1]
         assert callback(f"code=good&state={state}") == 200 and traded == ["good"]
+        # The tab she sends back: NIA's look, who's signed in (escaped - it's Spotify's text, not hers), what to say
+        assert "Spotify is connected" in pages[-1] and 'data-state="ok"' in pages[-1]
+        assert "&lt;b&gt;alowki&lt;/b&gt;" in pages[-1] and "<b>alowki" not in pages[-1]
+        assert "Hey Nia, play some lofi" in pages[-1] and "{{" not in pages[-1].split("-->", 1)[1]
         assert callback(f"code=again&state={state}") == 400 and traded == ["good"], "each login is used once"
+        assert "Spotify login didn&#x27;t finish" in pages[-1] and 'data-state="error"' in pages[-1]
+        assert "wasn&#x27;t started from NIA&#x27;s settings panel" in pages[-1], "the failed tab says why"
         assert "spotify" not in hub.latest, "a reloaded page doesn't replay an old login's outcome"
     finally:
-        action_controller.oauth, nia.webbrowser.open = real_oauth, real_open
+        action_controller.oauth, nia.webbrowser.open, nia.spotify_account = real_oauth, real_open, real_account
 
     # The window's quit
     assert post("/quit")[0] == 204 and done.is_set()
