@@ -553,7 +553,7 @@ def handler(hub, assistant, server, done):
                 action = body.get("action")
                 if action == "restart":
                     threading.Thread(target=assistant.restart, daemon=True).start()
-                elif action in ("wake", "sleep", "ptt_down", "ptt_up"):
+                elif action in ("wake", "sleep", "stop", "ptt_down", "ptt_up"):
                     assistant.send({"type": action})
             elif self.path == "/settings":
                 before = settings.load()

@@ -400,9 +400,11 @@ def test_installed_apps_are_found_the_way_linux_finds_them():
         (menu / "faketop.desktop").write_text(entry.format(name="Fake Top", exec="faketop", terminal="true"))
 
         opened = []
-        real = apps.application_dirs, apps.subprocess.Popen
+        real = apps.application_dirs, apps.subprocess.Popen, apps.shutil.which
         apps.application_dirs = lambda: [menu]  # only the stand-in launcher entries
         apps.subprocess.Popen = lambda command, **kwargs: opened.append(command)
+        # A PC without VLC, whatever this one has installed
+        apps.shutil.which = lambda name, *args, **kwargs: None if name.lower() == "vlc" else real[2](name, *args, **kwargs)
         try:
             found = menu / "org.example.FakePlayer.desktop"
             assert apps.find_app("fake player") == found and apps.find_app("FakePlayer") == found
@@ -432,7 +434,7 @@ def test_installed_apps_are_found_the_way_linux_finds_them():
                 "Opened The Founder (2016).mp4 in the PC's video player (VLC isn't installed)"
             assert opened[-1] == ["xdg-open", str(movie)]
         finally:
-            apps.application_dirs, apps.subprocess.Popen = real
+            apps.application_dirs, apps.subprocess.Popen, apps.shutil.which = real
             apps.last_video.update(path=None, when=0.0)
     from agent import chat
     assert "open_app" not in chat.NEEDS_APPROVAL
