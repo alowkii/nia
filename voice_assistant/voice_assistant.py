@@ -525,13 +525,19 @@ class WakeWordDetector:
             hud.send(partial=text)
 
     def command(self, message):
-        """From the window, on its connection's thread: {"type": text | wake | sleep | ptt_down | ptt_up | quit},
+        """From the window, on its connection's thread: {"type": text | wake | sleep | stop | ptt_down | ptt_up | quit},
         or {"type": "settings", "values": {...}} for settings that apply at once"""
         kind = message["type"]
         if kind == "settings":
             self.settings.update(message["values"])  # the loop reads self.settings each time
             if "mic_device" in message["values"]:  # switched on the loop's thread, like everything else
                 self.lines.put(SimpleNamespace(control="mic", text="", duration=0, last_transcription_latency_ms=0))
+            return
+        if kind == "stop":  # the mic button while she thinks or speaks: as saying "Stop" - she keeps listening
+            if self.busy:
+                logger.info("Stopped from the window")
+                CANCEL.set()
+                self.interrupted.set()
             return
         if kind in ("sleep", "quit") and self.busy:  # stop her now, not when she's done
             self.quitting = kind == "quit"

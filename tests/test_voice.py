@@ -188,6 +188,18 @@ with nia.working():
     assert nia.lines.get_nowait().text == "pause the music"
 assert not nia.busy
 
+# The window's button while she thinks or speaks: as saying "Stop" - cut off, and still listening. It used to put her
+# on standby as well, so a press to stop her talking also stopped her hearing the next request
+nia.awake = True
+CANCEL.clear()
+nia.command({"type": "stop"})  # not busy: nothing to stop
+assert not CANCEL.is_set() and nia.lines.empty()
+with nia.working():
+    nia.command({"type": "stop"})
+    assert CANCEL.is_set() and nia.interrupted.is_set()
+    assert nia.lines.empty(), "nothing queued - no standby"
+assert nia.awake, "she keeps listening"
+
 # "Stop" while a sentence is still being made (the native call can't be cut short): that sentence never starts
 # playing - before, it was started and stopped at once, a blip - and nothing after it is made
 from voice_assistant import voice_assistant as va
